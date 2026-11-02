@@ -148,7 +148,7 @@ def card(con, group_id: int) -> dict:
 
 
 def revalidated(con, task_id: int, briefing_fingerprint: str) -> None:
-    """見直しを終えた（新しい材料を読み直した）。見直し中の仕事だけを動かせる状態に戻す。読み直した材料の指紋を残す。"""
+    """見直しを終えた（新しい材料を読み直した）。見直し中の仕事だけを動かせる状態に戻す。読み直した材料の照合番号を残す。"""
     t = task(con, task_id)
     if t["state"] != "revalidating":
         raise ConsultError(f"task {task_id} is {t['state']}, not revalidating")

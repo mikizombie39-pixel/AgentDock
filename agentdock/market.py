@@ -1,7 +1,7 @@
 """参照用の市場：出品、相対の場、取引の双方の承認と登録、帳簿の照合。
 
 安全の条件をコードで守る：
-- 古い判断：承認は条件の指紋に結びつく。条件が変わると前の承認は効かない
+- 古い判断：承認は条件の照合番号に結びつく。条件が変わると前の承認は効かない
 - 二重の回答：同じ当事者の同じ承認は一度しか記録しない。登録も二度しない
 - 片側の失敗：売り手の帳簿と買い手の帳簿を別々に書く。片方だけ書けたら 'incomplete' にし、complete() で残りを書く
 - 不成立と未完了の区別：交渉が合わなければ negotiation を 'no_deal'、登録の途中で止まれば trade を 'incomplete'
@@ -109,7 +109,7 @@ def terms_fingerprint(lot_no: str, seller: str, buyer: str, unit_price_yen: int,
 
 
 def propose(trade_id: str, lot_no: str, buyer: str, unit_price_yen: int, quantity: int, version: int = 1) -> str:
-    """条件をそろえ、双方の承認を待つ取引を作る。指紋を返す。"""
+    """条件をそろえ、双方の承認を待つ取引を作る。照合番号を返す。"""
     m = _con()
     try:
         lot = m.execute("SELECT id, seller, quantity FROM lot WHERE lot_no = ?", (lot_no,)).fetchone()
@@ -132,7 +132,7 @@ def propose(trade_id: str, lot_no: str, buyer: str, unit_price_yen: int, quantit
 
 
 def revise_terms(trade_id: str, unit_price_yen: int, quantity: int) -> str:
-    """承認待ちの取引の条件を改める。版を上げ、前の条件への承認を消す（古い承認で登録しない）。新しい指紋を返す。"""
+    """承認待ちの取引の条件を改める。版を上げ、前の条件への承認を消す（古い承認で登録しない）。新しい照合番号を返す。"""
     m = _con()
     try:
         t = m.execute("SELECT t.id, t.lot_id, t.seller, t.buyer, t.version, t.status, t.quantity, l.lot_no, l.quantity AS lot_qty "

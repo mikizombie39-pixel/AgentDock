@@ -2,7 +2,7 @@
 
 持ち主の DB だけを読み、今日の判断に要る材料を1つにまとめる。数字はすべてコードで出す。
 仲間はこの材料を読んで判断し、言葉で説明する（数字を作らない）。
-材料には指紋をつけ、どの材料で判断したかを後から確かめられるようにする。
+材料には照合番号をつけ、どの材料で判断したかを後から確かめられるようにする。
 """
 import hashlib
 import json
@@ -114,5 +114,5 @@ def render(m: dict) -> str:
         why = f"（理由：{v['reason']}）" if v["reason"] else ""
         lost = "・本文のファイルが見つからない" if v["missing"] else ""
         lines.append(f"- 帳面の事例 {v['date']}：{v['situation']} → {v['choice']}{why}{lost}")
-    lines += ["", f"材料の指紋：{m['fingerprint'][:12]}"]
+    lines += ["", f"材料の照合番号：{m['fingerprint'][:12]}"]
     return "\n".join(lines)

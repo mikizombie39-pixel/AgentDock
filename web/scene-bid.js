@@ -200,7 +200,7 @@
       if (d && d.choice && d.plan && d.scale) { M = d; SOURCE = "db"; }
     } catch (e) { /* 口に届かない：試作の仮の値のまま */ }
     $(".caption").textContent = SOURCE === "db"
-      ? `値はデータベースから読んでいます（材料の指紋 ${M.briefingFingerprint.slice(0, 12)}）`
+      ? `値はデータベースから読んでいます（読んだデータの照合番号 ${M.briefingFingerprint.slice(0, 12)}）`
       : "試作：値は画面に直接書いた仮の値です（データベースに届きませんでした）";
   }
 

@@ -5,7 +5,7 @@
 
 公平の検査（コード）：
 - 宛先は登録された仲買の全員でなければならない（1社だけ・一部だけには送らない）
-- 届けた全員の指紋が、作った資料の指紋と同じでなければならない
+- 届けた全員の照合番号が、作った資料の照合番号と同じでなければならない
 どちらかが崩れたら FairnessError で止め、何も記録しない。
 """
 import hashlib
@@ -97,7 +97,7 @@ def publish(body: dict, recipients=BUYERS, tamper=None) -> int:
 
 
 def verify(broadcast_id: int) -> bool:
-    """届けた記録と、各社が受け取った中身の指紋が全部そろっているか。"""
+    """届けた記録と、各社が受け取った中身の照合番号が全部そろっているか。"""
     con = db.connect("iwase")
     try:
         fp = con.execute("SELECT fingerprint FROM broadcast WHERE id = ?", (broadcast_id,)).fetchone()[0]

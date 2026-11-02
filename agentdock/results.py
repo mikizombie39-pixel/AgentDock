@@ -3,7 +3,7 @@
 決まり：
 - 結果の公開の部分（ロット・品目・値・数量）は、全員に同じものを送る。他社の名前は送らない
 - 自社の落札だけ is_own=1 の印で区別する（名前では区別しない）
-- 公開の部分の指紋が1社でも違えば ResultError で止め、どの持ち主の DB にも何も記録しない
+- 公開の部分の照合番号が1社でも違えば ResultError で止め、どの持ち主の DB にも何も記録しない
 - 同じ結果を二度送っても行は増えない（result_id で一意）
 - 突き合わせでは、結果が届いていない品目を「不足」と書かない（未着と不足を分ける）
 """
@@ -60,7 +60,7 @@ def fingerprint(public_rows) -> str:
 
 
 def publish(rows: list[dict], tamper=None) -> str:
-    """結果を市場の DB に記録し、漁協と仲買の全員へ送る。指紋を返す。
+    """結果を市場の DB に記録し、漁協と仲買の全員へ送る。照合番号を返す。
     tamper は試験用（特定の宛先の公開の部分を書き換えて、検査が止めるかを見る）。"""
     if len({r["result_id"] for r in rows}) != len(rows):
         raise ResultError("duplicate result_id")
@@ -156,7 +156,7 @@ def _received(con, on_date: str) -> list[dict]:
 
 
 def verify(on_date: str = sc.DEMO_DATE) -> bool:
-    """市場の記録と、全員が受け取った公開の部分の指紋がそろっているか。自社の印が正しいか。"""
+    """市場の記録と、全員が受け取った公開の部分の照合番号がそろっているか。自社の印が正しいか。"""
     market = _market_rows(on_date)
     if not market:
         return False
