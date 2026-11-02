@@ -53,6 +53,18 @@ class ConsultTest(unittest.TestCase):
         n = self.con.execute("SELECT count(*) FROM plan WHERE status = 'approved'").fetchone()[0]
         self.assertEqual(n, 1)
 
+    def test_seller_plan_has_a_floor(self):
+        c = db.connect("iwase")
+        try:
+            plans.approve(c, "buri_xl", "negotiation", D, None, 6, min_unit_price_yen=17000)
+            self.assertTrue(plans.check(c, "buri_xl", "negotiation", D, 18000, 6)["within"])
+            self.assertEqual(plans.check(c, "buri_xl", "negotiation", D, 16900, 6)["reasons"], ["price_under"])
+            self.assertEqual(plans.check(c, "buri_xl", "negotiation", D, 16900, 7)["reasons"], ["price_under", "quantity_over"])
+            with self.assertRaises(sqlite3.IntegrityError):
+                plans.approve(c, "aji_s", "negotiation", D, None, 6)   # 上限も下限も無い計画は持てない
+        finally:
+            c.close()
+
     # 相談の束 --------------------------------------------------------------
     def test_bundle_is_one_card_and_waits(self):
         buri, aji, gid, _ = self.two()

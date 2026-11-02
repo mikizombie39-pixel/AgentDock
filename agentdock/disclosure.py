@@ -48,8 +48,11 @@ def secrets(con, item_code: str, on_date: str) -> dict[int, str]:
             out[r[1]] = "target_profit"
     if con.execute("SELECT 1 FROM seller_rule WHERE item_id = ?", (iid,)).fetchone():
         out[criteria.floor_yen(con, item_code, on_date)[0]] = "floor"
-    for r in con.execute("SELECT max_unit_price_yen FROM plan WHERE item_id = ? AND status = 'approved'", (iid,)):
-        out[r[0]] = "plan_max"
+    for r in con.execute("SELECT max_unit_price_yen, min_unit_price_yen FROM plan WHERE item_id = ? AND status = 'approved'", (iid,)):
+        if r[0]:
+            out[r[0]] = "plan_max"
+        if r[1]:
+            out[r[1]] = "plan_min"
     return {v: k for v, k in out.items() if v >= MIN_YEN}
 
 

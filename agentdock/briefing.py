@@ -24,9 +24,9 @@ def build(con, item_code: str, kind: str, on_date: str) -> dict:
     m["market_recent"] = criteria.market_stats(con, item_code, on_date)
     m["market_last_year"] = criteria.last_year_stats(con, item_code, on_date)
     p = con.execute(
-        "SELECT p.max_unit_price_yen, p.max_quantity FROM plan p JOIN item i ON i.id = p.item_id "
+        "SELECT p.max_unit_price_yen, p.max_quantity, p.min_unit_price_yen FROM plan p JOIN item i ON i.id = p.item_id "
         "WHERE i.code = ? AND p.kind = ? AND p.trade_date = ? AND p.status = 'approved'", (item_code, kind, on_date)).fetchone()
-    m["approved_plan"] = dict(max_unit_price_yen=p[0], max_quantity=p[1]) if p else None
+    m["approved_plan"] = (dict(max_unit_price_yen=p[0], max_quantity=p[1]) | ({"min_unit_price_yen": p[2]} if p[2] else {})) if p else None
 
     if owner["role"] == "buyer":
         orders = []
@@ -79,8 +79,12 @@ def render(m: dict) -> str:
     if ly:
         lines.append(f"- 去年の同じ時期：中央値 {_yen(ly['median'])}（{ly['count']}件）")
     p = m["approved_plan"]
-    lines.append(f"- 承認済みの計画：1{unit} {_yen(p['max_unit_price_yen'])} まで・{p['max_quantity']}{unit} まで" if p
-                 else "- 承認済みの計画：なし（値を出す前に持ち主の承認が要る）")
+    if p is None:
+        lines.append("- 承認済みの計画：なし（値を出す前に持ち主の承認が要る）")
+    elif p.get("min_unit_price_yen"):
+        lines.append(f"- 承認済みの計画：1{unit} {_yen(p['min_unit_price_yen'])} 以上・{p['max_quantity']}{unit} まで")
+    else:
+        lines.append(f"- 承認済みの計画：1{unit} {_yen(p['max_unit_price_yen'])} まで・{p['max_quantity']}{unit} まで")
     for o in m.get("orders", []):
         sr = o["sell_ratio"]
         cheap = f"・安い日は注文の {sr['cheap_ratio']}倍売れた（{sr['cheap_days']}日）" if sr.get("cheap_ratio") else ""

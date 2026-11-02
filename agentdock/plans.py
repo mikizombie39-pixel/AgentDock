@@ -13,20 +13,21 @@ def _item_id(con, item_code: str) -> int:
     return row["id"]
 
 
-def approve(con, item_code: str, kind: str, trade_date: str, max_unit_price_yen: int, max_quantity: int,
-            criteria_id: int | None = None) -> int:
-    """持ち主が承認した計画を記録する。同じ品目・種類・日の前の承認は superseded にする。"""
+def approve(con, item_code: str, kind: str, trade_date: str, max_unit_price_yen: int | None, max_quantity: int,
+            criteria_id: int | None = None, min_unit_price_yen: int | None = None) -> int:
+    """持ち主が承認した計画を記録する。同じ品目・種類・日の前の承認は superseded にする。
+    買い手は上限（max_unit_price_yen）、売り手は下限（min_unit_price_yen）を持つ。"""
     iid = _item_id(con, item_code)
     now = db.now_iso()
     with con:
         con.execute("UPDATE plan SET status = 'superseded' WHERE item_id = ? AND kind = ? AND trade_date = ? AND status = 'approved'",
                     (iid, kind, trade_date))
         cur = con.execute(
-            "INSERT INTO plan (item_id, kind, trade_date, max_unit_price_yen, max_quantity, criteria_id, status, approved_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, 'approved', ?)",
-            (iid, kind, trade_date, max_unit_price_yen, max_quantity, criteria_id, now))
+            "INSERT INTO plan (item_id, kind, trade_date, max_unit_price_yen, max_quantity, criteria_id, status, approved_at, min_unit_price_yen) "
+            "VALUES (?, ?, ?, ?, ?, ?, 'approved', ?, ?)",
+            (iid, kind, trade_date, max_unit_price_yen, max_quantity, criteria_id, now, min_unit_price_yen))
         con.execute("INSERT INTO audit_event (at, actor, event, detail) VALUES (?, 'owner', 'plan_approved', ?)",
-                    (now, f"{item_code} {kind} {trade_date} <= {max_unit_price_yen} x {max_quantity}"))
+                    (now, f"{item_code} {kind} {trade_date} {min_unit_price_yen}..{max_unit_price_yen} x {max_quantity}"))
     return cur.lastrowid
 
 
@@ -34,14 +35,16 @@ def check(con, item_code: str, kind: str, trade_date: str, unit_price_yen: int, 
     """範囲の中か外か。外なら理由を全部挙げる（値・数量・計画なし）。"""
     iid = _item_id(con, item_code)
     p = con.execute(
-        "SELECT id, max_unit_price_yen, max_quantity FROM plan WHERE item_id = ? AND kind = ? AND trade_date = ? AND status = 'approved'",
+        "SELECT id, max_unit_price_yen, min_unit_price_yen, max_quantity FROM plan WHERE item_id = ? AND kind = ? AND trade_date = ? AND status = 'approved'",
         (iid, kind, trade_date)).fetchone()
     if p is None:
         return dict(within=False, plan_id=None, reasons=["no_approved_plan"])
     reasons = []
-    if unit_price_yen > p["max_unit_price_yen"]:
+    if p["max_unit_price_yen"] is not None and unit_price_yen > p["max_unit_price_yen"]:
         reasons.append("price_over")
+    if p["min_unit_price_yen"] is not None and unit_price_yen < p["min_unit_price_yen"]:
+        reasons.append("price_under")
     if quantity > p["max_quantity"]:
         reasons.append("quantity_over")
     return dict(within=not reasons, plan_id=p["id"], reasons=reasons,
-                max_unit_price_yen=p["max_unit_price_yen"], max_quantity=p["max_quantity"])
+                max_unit_price_yen=p["max_unit_price_yen"], min_unit_price_yen=p["min_unit_price_yen"], max_quantity=p["max_quantity"])

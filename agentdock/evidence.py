@@ -58,12 +58,12 @@ def sheet(con, decision_id: int) -> dict:
         raise KeyError(decision_id)
     t = consult.task(con, d["task_id"])
     item = con.execute("SELECT i.code, i.name FROM task t JOIN item i ON i.id = t.item_id WHERE t.id = ?", (d["task_id"],)).fetchone()
-    p = con.execute("SELECT max_unit_price_yen, max_quantity FROM plan p JOIN task t ON t.item_id = p.item_id AND t.kind = p.kind "
+    p = con.execute("SELECT max_unit_price_yen, max_quantity, min_unit_price_yen FROM plan p JOIN task t ON t.item_id = p.item_id AND t.kind = p.kind "
                     "WHERE t.id = ? AND p.status = 'approved'", (d["task_id"],)).fetchone()
     return dict(
         decision_id=d["id"], task_id=d["task_id"], item=item["code"], item_name=item["name"], action=d["action"],
         unit_price_yen=d["unit_price_yen"], quantity=d["quantity"], within_plan=bool(d["within_plan"]),
-        plan=dict(max_unit_price_yen=p[0], max_quantity=p[1]) if p else None,
+        plan=(dict(max_unit_price_yen=p[0], max_quantity=p[1]) | ({"min_unit_price_yen": p[2]} if p[2] else {})) if p else None,
         rationale=d["rationale"], version=d["task_version"], stale=d["task_version"] != t["version"],
         evidence=[dict(kind=r["kind"], ref_id=r["ref_id"], summary=r["summary"]) for r in con.execute(
             "SELECT kind, ref_id, summary FROM decision_evidence WHERE decision_id = ? ORDER BY id", (decision_id,))])
