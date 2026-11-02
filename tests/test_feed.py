@@ -87,7 +87,10 @@ class FeedTest(unittest.TestCase):
         self.assertTrue(KEYS <= set(v))
         self.assertEqual(v["unit"], "1箱（1kg）")
         self.assertEqual(v["computedLimit"], dict(salePrice=6300, processing=900, profit=600, value=4800))
-        self.assertEqual(v["plan"], dict(low=None, limit=4800, boxes=8))
+        self.assertEqual(v["plan"], dict(low=None, limit=4800, boxes=8, approvedBy="網谷さん"))
+        self.assertEqual([r["to"] for r in v["book"]["data"]], ["recent", "lastYear", "mark", "mark"])
+        self.assertEqual(v["book"]["data"][3]["text"], "今日の結果：落札 3箱・不足 2箱")      # 結果の後
+        self.assertEqual([r["tag"] for r in v["book"]["own"]], ["決まり", "決まり"])
         self.assertEqual((v["choice"]["price"], v["choice"]["boxes"], v["choice"]["withinPlan"]), (4300, 5, True))
         self.assertLess(v["scale"]["min"], v["recent"]["low"])
         self.assertGreater(v["scale"]["max"], v["computedLimit"]["value"])
@@ -166,11 +169,38 @@ class ServerTest(unittest.TestCase):
         self.assertEqual(self.post(None, raw=b"{bad json")[0], 400)
         self.assertEqual(self.post(dict(body, owner="market", idempotency_key="x"))[0], 400)
 
+    def test_static_files_only_from_web(self):
+        with urllib.request.urlopen(self.base + "/", timeout=5) as r:
+            self.assertEqual(r.status, 200)
+            self.assertIn("text/html", r.headers["Content-Type"])
+        with urllib.request.urlopen(self.base + "/scene-bid.js", timeout=5) as r:
+            self.assertIn("javascript", r.headers["Content-Type"])
+        for bad in ("/../agentdock/db.py", "/%2e%2e/agentdock/db.py", "/README.md", "/nope.js"):
+            self.assertEqual(self.get(bad)[0], 404, bad)
+
     def test_talos_ports_refused(self):
         for p in (8772, 8773, 8774, 8775, 8777):
             with self.assertRaises(ValueError):
                 server.make_server(p)
         self.assertEqual(server.main(["--port", "8772"]), 2)
+
+
+
+class PrepareTest(unittest.TestCase):
+    def test_bid_scene_is_ready(self):
+        from agentdock import prepare
+        with tempfile.TemporaryDirectory() as tmp:
+            os.environ["AGENTDOCK_DATA"] = tmp
+            try:
+                r = prepare.bid()
+                v = feed.bid_view("amiya", "shiroebi", "tender", D)
+                self.assertEqual((v["choice"]["price"], v["choice"]["boxes"], v["choice"]["withinPlan"]), (4300, 5, True))
+                self.assertEqual(v["choice"]["reason"], sc.AMIYA_TENDER_RATIONALE)
+                self.assertEqual(len(v["evidence"]), 3)
+                self.assertIn("漁協の資料：今朝の水揚げ 20箱", v["book"]["data"][-1]["text"])   # 結果の前
+                self.assertGreater(r["decision_id"], 0)
+            finally:
+                os.environ.pop("AGENTDOCK_DATA", None)
 
 
 if __name__ == "__main__":

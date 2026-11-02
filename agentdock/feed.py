@@ -73,18 +73,39 @@ def bid_view(owner: str, item_code: str, kind: str, on_date: str) -> dict:
     values = [v for v in (r and r["low"], r and r["high"], ly and ly["low"], ly and ly["high"],
                           first and first["ceiling_yen"], p and p.get("max_unit_price_yen"), p and p.get("min_unit_price_yen")) if v]
     scale = dict(min=int(min(values) * 0.9) // 100 * 100, max=-(-int(max(values) * 1.1) // 100) * 100) if values else None
+    u = "本" if m["item"]["unit"] == "fish" else "箱"
+    yen = lambda v: f"{v:,}円"   # noqa: E731
+    own = []
+    if first and cost:
+        own.append(dict(tag="決まり", text="上限は「売値 − 加工 − 利益」で決める"))
+    if p and p.get("max_unit_price_yen"):
+        own.append(dict(tag="決まり", text=f"計画の外は社長に聞く（上限 {yen(p['max_unit_price_yen'])}・{p['max_quantity']}{u}）"))
+    own += [dict(tag="これまでの例", text=f"{v['date']} {v['situation']} → {v['choice']}" + (f"（{v['reason']}）" if v["reason"] else ""))
+            for v in m["vault_cases"]]
+    data = []
+    if r:
+        data.append(dict(tag="相場", to="recent", text=f"直近30日の中央値 {yen(r['median'])}（幅 {yen(r['low'])}〜{yen(r['high'])}）"))
+    if ly:
+        data.append(dict(tag="相場", to="lastYear", text=f"去年の同じ時期の中央値 {yen(ly['median'])}（幅 {yen(ly['low'])}〜{yen(ly['high'])}）"))
+    for o in m.get("orders", []):
+        data.append(dict(tag="注文", to="mark", text=f"{o['customer']}の注文 {o['quantity']}{u}"))
+    res, coop = m.get("results"), m.get("coop_item")
+    if res and "won" in res:
+        data.append(dict(tag="状況", to="mark", text=f"今日の結果：落札 {res['won']}{u}・不足 {res['short']}{u}"))
+    elif coop:
+        size = f"（{coop['size']}）" if coop.get("size") else ""
+        data.append(dict(tag="状況", to="mark", text=f"漁協の資料：今朝の水揚げ {coop['quantity']}{u}{size}"))
     return dict(
         item=m["item"]["name"], unit=unit, scale=scale,
         lastYear=ly and dict(low=ly["low"], high=ly["high"], median=ly["median"]),
         recent=r and dict(low=r["low"], high=r["high"], median=r["median"]),
         computedLimit=first and cost and dict(salePrice=first["sell_price_yen"], processing=cost[0], profit=cost[1], value=first["ceiling_yen"]),
-        plan=p and dict(low=p.get("min_unit_price_yen"), limit=p.get("max_unit_price_yen"), boxes=p["max_quantity"]),
+        plan=p and dict(low=p.get("min_unit_price_yen"), limit=p.get("max_unit_price_yen"), boxes=p["max_quantity"],
+                        approvedBy=m["owner"]["person_name"]),
         choice=sheet and dict(price=sheet["unit_price_yen"], boxes=sheet["quantity"], reason=sheet["rationale"],
                               action=sheet["action"], withinPlan=sheet["within_plan"], stale=sheet["stale"]),
-        book=dict(
-            own=[dict(tag="これまでの例", text=f"{v['date']} {v['situation']} → {v['choice']}" + (f"（{v['reason']}）" if v["reason"] else ""))
-                 for v in m["vault_cases"]],
-            data=[dict(tag=e["kind"], text=e["summary"]) for e in (sheet["evidence"] if sheet else [])]),
+        book=dict(own=own, data=data),
+        evidence=sheet["evidence"] if sheet else [],
         briefingFingerprint=m["fingerprint"])
 
 

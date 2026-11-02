@@ -41,6 +41,9 @@ def build(con, item_code: str, kind: str, on_date: str) -> dict:
         rec = results.reconcile(owner["code"], on_date)
         m["results"] = next((x for x in rec["lines"] if x["item"] == item_code), None)
         m["cheap_offer"] = next((x for x in rec["offers"] if x["item"] == item_code), None)
+        ib = con.execute("SELECT body_json FROM inbox_broadcast ORDER BY broadcast_id DESC LIMIT 1").fetchone()
+        body = json.loads(ib[0]) if ib else None
+        m["coop_item"] = next((e for e in body["items"] if e["item"] == item_code), None) if body and body.get("date") == on_date else None
     else:
         landed = con.execute(
             "SELECT l.quantity, l.size_note, l.caught_at, l.area FROM landing l JOIN item i ON i.id = l.item_id "

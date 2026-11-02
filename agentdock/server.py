@@ -7,6 +7,7 @@ GET  /api/events?owner=amiya&since=0
 GET  /api/view/bid?owner=amiya&item=shiroebi&kind=tender&date=2026-11-02
 GET  /api/tender?lot=T-shiroebi-1&viewer=amiya
 POST /api/answer   {"owner", "consultation_id", "option", "idempotency_key", "reason"}  ← 社長のスマホの答え
+GET  /             web/index.html（画面のファイルは web/ の直下の .html・.css・.js だけを返す）
 
 安全装置：127.0.0.1 だけで待つ。TALOS の番号（8772〜8777）では起動しない。
 """
@@ -17,11 +18,14 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
 from agentdock import consult, db, feed
+from agentdock.db import REPO
 from agentdock.seed import scenario as sc
 
 DEFAULT_PORT = 8791
 TALOS_PORTS = range(8772, 8778)
 MAX_BODY = 16 * 1024
+WEB = (REPO / "web").resolve()
+TYPES = {".html": "text/html; charset=utf-8", ".css": "text/css; charset=utf-8", ".js": "text/javascript; charset=utf-8"}
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -37,8 +41,23 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def _static(self, path: str) -> None:
+        name = "index.html" if path in ("", "/") else path.lstrip("/")
+        f = (WEB / name).resolve()
+        if f.parent != WEB or f.suffix not in TYPES or not f.is_file():
+            return self._send(404, dict(error="not found"))
+        body = f.read_bytes()
+        self.send_response(200)
+        self.send_header("Content-Type", TYPES[f.suffix])
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self.wfile.write(body)
+
     def do_GET(self):
         u = urlparse(self.path)
+        if not u.path.startswith("/api/"):
+            return self._static(u.path)
         q = {k: v[0] for k, v in parse_qs(u.query).items()}
         try:
             if u.path == "/api/state":

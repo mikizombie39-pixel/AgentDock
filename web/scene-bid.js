@@ -1,7 +1,9 @@
 // Bid scene (about 8 seconds): the owner's notebook and the market data reach the value ruler,
 // the computed limit and the approved plan frame the range, and the chosen value lands inside it.
-(function () {
-  const M = window.MOCK_BID;
+(async function () {
+  // 値は口（/api/view/bid）から読む。口に届かない時（ファイルを直接開いた時など）は試作の仮の値で描く
+  let M = window.MOCK_BID;
+  let SOURCE = "mock";
   const $ = (s) => document.querySelector(s);
   const NS = "http://www.w3.org/2000/svg";
   const yen = (v) => v.toLocaleString("ja-JP") + "円";
@@ -34,20 +36,21 @@
   function buildRuler() {
     svg.innerHTML = "";
     svg.append(
-      el("text", { x: X(M.plan.low) - 8, y: Y.plan + 14, class: "bl", "text-anchor": "end" }, "計画の範囲"),
+      el("text", { x: X(planLow()) - 8, y: Y.plan + 14, class: "bl", "text-anchor": "end" }, "計画の範囲"),
       el("text", { x: X(M.recent.high) + 8, y: Y.recent + 12, class: "bl" }, "直近の幅"),
       el("text", { x: X(M.lastYear.high) + 8, y: Y.lastYear + 12, class: "bl" }, "去年の幅"),
-      el("rect", { id: "b-plan", class: "b-plan", x: X(M.plan.low), y: Y.plan, width: X(M.plan.limit) - X(M.plan.low), height: 18 }),
+      el("rect", { id: "b-plan", class: "b-plan", x: X(planLow()), y: Y.plan, width: X(M.plan.limit) - X(planLow()), height: 18 }),
       el("rect", { id: "b-recent", class: "b-rec", x: X(M.recent.low), y: Y.recent, width: X(M.recent.high) - X(M.recent.low), height: 14 }),
       el("rect", { id: "b-last", class: "b-last", x: X(M.lastYear.low), y: Y.lastYear, width: X(M.lastYear.high) - X(M.lastYear.low), height: 14 }),
       el("line", { x1: 150, x2: 770, y1: Y.axis, y2: Y.axis, stroke: "var(--mute)" })
     );
-    for (let v = 3500; v <= 5000; v += 500) {
+    const tick = [100, 200, 500, 1000, 2000, 5000, 10000].find((t) => t >= (M.scale.max - M.scale.min) / 5) || 10000;
+    for (let v = Math.ceil(M.scale.min / tick) * tick; v <= M.scale.max; v += tick) {
       svg.append(el("line", { x1: X(v), x2: X(v), y1: Y.axis, y2: Y.axis + 6, stroke: "var(--mute)" }),
         el("text", { x: X(v), y: Y.axis + 24, class: "tk" }, yen(v)));
     }
     const calc = el("g", { id: "g-calc", class: "hide" });
-    calc.append(el("line", { class: "l-calc", x1: X(M.computedLimit.value), x2: X(M.computedLimit.value), y1: 36, y2: Y.axis }),
+    if (M.computedLimit) calc.append(el("line", { class: "l-calc", x1: X(M.computedLimit.value), x2: X(M.computedLimit.value), y1: 36, y2: Y.axis }),
       el("text", { class: "note", x: X(M.computedLimit.value) + 6, y: 32 }, "算出した上限 " + yen(M.computedLimit.value)),
       el("text", { class: "note", x: 150, y: Y.axis + 62 },
         `上限の計算（コード）：売値 ${yen(M.computedLimit.salePrice)} − 加工 ${yen(M.computedLimit.processing)} − 利益 ${yen(M.computedLimit.profit)} ＝ ${yen(M.computedLimit.value)}`));
@@ -59,6 +62,8 @@
     mark.append(el("circle", { cx: X(M.choice.price), cy: Y.plan + 9, r: 9, fill: "var(--ink)", stroke: "var(--sf)", "stroke-width": 2 }));
     svg.append(calc, plan, mark);
   }
+
+  function planLow() { return M.plan.low == null ? M.scale.min : M.plan.low; }
 
   // ---- notebook rows ----
   function buildBook() {
@@ -129,15 +134,19 @@
     const steps = [...document.querySelectorAll("#steps .st")];
     const show = (id) => { const g = document.getElementById(id); g.classList.remove("hide"); return FX.fadeIn(g, 350, "translateY(-6px)"); };
 
+    // 行の数は帳面とデータで変わる。行ごとの行き先（to）で線を引く
+    const dataRows = M.book.data.map((r, i) => ({ id: `r-data-${i}`, to: r.to || "mark" }));
+    const ownRows = M.book.own.map((r, i) => ({ id: `r-own-${i}`, tag: r.tag }));
+    const bar = { recent: "#b-recent", lastYear: "#b-last" };
+
     // 1. market data: the two price ranges
     FX.step(steps, 0);
-    FX.highlight($("#r-data-0"));
-    await FX.lineDraw(link("r-data-0", "data", "recent"), 650);
-    FX.growBar($("#b-recent"));
-    await FX.wait(200);
-    FX.highlight($("#r-data-1"));
-    await FX.lineDraw(link("r-data-1", "data", "lastYear"), 650);
-    await FX.growBar($("#b-last"));
+    for (const r of dataRows.filter((r) => bar[r.to])) {
+      FX.highlight($("#" + r.id));
+      await FX.lineDraw(link(r.id, "data", r.to), 650);
+      await FX.growBar($(bar[r.to]));
+      await FX.wait(150);
+    }
 
     // 2. the limit computed by code, then the approved plan
     await show("g-calc");
@@ -145,23 +154,20 @@
     FX.growBar($("#b-plan"));
     await show("g-plan");
 
-    // 3. the owner's rules and past case
-    FX.step(steps, 1);
-    FX.highlight($("#r-own-0"));
-    FX.lineDraw(link("r-own-0", "own", "mark"), 600);
-    await FX.wait(250);
-    FX.highlight($("#r-own-1"));
-    await FX.lineDraw(link("r-own-1", "own", "mark"), 600);
-    FX.step(steps, 2);
-    FX.highlight($("#r-own-2"));
-    await FX.lineDraw(link("r-own-2", "own", "mark"), 600);
+    // 3. the owner's rules and past cases
+    for (const r of ownRows) {
+      FX.step(steps, r.tag === "これまでの例" ? 2 : 1);
+      FX.highlight($("#" + r.id));
+      await FX.lineDraw(link(r.id, "own", "mark"), 600);
+      await FX.wait(120);
+    }
 
     // 4. today's demand and situation
-    FX.highlight($("#r-data-2"));
-    FX.lineDraw(link("r-data-2", "data", "mark"), 550);
-    await FX.wait(200);
-    FX.highlight($("#r-data-3"));
-    await FX.lineDraw(link("r-data-3", "data", "mark"), 550);
+    for (const r of dataRows.filter((r) => !bar[r.to])) {
+      FX.highlight($("#" + r.id));
+      await FX.lineDraw(link(r.id, "data", "mark"), 550);
+      await FX.wait(120);
+    }
 
     // 5. the chosen value lands inside the plan
     FX.step(steps, 3);
@@ -169,6 +175,7 @@
     FX.maskReveal($("#val"));
     await FX.fadeIn($("#reason"), 400);
     FX.step(steps, 5);
+    $("#pill").textContent = M.choice.withinPlan === false ? "計画の範囲の外" : "計画の範囲の中";
     FX.fadeIn($("#pill"), 300);
     FX.burst(svg, X(M.choice.price), Y.plan + 9, ["var(--plan)", "var(--own)", "var(--data)"]);
     await FX.wait(350);
@@ -184,6 +191,20 @@
     if (e.key === "r" && !running) reset();
   });
 
+  async function load() {
+    const q = new URLSearchParams(location.search);
+    const url = `/api/view/bid?owner=${q.get("owner") || "amiya"}&item=${q.get("item") || "shiroebi"}&kind=${q.get("kind") || "tender"}`;
+    try {
+      const r = await fetch(url, { cache: "no-store" });
+      const d = r.ok ? await r.json() : null;
+      if (d && d.choice && d.plan && d.scale) { M = d; SOURCE = "db"; }
+    } catch (e) { /* 口に届かない：試作の仮の値のまま */ }
+    $(".caption").textContent = SOURCE === "db"
+      ? `値はデータベースから読んでいます（材料の指紋 ${M.briefingFingerprint.slice(0, 12)}）`
+      : "試作：値は画面に直接書いた仮の値です（データベースに届きませんでした）";
+  }
+
+  await load();
   reset();
   if (location.hash === "#done") { FX.setQuick(true); play().then(() => FX.setQuick(false)); }
   if (location.hash === "#play") setTimeout(play, 600);

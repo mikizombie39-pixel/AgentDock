@@ -81,6 +81,10 @@ TODAY_TENDER = dict(lot_no="T-shiroebi-1", item="shiroebi", quantity=20,
 TODAY_AUCTION = dict(lot_no="A-buri_xl-1", item="buri_xl",
                      sales=[("buyer_b", 18200, 2), ("other", 17900, 4)])
 
+# 入札の場面の画面に出す、網谷水産の承認済みの計画と仲間の入札（模擬の仲間の言葉・試作の画面の値を引き継いだ仮の値）
+AMIYA_TENDER_PLAN = dict(max_unit_price_yen=4800, max_quantity=8)
+AMIYA_TENDER_RATIONALE = "今朝の水揚げは少なめ。スーパーの注文の5箱を確実に取る"
+
 # 漁協の水揚げ：(item, kind, quantity, size_note, caught_at, area, water_temp_c)
 LANDINGS = {
     "iwase": [
