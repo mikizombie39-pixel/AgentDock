@@ -207,5 +207,6 @@
   await load();
   reset();
   if (location.hash === "#done") { FX.setQuick(true); play().then(() => FX.setQuick(false)); }
-  if (location.hash === "#play") setTimeout(play, 600);
+  // 開いたら自動で再生する（#still の時だけ、開いた直後の状態で止めておく・録画の準備用）
+  else if (location.hash !== "#still") setTimeout(play, 600);
 })();
