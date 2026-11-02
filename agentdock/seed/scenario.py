@@ -72,6 +72,15 @@ SELLER_NOTES = {
     "buri_xl": "明日もブリの水揚げが多い見込みです。",
 }
 
+# デモの日の朝の入札（シロエビ 20箱）：(bidder, unit_price, quantity)。高い順に割り当てる
+TODAY_TENDER = dict(lot_no="T-shiroebi-1", item="shiroebi", quantity=20,
+                    bids=[("buyer_b", 4400, 6), ("buyer_c", 4350, 11), ("amiya", 4300, 5)])
+
+# デモの日の朝のせり（人が行う）：(buyer, unit_price, quantity)。ブリ 12本のうち6本が売れ、6本が相対へ残る
+# 'other' は Agent Dock を使っていない仲買。網谷水産の若いスタッフの落札は未決のため0本（HAL 案）
+TODAY_AUCTION = dict(lot_no="A-buri_xl-1", item="buri_xl",
+                     sales=[("buyer_b", 18200, 2), ("other", 17900, 4)])
+
 # 漁協の水揚げ：(item, kind, quantity, size_note, caught_at, area, water_temp_c)
 LANDINGS = {
     "iwase": [
