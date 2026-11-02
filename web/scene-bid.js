@@ -1,7 +1,7 @@
 // Bid scene (about 8 seconds): the owner's notebook and the market data reach the value ruler,
 // the computed limit and the approved plan frame the range, and the chosen value lands inside it.
 (async function () {
-  // 値は口（/api/view/bid）から読む。口に届かない時（ファイルを直接開いた時など）は試作の仮の値で描く
+  // 値は画面への読み出し（/api/view/bid）から読む。読み出しに届かない時（ファイルを直接開いた時など）は試作の仮の値で描く
   let M = window.MOCK_BID;
   let SOURCE = "mock";
   const $ = (s) => document.querySelector(s);
@@ -198,7 +198,7 @@
       const r = await fetch(url, { cache: "no-store" });
       const d = r.ok ? await r.json() : null;
       if (d && d.choice && d.plan && d.scale) { M = d; SOURCE = "db"; }
-    } catch (e) { /* 口に届かない：試作の仮の値のまま */ }
+    } catch (e) { /* 読み出しに届かない：試作の仮の値のまま */ }
     $(".caption").textContent = SOURCE === "db"
       ? `値はデータベースから読んでいます（読んだデータの照合番号 ${M.briefingFingerprint.slice(0, 12)}）`
       : "試作：値は画面に直接書いた仮の値です（データベースに届きませんでした）";

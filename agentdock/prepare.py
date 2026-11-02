@@ -2,7 +2,7 @@
 
   python -m agentdock.prepare bid     # 入札の場面：資料を届け、網谷水産の計画を承認し、仲間の入札を記録する
 
-作り直し（seed.build）から始めるので、口（server）を止めてから実行する。
+作り直し（seed.build）から始めるので、画面への読み出し（server）を止めてから実行する。
 """
 import sys
 

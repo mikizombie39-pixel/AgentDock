@@ -1,4 +1,4 @@
-"""画面へ流す口（読み出しと HTTP の受け口）の試験。"""
+"""画面への読み出し（読み出しの処理と HTTP の受け付け）の試験。"""
 import json
 import os
 import tempfile
