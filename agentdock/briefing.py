@@ -8,7 +8,7 @@ import hashlib
 import json
 from typing import Any
 
-from agentdock import criteria, plans, results
+from agentdock import criteria, plans, results, vaultbook
 
 
 def _fp(obj) -> str:
@@ -54,6 +54,7 @@ def build(con, item_code: str, kind: str, on_date: str) -> dict:
             m["floor"] = dict(floor_yen=floor, held_up_for_tomorrow=held)
         rec = results.reconcile(owner["code"], on_date)
         m["results"] = next((x for x in rec["lines"] if x["item"] == item_code), None)
+    m["vault_cases"] = vaultbook.find(con, item_code)
     m["fingerprint"] = _fp(m)
     return m
 
@@ -102,5 +103,9 @@ def render(m: dict) -> str:
     lnd = m.get("landing")
     if lnd and lnd["tomorrow_forecast"] is not None:
         lines.append(f"- 明日の水揚げの見込み：{lnd['tomorrow_forecast']}{unit}")
+    for v in m.get("vault_cases", []):
+        why = f"（理由：{v['reason']}）" if v["reason"] else ""
+        lost = "・本文のファイルが見つからない" if v["missing"] else ""
+        lines.append(f"- 帳面の事例 {v['date']}：{v['situation']} → {v['choice']}{why}{lost}")
     lines += ["", f"材料の指紋：{m['fingerprint'][:12]}"]
     return "\n".join(lines)
