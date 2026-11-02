@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Agent Dock — 網谷水産の仲間（試作）</title>
+<link rel="stylesheet" href="app.css">
+</head>
+<body>
+<div id="stage">
+
+  <div class="topbar">
+    <div class="title">網谷水産の仲間<small>シロエビの入札・岩瀬（架空）</small></div>
+    <div class="steps" id="steps">
+      <div class="st"><i>1</i>見たデータ</div>
+      <div class="st"><i>2</i>社長の決まり</div>
+      <div class="st"><i>3</i>これまでの例</div>
+      <div class="st"><i>4</i>算出した値</div>
+      <div class="st in"><i>5</i>範囲の中か外か</div>
+    </div>
+    <div class="scope">会期中に作成　<b>接続先：参照用の市場</b><br>登場する組織と、取引の条件・値は架空です</div>
+  </div>
+
+  <section class="panel" id="book">
+    <h2>社長の帳面</h2>
+    <div class="grp own">社長の知識と経験</div>
+    <div id="rows-own"></div>
+    <div class="grp data">データと状況</div>
+    <div id="rows-data"></div>
+    <div class="book-foot">読んだ行に印がつきます</div>
+  </section>
+
+  <section class="panel" id="ruler">
+    <h2>値の物差し<span id="unit" style="font-weight:normal;font-size:13px;color:var(--mute);margin-left:10px"></span></h2>
+    <div class="pick"><div class="lbl">選んだ値</div><div class="mask"><span class="val" id="val"></span></div><span class="pill" id="pill">計画の範囲の中</span></div>
+    <div class="reason" id="reason"></div>
+    <svg id="rsvg" viewBox="0 0 800 430"></svg>
+  </section>
+
+  <section class="panel" id="phone">
+    <div class="ph-head">網谷さんのスマホ
+      <span class="bell"><svg width="26" height="26" viewBox="0 0 24 24"><path d="M12 3a6 6 0 0 0-6 6v4l-2 3h16l-2-3V9a6 6 0 0 0-6-6zm-2 15a2 2 0 0 0 4 0" fill="none" stroke="currentColor" stroke-width="1.6"/></svg><span class="badge" id="badge">0</span></span>
+    </div>
+    <div class="toasts" id="toasts"></div>
+    <div class="ph-foot">別の漁港で商談中</div>
+  </section>
+
+  <svg id="links" viewBox="0 0 1600 900"></svg>
+
+  <div class="caption">試作：値は画面に直接書いた仮の値です。データの層ができたら、帳面と相場はデータから読みます。</div>
+  <div class="ctl"><button id="play">入札の場面を再生（約8秒）</button><button id="reset">初めに戻す</button></div>
+</div>
+
+<script src="mock-bid.js"></script>
+<script src="effects.js"></script>
+<script src="scene-bid.js"></script>
+</body>
+</html>
