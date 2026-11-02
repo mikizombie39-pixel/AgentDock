@@ -55,6 +55,23 @@ class VaultbookTest(unittest.TestCase):
         self.assertTrue(vaultbook.find(self.con, "buri_xl")[0]["missing"])
         self.assertIn("本文のファイルが見つからない", briefing.render(briefing.build(self.con, "buri_xl", "negotiation", D)))
 
+    def test_rebuild_moves_the_vault_aside_and_deletes_nothing(self):
+        consult.answer(self.con, self.cid, "pass", "k1", "今日は見送る")
+        old = vaultbook.record_from_consultation(self.con, self.cid)
+        self.con.close()
+        self.assertEqual(build.main([]), 0)
+        self.con = db.connect("amiya")
+        self.assertFalse(old.exists())
+        moved = list(db.data_dir().glob("vault-退避-*/amiya/*.md"))
+        self.assertEqual([m.name for m in moved], [old.name])                 # 消えずに脇へ移った
+        self.assertIn("今日は見送る", moved[0].read_text(encoding="utf-8"))
+        self.assertFalse(vaultbook.folder("amiya").exists())                  # 新しい置き場は空から
+        self.assertEqual(vaultbook.find(self.con, "buri_xl"), [])
+        self.con.close()
+        self.assertEqual(build.main([]), 0)                                    # 帳面が無い時の作り直しも通る
+        self.con = db.connect("amiya")
+        self.assertEqual(len(list(db.data_dir().glob("vault-退避-*"))), 1)
+
     def test_folder_is_per_owner(self):
         self.assertNotEqual(vaultbook.folder("amiya"), vaultbook.folder("buyer_c"))
         with self.assertRaises(ValueError):

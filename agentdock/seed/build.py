@@ -4,8 +4,10 @@
   python -m agentdock.seed.build --scene-c  # 不成立の場面の種（漁協の下限が 19,000円）
 
 安全装置：消すのは置き場の中の既知の5ファイルだけ。置き場が OneDrive の中なら止める。
+帳面（vault）の置き場は消さず、「vault-退避-日時」の名前で脇へ移す（DB の索引と帳面のファイルを常にそろえるため）。
 """
 import argparse
+import datetime
 import sys
 
 from agentdock import db
@@ -72,6 +74,21 @@ def _fill_owner(con, code: str, public_rows, scene_c: bool) -> None:
                     (now, "scene_c" if scene_c else "main"))
 
 
+def archive_vault(folder):
+    """帳面の置き場があれば、消さずに日時つきの名前で脇へ移す。移した先を返す（無ければ None）。"""
+    src = folder / "vault"
+    if not src.exists():
+        return None
+    stamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+    dst = folder / f"vault-退避-{stamp}"
+    n = 2
+    while dst.exists():
+        dst = folder / f"vault-退避-{stamp}-{n}"
+        n += 1
+    src.rename(dst)
+    return dst
+
+
 def build_market() -> None:
     con = db.connect(db.MARKET)
     db.migrate(con, "market")
@@ -94,6 +111,9 @@ def main(argv=None) -> int:
             q = p.with_name(p.name + suffix)
             if q.exists():
                 q.unlink()
+    archived = archive_vault(folder)
+    if archived:
+        print(f"moved old vault to {archived}")
 
     rows = prices.public_results(sc.HISTORY_FROM, sc.HISTORY_TO)
     for code in db.OWNER_CODES:
