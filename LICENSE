@@ -1,0 +1,13 @@
+Copyright (c) 2026 Mikio Takubo. All rights reserved.
+
+This repository is made public for review as an entry to Built with Claude: Japan 2026.
+Viewing the source code is permitted. No license is granted to use, copy, modify,
+merge, publish, distribute, sublicense, or sell any part of this software, and no
+patent rights are granted, expressly or by implication, without prior written
+permission from the copyright holder.
+
+Third-party material:
+- CLAUDE.md adapts two principles from andrej-karpathy-skills
+  (https://github.com/forrestchang/andrej-karpathy-skills, now
+  https://github.com/multica-ai/andrej-karpathy-skills), whose README states that it is
+  released under the MIT License.

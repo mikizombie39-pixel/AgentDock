@@ -1,0 +1,32 @@
+# Secrets and credentials (never commit)
+.env
+.env.*
+*.key
+*.pem
+secrets/
+credentials*
+*_token*
+.claude/settings.local.json
+
+# Runtime data and logs (development DB, recordings, outputs)
+data/
+*.db
+*.sqlite
+*.sqlite3
+logs/
+*.log
+recordings/
+
+# Python / Node
+__pycache__/
+*.pyc
+.venv/
+venv/
+node_modules/
+.pytest_cache/
+
+# OS / editor
+Thumbs.db
+.DS_Store
+.vscode/
+.idea/
