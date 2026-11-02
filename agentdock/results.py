@@ -51,7 +51,7 @@ def today_results(on_date: str = sc.DEMO_DATE) -> list[dict]:
 
 def _public(row: dict) -> dict:
     """全員に同じに見せる部分（買い手の名前を除く）。"""
-    return {k: row[k] for k in ("result_id", "lot_no", "item", "method", "unit_price_yen", "quantity", "trade_date")}
+    return {k: row[k] for k in ("result_id", "lot_no", "item", "unit_price_yen", "quantity", "trade_date")}
 
 
 def fingerprint(public_rows) -> str:
@@ -97,6 +97,12 @@ def publish(rows: list[dict], tamper=None) -> str:
     finally:
         m.close()
 
+    _deliver(rows, copies)
+    return fp
+
+
+def _deliver(rows: list[dict], copies: dict) -> None:
+    """各社の DB へ書く。既に届いた行は増やさない（INSERT OR IGNORE）。"""
     now = db.now_iso()
     buyer_of = {r["result_id"]: r["buyer"] for r in rows}
     for who, pub in copies.items():
@@ -110,7 +116,36 @@ def publish(rows: list[dict], tamper=None) -> str:
                       1 if who == SELLER or buyer_of[p["result_id"]] == who else 0, now) for p in pub])
         finally:
             c.close()
-    return fp
+
+
+def _market_rows(on_date: str) -> list[dict]:
+    m = db.connect(db.MARKET)
+    try:
+        return [dict(r) for r in m.execute(
+            "SELECT result_id, lot_no, item_code AS item, buyer, unit_price_yen, quantity, trade_date FROM auction_result WHERE trade_date = ? ORDER BY result_id",
+            (on_date,))]
+    finally:
+        m.close()
+
+
+def resend(on_date: str = sc.DEMO_DATE) -> list[str]:
+    """途中の社で書き込みが失敗した時の送り直し。市場の記録を正として、届いていない行だけを足す。
+    足した宛先を返す。届いた後に書き換えられた行は直さない（verify が False のまま残り、人が見る）。"""
+    rows = _market_rows(on_date)
+    if not rows:
+        raise ResultError(f"no market results: {on_date}")
+    want = {r["result_id"] for r in rows}
+    missing = []
+    for who in (SELLER, *BUYERS):
+        c = db.connect(who)
+        try:
+            have = {r["result_id"] for r in _received(c, on_date)}
+        finally:
+            c.close()
+        if want - have:
+            missing.append(who)
+    _deliver(rows, {who: [_public(r) for r in rows] for who in missing})
+    return missing
 
 
 def _received(con, on_date: str) -> list[dict]:
@@ -122,16 +157,10 @@ def _received(con, on_date: str) -> list[dict]:
 
 def verify(on_date: str = sc.DEMO_DATE) -> bool:
     """市場の記録と、全員が受け取った公開の部分の指紋がそろっているか。自社の印が正しいか。"""
-    m = db.connect(db.MARKET)
-    try:
-        market = [dict(r) for r in m.execute(
-            "SELECT result_id, lot_no, item_code AS item, buyer, unit_price_yen, quantity, trade_date FROM auction_result WHERE trade_date = ?",
-            (on_date,))]
-    finally:
-        m.close()
+    market = _market_rows(on_date)
     if not market:
         return False
-    fp = fingerprint([_public(dict(r, method=None)) for r in market])
+    fp = fingerprint([_public(r) for r in market])
     buyer_of = {r["result_id"]: r["buyer"] for r in market}
     for who in (SELLER, *BUYERS):
         c = db.connect(who)
@@ -139,7 +168,7 @@ def verify(on_date: str = sc.DEMO_DATE) -> bool:
             got = _received(c, on_date)
         finally:
             c.close()
-        pub = [dict(r, method=None, trade_date=on_date) for r in got]
+        pub = [dict(r, trade_date=on_date) for r in got]
         if fingerprint([_public(r) for r in pub]) != fp:
             return False
         for r in got:

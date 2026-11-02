@@ -1,7 +1,9 @@
 """せりと入札の結果を全員へ送る部品と、各社の突き合わせの試験。"""
 import os
+import sqlite3
 import tempfile
 import unittest
+from unittest import mock
 
 from agentdock import broadcast, db, results
 from agentdock.seed import build
@@ -142,6 +144,34 @@ class ResultsTest(unittest.TestCase):
         # B社はアジの売り先がない＝見込みの対象の売り先が空
         b = results.reconcile("buyer_b")["offers"]
         self.assertTrue(all(not o["customers"] for o in b))
+
+    def test_partial_failure_then_resend(self):
+        real = db.connect
+
+        def flaky(code):
+            if code == "buyer_b":
+                raise sqlite3.OperationalError("disk I/O error (test)")
+            return real(code)
+        with mock.patch.object(db, "connect", side_effect=flaky):
+            with self.assertRaises(sqlite3.OperationalError):
+                results.publish(self.rows)
+        self.assertFalse(results.verify())               # 片側だけ届いた状態を検査が見つける
+        self.assertEqual(self.count("buyer_b", "auction_result_in"), 0)
+        self.assertEqual(results.resend(), ["buyer_b", "buyer_c"])   # 失敗した社と、その後ろの社
+        self.assertTrue(results.verify())
+        self.assertEqual(results.resend(), [])            # 二度目は何も足さない
+        self.assertEqual(self.count("amiya", "auction_result_in"), len(self.rows))
+
+    def test_resend_does_not_hide_tampering(self):
+        results.publish(self.rows)
+        c = db.connect("amiya")
+        try:
+            with c:
+                c.execute("UPDATE auction_result_in SET quantity = quantity + 1 WHERE id = 1")
+        finally:
+            c.close()
+        self.assertEqual(results.resend(), [])
+        self.assertFalse(results.verify())
 
 
 if __name__ == "__main__":
