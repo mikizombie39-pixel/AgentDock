@@ -263,3 +263,103 @@ def reconcile_owner(code: str) -> list[dict]:
     finally:
         c.close()
     return [dict(trade_id=t["trade_id"], result=t["result"]) for t in trades]
+
+
+# 入札 ------------------------------------------------------------------------
+
+def open_tender(lot_no: str, opens_at: str, closes_at: str) -> int:
+    m = _con()
+    try:
+        lot = m.execute("SELECT id, method FROM lot WHERE lot_no = ?", (lot_no,)).fetchone()
+        if lot is None:
+            raise KeyError(lot_no)
+        if lot["method"] != "tender":
+            raise MarketError(f"lot {lot_no} is not a tender")
+        with m:
+            return m.execute("INSERT INTO tender (lot_id, status, opens_at, closes_at) VALUES (?, 'open', ?, ?)",
+                             (lot["id"], opens_at, closes_at)).lastrowid
+    finally:
+        m.close()
+
+
+def _tender(m, lot_no: str):
+    t = m.execute("SELECT t.id, t.status, t.opens_at, t.closes_at, l.quantity, l.seller FROM tender t JOIN lot l ON l.id = t.lot_id WHERE l.lot_no = ?",
+                  (lot_no,)).fetchone()
+    if t is None:
+        raise KeyError(lot_no)
+    return t
+
+
+def submit_bid(lot_no: str, bidder: str, unit_price_yen: int, quantity: int, now: str | None = None) -> int:
+    """入札は1社1回。締めの後と、受付の前は受けない。"""
+    now = now or db.now_iso()
+    m = _con()
+    try:
+        t = _tender(m, lot_no)
+        if t["status"] != "open" or not (t["opens_at"] <= now < t["closes_at"]):
+            raise MarketError(f"tender {lot_no} is not accepting bids at {now}")
+        if bidder == t["seller"]:
+            raise MarketError("seller cannot bid")
+        if m.execute("SELECT 1 FROM tender_bid WHERE tender_id = ? AND bidder = ?", (t["id"], bidder)).fetchone():
+            raise MarketError(f"{bidder} already bid on {lot_no}")
+        with m:
+            return m.execute("INSERT INTO tender_bid (tender_id, bidder, unit_price_yen, quantity, submitted_at) VALUES (?, ?, ?, ?, ?)",
+                             (t["id"], bidder, unit_price_yen, quantity, now)).lastrowid
+    finally:
+        m.close()
+
+
+def bids_visible_to(lot_no: str, viewer: str) -> list[dict]:
+    """締めの前は自社の入札だけを返す。締めの後は全部の値と数量（名前は自社の分だけ）。"""
+    m = _con()
+    try:
+        t = _tender(m, lot_no)
+        rows = [dict(r) for r in m.execute("SELECT bidder, unit_price_yen, quantity FROM tender_bid WHERE tender_id = ? ORDER BY unit_price_yen DESC, id",
+                                           (t["id"],))]
+    finally:
+        m.close()
+    if t["status"] == "open":
+        return [r for r in rows if r["bidder"] == viewer]
+    return [dict(unit_price_yen=r["unit_price_yen"], quantity=r["quantity"], own=r["bidder"] == viewer) for r in rows]
+
+
+def close_tender(lot_no: str, now: str | None = None) -> dict:
+    """締めて割り当てる（高い値の順・同じ値は先に入れた方から）。{bidder: (値, 数量)} を返す。"""
+    from agentdock.results import allocate
+    now = now or db.now_iso()
+    m = _con()
+    try:
+        t = _tender(m, lot_no)
+        if t["status"] != "open":
+            raise MarketError(f"tender {lot_no} is {t['status']}")
+        if now < t["closes_at"]:
+            raise MarketError(f"tender {lot_no} closes at {t['closes_at']}")
+        bids = [(r["bidder"], r["unit_price_yen"], r["quantity"]) for r in m.execute(
+            "SELECT bidder, unit_price_yen, quantity FROM tender_bid WHERE tender_id = ? ORDER BY id", (t["id"],))]
+        won = allocate(bids, t["quantity"])
+        price = {b: p for b, p, _ in bids}
+        with m:
+            m.executemany("INSERT INTO tender_award (tender_id, bidder, unit_price_yen, quantity) VALUES (?, ?, ?, ?)",
+                          [(t["id"], b, price[b], q) for b, q in won.items()])
+            m.execute("UPDATE tender SET status = 'closed' WHERE id = ?", (t["id"],))
+        return {b: (price[b], q) for b, q in won.items()}
+    finally:
+        m.close()
+
+
+def awards_as_results(lot_no: str) -> list[dict]:
+    """締めた入札の割り当てを、せりの結果を送る部品（results.publish）の形にする。"""
+    m = _con()
+    try:
+        lot = m.execute("SELECT lot_no, item_code, trade_date FROM lot WHERE lot_no = ?", (lot_no,)).fetchone()
+        t = _tender(m, lot_no)
+        if t["status"] == "open":
+            raise MarketError(f"tender {lot_no} is still open")
+        rows = [dict(lot_no=lot["lot_no"], item=lot["item_code"], method="tender", buyer=r["bidder"],
+                     unit_price_yen=r["unit_price_yen"], quantity=r["quantity"], trade_date=lot["trade_date"])
+                for r in m.execute("SELECT bidder, unit_price_yen, quantity FROM tender_award WHERE tender_id = ? ORDER BY unit_price_yen DESC, id", (t["id"],))]
+    finally:
+        m.close()
+    for n, r in enumerate(rows, 1):
+        r["result_id"] = f"{r['trade_date']}-{r['lot_no']}-{n}"
+    return rows

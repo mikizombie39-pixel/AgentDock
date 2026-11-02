@@ -3,7 +3,7 @@ import os
 import tempfile
 import unittest
 
-from agentdock import db, market
+from agentdock import db, market, results
 from agentdock.seed import build
 from agentdock.seed import scenario as sc
 
@@ -115,6 +115,63 @@ class MarketTest(unittest.TestCase):
         fp = market.trade("T6")["terms_fingerprint"]
         with self.assertRaises(market.MarketError):
             market.approve("T6", "buyer_b", fp)                         # 当事者でない
+
+
+OPEN, CLOSE = f"{D}T06:00:00+09:00", f"{D}T06:30:00+09:00"
+AT = f"{D}T06:10:00+09:00"
+
+
+class TenderTest(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        os.environ["AGENTDOCK_DATA"] = self.tmp.name
+        self.assertEqual(build.main([]), 0)
+        market.open_lot("T-shiroebi-1", "shiroebi", 20, "iwase", "coop", "tender", D)
+        market.open_tender("T-shiroebi-1", OPEN, CLOSE)
+
+    def tearDown(self):
+        os.environ.pop("AGENTDOCK_DATA", None)
+        self.tmp.cleanup()
+
+    def bid_all(self):
+        for who, p, q in sc.TODAY_TENDER["bids"]:
+            market.submit_bid("T-shiroebi-1", who, p, q, now=AT)
+
+    def test_others_hidden_before_close(self):
+        self.bid_all()
+        seen = market.bids_visible_to("T-shiroebi-1", "amiya")
+        self.assertEqual(seen, [dict(bidder="amiya", unit_price_yen=4300, quantity=5)])
+        market.close_tender("T-shiroebi-1", now=CLOSE)
+        after = market.bids_visible_to("T-shiroebi-1", "amiya")
+        self.assertEqual(len(after), 3)
+        self.assertNotIn("bidder", after[0])                            # 締めの後も他社の名前は出さない
+        self.assertEqual([a["own"] for a in after], [False, False, True])
+
+    def test_close_allocates_and_feeds_results(self):
+        self.bid_all()
+        with self.assertRaises(market.MarketError):
+            market.close_tender("T-shiroebi-1", now=AT)                # 締めの時刻の前
+        won = market.close_tender("T-shiroebi-1", now=CLOSE)
+        self.assertEqual({b: q for b, (_, q) in won.items()}, {"buyer_b": 6, "buyer_c": 11, "amiya": 3})
+        rows = market.awards_as_results("T-shiroebi-1")
+        results.publish(rows)
+        self.assertTrue(results.verify())
+        ebi = next(x for x in results.reconcile("amiya")["lines"] if x["item"] == "shiroebi")
+        self.assertEqual((ebi["won"], ebi["short"]), (3, 2))
+
+    def test_bid_rules(self):
+        market.submit_bid("T-shiroebi-1", "amiya", 4300, 5, now=AT)
+        with self.assertRaises(market.MarketError):
+            market.submit_bid("T-shiroebi-1", "amiya", 4400, 5, now=AT)          # 1社1回
+        with self.assertRaises(market.MarketError):
+            market.submit_bid("T-shiroebi-1", "buyer_b", 4400, 6, now=CLOSE)     # 締めの時刻ちょうどは受けない
+        with self.assertRaises(market.MarketError):
+            market.submit_bid("T-shiroebi-1", "buyer_b", 4400, 6, now=f"{D}T05:59:59+09:00")
+        with self.assertRaises(market.MarketError):
+            market.submit_bid("T-shiroebi-1", "iwase", 4400, 6, now=AT)          # 売り手は入札しない
+        market.close_tender("T-shiroebi-1", now=CLOSE)
+        with self.assertRaises(market.MarketError):
+            market.close_tender("T-shiroebi-1", now=CLOSE)                       # 二度締めない
 
 
 if __name__ == "__main__":
