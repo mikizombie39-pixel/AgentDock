@@ -145,3 +145,13 @@ def card(con, group_id: int) -> dict:
         items.append(dict(consultation_id=c["id"], task_id=c["task_id"], version=c["task_version"],
                           question=c["question"], status=c["status"], options=opts))
     return dict(group_id=g["id"], title=g["title"], status=g["status"], items=items)
+
+
+def revalidated(con, task_id: int, briefing_fingerprint: str) -> None:
+    """見直しを終えた（新しい材料を読み直した）。見直し中の仕事だけを動かせる状態に戻す。読み直した材料の指紋を残す。"""
+    t = task(con, task_id)
+    if t["state"] != "revalidating":
+        raise ConsultError(f"task {task_id} is {t['state']}, not revalidating")
+    with con:
+        con.execute("UPDATE task SET state = 'running', updated_at = ? WHERE id = ?", (db.now_iso(), task_id))
+        _audit(con, "companion", "task_revalidated", task_id, f"v{t['version']} briefing {briefing_fingerprint[:12]}")

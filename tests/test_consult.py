@@ -109,6 +109,14 @@ class ConsultTest(unittest.TestCase):
         consult.answer(self.con, c2["consultation_id"], "prefer_restaurant", "k-new")
         self.assertTrue(consult.can_proceed(self.con, buri))
 
+    def test_revalidated_only_from_revalidating(self):
+        buri = consult.open_task(self.con, "negotiation", "buri_xl")
+        with self.assertRaises(consult.ConsultError):
+            consult.revalidated(self.con, buri, "fp")
+        consult.revise(self.con, buri, "新しい注文")
+        consult.revalidated(self.con, buri, "fp")
+        self.assertTrue(consult.can_proceed(self.con, buri))
+
     def test_invalid_option_cannot_be_chosen(self):
         _, aji, _, cid = self.two()
         with self.assertRaises(consult.ConsultError):
