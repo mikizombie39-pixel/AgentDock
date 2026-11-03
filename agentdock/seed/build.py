@@ -71,8 +71,26 @@ def _fill_owner(con, code: str, public_rows, scene_c: bool) -> None:
         con.executemany(
             "INSERT INTO landing (item_id, landing_date, kind, quantity, size_note, caught_at, area, water_temp_c) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
             [(item[i], tomorrow, k, q, s, c, a, w) for i, k, q, s, c, a, w in sc.LANDINGS.get(code, [])])
+        _fill_autonomy(con, code, item, cust, now)
         con.execute("INSERT INTO audit_event (at, actor, event, detail) VALUES (?, 'system', 'seed', ?)",
                     (now, "scene_c" if scene_c else "main"))
+
+
+def _fill_autonomy(con, code: str, item: dict, cust: dict, now: str) -> None:
+    """本編（自律の場面）の種：数量ごとの最低の値・在庫・案内してよい売り先・売れ方・Vault。"""
+    con.executemany("INSERT INTO quote_rule (item_id, min_qty, floor_yen, valid_from) VALUES (?, ?, ?, ?)",
+                    [(item[i], q, f, sc.HISTORY_FROM) for i, q, f in sc.QUOTE_RULES.get(code, [])])
+    con.executemany("INSERT INTO stock (item_id, quantity, status, lot_no, stock_date, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
+                    [(item[i], q, s, n, sc.DEMO_DATE, now) for i, q, s, n in sc.STOCK.get(code, [])])
+    con.executemany("UPDATE customer SET allow_contact = 1 WHERE name = ?", [(c,) for c in sc.CONTACT_OK.get(code, [])])
+    con.executemany(
+        "INSERT INTO sales_history (customer_id, item_id, sale_date, ordered_qty, sold_qty, unit_price_yen) VALUES (?, ?, ?, ?, ?, ?)",
+        [(cust[c], item[i], d, o, s_, p) for c, i, d, o, s_, p in sc.AJI_SALES_HISTORY.get(code, [])])
+    con.executemany(
+        "INSERT INTO vault_note (kind, title, body, item_id, customer_id, author, source, written_on, applies_when) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        [(k, t, b, item[i] if i else None, cust[c] if c else None, a, s, w, aw)
+         for k, t, b, i, c, a, s, w, aw in sc.VAULT_NOTES.get(code, [])])
 
 
 def archive_vault(folder):

@@ -43,7 +43,7 @@ class SeedTest(unittest.TestCase):
         for code in db.OWNER_CODES:
             c = self.con(code)
             self.assertEqual(c.execute("SELECT count(*) FROM owner").fetchone()[0], 1)
-            self.assertEqual(c.execute("SELECT count(*) FROM item").fetchone()[0], 3)
+            self.assertEqual(c.execute("SELECT count(*) FROM item").fetchone()[0], 4)
 
     def test_ceilings(self):
         c = self.con("amiya")
@@ -104,6 +104,31 @@ class SeedTest(unittest.TestCase):
         a = prices.public_results(sc.HISTORY_FROM, sc.HISTORY_TO)
         b = prices.public_results(sc.HISTORY_FROM, sc.HISTORY_TO)
         self.assertEqual(a, b)
+
+    def test_autonomy_seed_for_aji(self):
+        # 本編：網谷水産の注文 10kg・上限 1,600円/kg。10kg だけなら最低の値 1,700円で採算に合わず、15kg なら 1,500円
+        a, s = self.con("amiya"), self.con("iwase")
+        self.assertEqual(a.execute("SELECT unit FROM item WHERE code = 'aji'").fetchone()[0], "kg")
+        order = a.execute("SELECT o.quantity, c.name FROM order_book o JOIN item i ON i.id = o.item_id "
+                          "JOIN customer c ON c.id = o.customer_id WHERE i.code = 'aji'").fetchall()
+        self.assertEqual([tuple(r) for r in order], [(10, "スーパー")])
+        self.assertEqual(criteria.ceiling_yen(a, "aji", "スーパー"), 1600)
+        self.assertEqual(criteria.ceiling_yen(a, "aji", "料亭"), 1900)
+        rules = s.execute("SELECT q.min_qty, q.floor_yen FROM quote_rule q JOIN item i ON i.id = q.item_id "
+                          "WHERE i.code = 'aji' ORDER BY q.min_qty").fetchall()
+        self.assertEqual([tuple(r) for r in rules], [(1, 1700), (15, 1500)])
+        self.assertEqual(a.execute("SELECT count(*) FROM quote_rule").fetchone()[0], 0)   # 最低の値は漁協の DB だけ
+        stock = s.execute("SELECT s.quantity, s.status FROM stock s JOIN item i ON i.id = s.item_id WHERE i.code = 'aji'").fetchall()
+        self.assertEqual([tuple(r) for r in stock], [(15, "for_sale")])
+        self.assertEqual(15 * 1500, 22500)
+        self.assertEqual(a.execute("SELECT name FROM customer WHERE allow_contact = 1").fetchall()[0][0], "料亭")
+        kinds = sorted(r[0] for r in a.execute("SELECT kind FROM vault_note"))
+        self.assertEqual(kinds, ["case", "case", "customer", "policy"])
+        self.assertEqual(a.execute("SELECT count(*) FROM vault_note WHERE applies_when IS NULL OR source = ''").fetchone()[0], 0)
+        self.assertEqual(s.execute("SELECT count(*) FROM vault_note").fetchone()[0], 0)
+        ryotei = a.execute("SELECT count(*) FROM sales_history h JOIN item i ON i.id = h.item_id "
+                           "JOIN customer c ON c.id = h.customer_id WHERE i.code = 'aji' AND c.name = '料亭'").fetchone()[0]
+        self.assertEqual(ryotei, 5)
 
     def test_constraints(self):
         c = self.con("amiya")
