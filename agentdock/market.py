@@ -387,6 +387,16 @@ def post_request(owner_con, owner: str, side: str, item_code: str, quantity: int
         m.close()
 
 
+def open_requests(item_code: str, now: str) -> list[dict]:
+    """受付中で期限の内の掲示の全て（自社の掲示の条件を確かめる時に使う）。"""
+    m = _con()
+    try:
+        return [dict(r) for r in m.execute("SELECT * FROM deal_request WHERE status = 'open' AND valid_until > ? AND item_code = ? ORDER BY id",
+                                           (now, item_code))]
+    finally:
+        m.close()
+
+
 def requests_visible_to(viewer: str, item_code: str | None = None, now: str | None = None) -> list[dict]:
     """viewer が読める申し込み：ほかの組織が出した、受付中で期限の内のもの。自社の申し込みは含めない。"""
     now = now or db.now_iso()

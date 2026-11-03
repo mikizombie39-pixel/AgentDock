@@ -5,6 +5,7 @@
 - 1つの出来事を引き受けられるのは1回の起動だけ（claim は待ちの行にだけ効く）
 - 済みにできるのは引き受けた起動だけ。起動が途中で止まったら release で待ちに戻す
 """
+import datetime
 import json
 
 from agentdock import db
@@ -17,6 +18,11 @@ class EventError(Exception):
     pass
 
 
+def _now() -> str:
+    """出来事の時刻はマイクロ秒まで持つ（組織をまたいで起きた順に並べるため）。"""
+    return datetime.datetime.now().astimezone().isoformat(timespec="microseconds")
+
+
 def _insert(con, kind: str, payload: dict, at: str) -> int:
     if kind not in KINDS:
         raise EventError(f"unknown event kind: {kind}")
@@ -27,13 +33,13 @@ def _insert(con, kind: str, payload: dict, at: str) -> int:
 def emit(con, kind: str, payload: dict, at: str | None = None) -> int:
     """出来事を1件書く。番号を返す。"""
     with con:
-        return _insert(con, kind, payload, at or db.now_iso())
+        return _insert(con, kind, payload, at or _now())
 
 
 def order_received(con, customer: str, item_code: str, quantity: int, sell_price_yen: int,
                    order_date: str, at: str | None = None) -> tuple[int, int]:
     """注文を受けた：注文の行と出来事 order_new を同じトランザクションで書く。(注文の番号, 出来事の番号) を返す。"""
-    at = at or db.now_iso()
+    at = at or _now()
     with con:
         cust = con.execute("SELECT id FROM customer WHERE name = ?", (customer,)).fetchone()
         item = con.execute("SELECT id FROM item WHERE code = ?", (item_code,)).fetchone()

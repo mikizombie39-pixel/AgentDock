@@ -1,7 +1,7 @@
 """送る前の開示の検査（仲間が相手に送る文を、送る前にコードで確かめる）。
 
 止めるもの：
-- 自社の内情の金額：売値・原価・欲しい利益・上限（買い手）・下限（売り手）・承認済みの計画の上限の値
+- 自社の内情の金額：売値・原価・欲しい利益・上限（買い手）・下限（売り手）・数量ごとの最低の値・承認済みの計画の上限の値
   （申し出の値そのものと、その合計は送ってよい）
 - 内情を示す語：上限・下限・原価・利益・採算・予算・承認済み・帳面
 - 自社の売り先の名前
@@ -48,6 +48,8 @@ def secrets(con, item_code: str, on_date: str) -> dict[int, str]:
             out[r[1]] = "target_profit"
     if con.execute("SELECT 1 FROM seller_rule WHERE item_id = ?", (iid,)).fetchone():
         out[criteria.floor_yen(con, item_code, on_date)[0]] = "floor"
+    for r in con.execute("SELECT floor_yen FROM quote_rule WHERE item_id = ?", (iid,)):
+        out[r[0]] = "quote_floor"
     for r in con.execute("SELECT max_unit_price_yen, min_unit_price_yen FROM plan WHERE item_id = ? AND status = 'approved'", (iid,)):
         if r[0]:
             out[r[0]] = "plan_max"
