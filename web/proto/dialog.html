@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<title>Agent Dock — AI と一緒に仕事を進める（対話の試作）</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="stylesheet" href="dialog.css">
+</head>
+<body>
+<div id="stage">
+  <header class="top">
+    <div class="brand">Agent Dock<small>網谷水産の AI パートナー</small></div>
+    <div class="clock"><span id="clock">05:50</span><small>岩瀬の朝（時間は縮めています）</small></div>
+    <div class="speed" role="group" aria-label="進み方">
+      <button data-speed="0" class="ghost" title="止める">Ⅱ</button>
+      <button data-speed="1" class="ghost on">×1</button>
+      <button data-speed="4" class="ghost">×4</button>
+    </div>
+    <button id="srcBtn" class="ghost">仕組みを見る</button>
+    <div class="flags"><span class="flag">試作</span><span class="flag mute">数字は模擬</span><span class="flag mute">AI と相手の返事は台本</span></div>
+  </header>
+
+  <section id="goal" aria-label="網谷さんの目的">
+    <div class="who"><img data-ic="human"><span>網谷さん</span></div>
+    <div class="aim"><small>目的</small><b>今朝の注文をそろえる</b></div>
+    <div id="orders" class="orders"></div>
+    <div id="tally" class="tally"></div>
+  </section>
+
+  <section id="left">
+    <h2>AI に任せている仕事</h2>
+    <div id="lanes"><div class="empty">まだ任せていません</div></div>
+    <h2>AI が見ているもの</h2>
+    <div id="knows" class="knows"></div>
+    <h2>任せた範囲</h2>
+    <div id="scope" class="scope"></div>
+  </section>
+
+  <main id="center">
+    <div id="focus" aria-live="polite"></div>
+    <div id="talk"></div>
+    <div id="table"></div>
+    <div id="replies"></div>
+    <button id="historyBtn" class="ghost small">これまでのやり取り<span id="histN" class="hn" hidden></span></button>
+  </main>
+
+  <aside id="right">
+    <h2>正式に登録したもの</h2>
+    <div id="settled"><div class="empty">まだありません</div></div>
+  </aside>
+
+  <div id="summary" hidden></div>
+  <div id="detail" hidden></div>
+  <div id="history" hidden></div>
+  <div id="legend" hidden></div>
+  <div id="tokens"></div>
+  <canvas id="sand" width="1600" height="900"></canvas>
+  <div id="marks"></div>
+</div>
+<script src="icons.js"></script>
+<script src="dialog.js"></script>
+</body>
+</html>
