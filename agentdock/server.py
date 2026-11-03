@@ -7,6 +7,8 @@ GET  /api/events?owner=amiya&since=0
 GET  /api/view/bid?owner=amiya&item=shiroebi&kind=tender&date=2026-11-02
 GET  /api/tender?lot=T-shiroebi-1&viewer=amiya
 POST /api/answer   {"owner", "consultation_id", "option", "idempotency_key", "reason"}  ← 社長のスマホの答え
+GET  /api/board?owner=amiya                          ← 磁石ボード（最新の版・金額はコードの計算）
+POST /api/decide   {"owner", "case_id", "option_id", "action", "fingerprint", "idempotency_key"}  ← 担当者の承認・見送り・保留
 GET  /             web/index.html（画面のファイルは web/ の直下の .html・.css・.js だけを返す）
 
 安全装置：127.0.0.1 だけで待つ。TALOS の番号（8772〜8777）では起動しない。
@@ -17,7 +19,7 @@ import sys
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
-from agentdock import consult, db, feed
+from agentdock import consult, db, deal, feed, workspace
 from agentdock.db import REPO
 from agentdock.seed import scenario as sc
 
@@ -68,12 +70,24 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(200, feed.bid_view(q["owner"], q["item"], q.get("kind", "tender"), q.get("date", sc.DEMO_DATE)))
             if u.path == "/api/tender":
                 return self._send(200, feed.tender_view(q["lot"], q["viewer"]))
+            if u.path == "/api/board":
+                owner = q["owner"]
+                if owner not in db.OWNER_CODES:
+                    raise ValueError(owner)
+                deal.expire(f"{sc.DEMO_DATE}T06:30:00+09:00")
+                c = db.connect(owner)
+                try:
+                    return self._send(200, workspace.view(c))
+                finally:
+                    c.close()
             return self._send(404, dict(error="not found"))
         except (KeyError, ValueError) as e:
             return self._send(400, dict(error=f"bad request: {e}"))
 
     def do_POST(self):
         u = urlparse(self.path)
+        if u.path == "/api/decide":
+            return self._decide()
         if u.path != "/api/answer":
             return self._send(404, dict(error="not found"))
         n = int(self.headers.get("Content-Length") or 0)
@@ -93,6 +107,23 @@ class Handler(BaseHTTPRequestHandler):
         except consult.StaleError as e:
             return self._send(409, dict(error="stale", detail=str(e)))
         except consult.ConsultError as e:
+            return self._send(409, dict(error="rejected", detail=str(e)))
+        except (KeyError, ValueError, json.JSONDecodeError) as e:
+            return self._send(400, dict(error=f"bad request: {e}"))
+
+
+    def _decide(self):
+        n = int(self.headers.get("Content-Length") or 0)
+        if n <= 0 or n > MAX_BODY:
+            return self._send(400, dict(error="bad body size"))
+        try:
+            b = json.loads(self.rfile.read(n).decode("utf-8"))
+            if b["owner"] not in db.OWNER_CODES or b["action"] not in ("approve", "reject", "hold"):
+                raise ValueError("owner or action")
+            r = deal.decide(b["owner"], int(b["case_id"]), int(b["option_id"]) if b.get("option_id") else None, b["action"],
+                            b.get("fingerprint"), str(b["idempotency_key"]))
+            return self._send(409 if r["result"] == "stale" else 200, r)
+        except deal.DealError as e:
             return self._send(409, dict(error="rejected", detail=str(e)))
         except (KeyError, ValueError, json.JSONDecodeError) as e:
             return self._send(400, dict(error=f"bad request: {e}"))

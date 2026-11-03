@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Agent Dock — 網谷水産の Adaptive Workspace</title>
+<link rel="stylesheet" href="board.css">
+</head>
+<body>
+<div id="stage">
+  <header class="top">
+    <div class="title">網谷水産<small>Adaptive Workspace（磁石ボード）・若い担当者</small></div>
+    <div class="summary" id="summary">Claude AI パートナーが調べています…</div>
+    <div class="scope">登場する組織と、取引の条件・値は架空です<br><b id="caseinfo">案件 —</b></div>
+  </header>
+
+  <section class="col cards">
+    <h2>判断の材料<small>Claude が選んで並べた情報</small></h2>
+    <div id="cards"></div>
+  </section>
+
+  <section class="col options">
+    <h2>取引の案<small>金額はコードが業務 DB から計算した見込みの値です</small></h2>
+    <div id="options"></div>
+  </section>
+
+  <div class="result" id="result"></div>
+  <footer class="foot">
+    <button id="hold" class="ghost">保留する</button>
+    <button id="reject" class="ghost">見送る</button>
+    <span class="note">承認すると、権限・値・在庫・期限を確かめ直してから、各組織の帳簿に登録します</span>
+  </footer>
+</div>
+<script src="board.js"></script>
+</body>
+</html>
