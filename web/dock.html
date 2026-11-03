@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Agent Dock — 網谷水産の作業の画面</title>
+<link rel="stylesheet" href="dock.css">
+</head>
+<body>
+<div id="stage">
+  <header class="top">
+    <div class="title">網谷水産<small>作業の画面・若い担当者</small></div>
+    <div id="itemchip"></div>
+    <div id="ai"><span class="ic" data-ic="bot"></span><span id="aitext"></span></div>
+    <div id="replayctl" hidden>
+      <button id="rpplay"><span class="ic" data-ic="play"></span><span>再生</span></button>
+      <button id="rprestart"><span class="ic" data-ic="rotate-ccw"></span><span>最初から</span></button>
+      <span id="rpclock"></span>
+    </div>
+    <nav class="modes"><a id="mlive" href="?mode=live">ライブ</a><a id="mreplay" href="?mode=replay">記録の再生</a></nav>
+  </header>
+
+  <aside id="orgs" class="sec" hidden><h2>他の組織</h2><div id="orglist"></div></aside>
+  <section id="waiting" class="sec" hidden><h2>あなたを待つこと</h2><div class="cards" id="sec-waiting"></div></section>
+  <section id="read" class="sec" hidden><h2>読み取ったこと</h2><div class="cards" id="sec-read"></div></section>
+  <section id="done" class="sec" hidden><h2>AIが済ませたこと</h2><div class="cards" id="sec-done"></div></section>
+  <section id="network" class="sec" hidden><h2>他の組織のAIとのやり取り</h2><div id="msgs"></div></section>
+  <section id="left" class="sec" hidden><h2>残った仕事</h2><div id="leftlist"></div></section>
+
+  <canvas id="sea" width="1600" height="900"></canvas>
+  <div id="drawer" hidden><div class="dh"><b>記録</b><button id="dclose">閉じる</button></div><div id="dbody"></div></div>
+</div>
+<script src="dock-icons.js"></script>
+<script src="dock.js"></script>
+</body>
+</html>

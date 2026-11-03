@@ -1,0 +1,128 @@
+/* Agent Dock: the work screen (dock.html). Palette from board.css (paper notebook). No stripes. */
+:root {
+  --bg: #F3EEE3; --sf: #FBF8F1; --ink: #27221D; --mute: #6B6156; --line: #D8CFBF;
+  --own: #8A5A12; --ownb: #EBD9B4; --data: #1D6670; --datab: #CFE5E5; --sea: #E7EFEC;
+  --out: #C62828; --warn: #A86A00; --warnb: #F4E3C2; --ok: #2E6B4F; --okb: #DCEBE3;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; height: 100%; background: var(--bg); overflow: hidden; }
+body { font-family: "BIZ UDPGothic", "Yu Gothic UI", sans-serif; color: var(--ink); }
+#stage { position: absolute; left: 0; top: 0; width: 1600px; height: 900px; transform-origin: 0 0; }
+button { font: inherit; cursor: pointer; }
+button:disabled { cursor: default; opacity: .45; }
+.ic { display: inline-flex; width: 18px; height: 18px; vertical-align: -3px; }
+.ic svg { width: 100%; height: 100%; }
+
+/* header */
+.top { position: absolute; left: 20px; right: 20px; top: 12px; height: 52px; display: flex; gap: 18px; align-items: center; }
+.title { font-size: 21px; font-weight: bold; white-space: nowrap; }
+.title small { display: block; font-size: 12px; font-weight: normal; color: var(--mute); }
+#itemchip { font-size: 15px; color: var(--ink); white-space: nowrap; }
+#itemchip .ic { color: var(--data); margin-right: 4px; }
+#ai { display: flex; align-items: center; gap: 8px; font-size: 14px; color: var(--mute); margin-left: 8px; min-width: 330px; }
+#ai .ic { color: var(--data); width: 22px; height: 22px; }
+#ai.busy { color: var(--data); }
+.modes { margin-left: auto; display: flex; gap: 6px; }
+.modes a { font-size: 13px; padding: 5px 12px; border: 1px solid var(--line); border-radius: 14px; color: var(--mute); text-decoration: none; background: var(--sf); }
+.modes a.on { background: var(--data); border-color: var(--data); color: #fff; }
+#replayctl { display: flex; gap: 6px; align-items: center; font-size: 13px; }
+#replayctl[hidden] { display: none; }
+#replayctl button { border: 1px solid var(--line); background: var(--sf); border-radius: 8px; padding: 4px 10px; display: inline-flex; gap: 4px; align-items: center; }
+#rpclock { font-variant-numeric: tabular-nums; color: var(--mute); min-width: 128px; }
+
+/* regions */
+.sec { position: absolute; }
+.sec[hidden] { display: none; }
+.sec > h2 { margin: 0 0 8px; font-size: 13px; font-weight: normal; color: var(--mute); letter-spacing: .02em; }
+#orgs { left: 20px; top: 84px; width: 168px; height: 700px; }
+#waiting { left: 206px; top: 84px; width: 906px; height: 330px; }
+#read { left: 206px; top: 428px; width: 445px; height: 364px; }
+#done { left: 667px; top: 428px; width: 445px; height: 364px; }
+#network { left: 1130px; top: 84px; width: 450px; height: 708px; }
+#left { left: 206px; top: 806px; width: 1374px; height: 84px; }
+.cards { display: flex; flex-direction: column; gap: 8px; overflow-y: auto; height: calc(100% - 24px); padding-right: 4px; }
+#waiting .cards { flex-direction: row; overflow-x: auto; overflow-y: hidden; }
+
+/* other organisations */
+.org { display: flex; align-items: center; gap: 8px; padding: 10px 10px; margin-bottom: 10px; border: 1px solid var(--line); border-radius: 10px; background: var(--sf); font-size: 14px; }
+.org .ic { color: var(--data); width: 22px; height: 22px; }
+.org small { display: block; color: var(--mute); font-size: 11px; }
+
+/* cards */
+.card { position: relative; background: var(--sf); border: 1px solid var(--line); border-radius: 10px; padding: 7px 12px 7px; font-size: 13px; line-height: 1.45;
+  transition: opacity .18s ease-out, border-color .25s; }
+.card.forming { opacity: 0; }
+.card.past { opacity: .55; }
+.card .hd { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--mute); }
+.card .hd .ic { width: 16px; height: 16px; color: var(--data); }
+.card .hd .at { margin-left: auto; font-variant-numeric: tabular-nums; }
+.card .hd .src { margin-left: 4px; }
+.foot:empty { display: none; }
+.card .main { font-size: 15px; font-weight: bold; margin-top: 2px; }
+.card .sub { color: var(--mute); font-size: 12px; }
+.badge { display: inline-block; font-size: 11px; padding: 1px 8px; border-radius: 9px; border: 1px solid var(--data); color: var(--data); margin-left: 6px; font-weight: normal; vertical-align: 1px; }
+.badge.warn { border-color: var(--warn); color: var(--warn); }
+.badge.off { border-color: var(--mute); color: var(--mute); }
+.badge.ok { border-color: var(--ok); color: var(--ok); }
+.badge.bad { border-color: var(--out); color: var(--out); }
+.kv { display: grid; grid-template-columns: 1fr auto; column-gap: 14px; row-gap: 1px; margin-top: 4px; }
+.kv .v { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.foot { display: flex; align-items: center; gap: 8px; margin-top: 6px; }
+.src { margin-left: auto; border: 0; background: transparent; color: var(--mute); font-size: 11px; display: inline-flex; gap: 3px; align-items: center; padding: 2px 4px; }
+.src .ic { width: 14px; height: 14px; }
+.card.ai .hd .ic { color: var(--data); }
+.card.human { border-color: var(--own); }
+.card.human .hd .ic { color: var(--own); }
+
+/* waiting (the person's work) */
+#waiting .card { width: 444px; flex: none; border-width: 2px; border-color: var(--own); max-height: 300px; overflow-y: auto; }
+#waiting .card .hd .ic { color: var(--own); }
+.opt { border-top: 1px solid #EEE7DA; padding: 6px 0 4px; }
+.opt .lb { font-weight: bold; }
+.opt .err { color: var(--out); font-size: 12px; }
+.act { border: 1px solid var(--own); color: var(--own); background: var(--sf); border-radius: 8px; padding: 5px 12px; font-size: 13px; white-space: nowrap; }
+.act.main { background: var(--own); color: #fff; }
+.res { font-size: 12px; color: var(--data); }
+.stop { font-size: 12px; color: var(--out); }
+.form { margin-top: 6px; border-top: 1px solid #EEE7DA; padding-top: 6px; }
+.form table { width: 100%; border-collapse: collapse; }
+.form td { padding: 2px 4px; }
+.form td.num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.form input { width: 56px; font: inherit; text-align: right; padding: 2px 6px; border: 1px solid var(--line); border-radius: 6px; }
+
+/* the conversation with other organisations' AIs (rows appear final; never animated) */
+#msgs { overflow-y: auto; height: calc(100% - 24px); }
+.msg { display: grid; grid-template-columns: 58px 1fr 44px 78px 70px; column-gap: 8px; padding: 6px 4px; border-bottom: 1px solid #EEE7DA; font-size: 12px; align-items: baseline; }
+.msg .t { color: var(--mute); font-variant-numeric: tabular-nums; }
+.msg .q, .msg .p { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.msg .d { color: var(--mute); text-align: right; }
+.msg .w { font-weight: bold; white-space: nowrap; }
+.msg .r { grid-column: 2 / 6; color: var(--mute); }
+.msg .r b { font-weight: bold; color: var(--ink); }
+.msg.in .w { color: var(--data); }
+.msg.out .w { color: var(--own); }
+
+/* leftover work */
+#leftlist { display: flex; gap: 10px; }
+.leftover { display: flex; align-items: center; gap: 10px; padding: 8px 14px; border: 1px solid var(--line); border-radius: 22px; background: var(--sf); font-size: 14px; }
+.leftover .shoal { display: inline-flex; gap: 1px; color: var(--data); }
+.leftover .shoal .ic { width: 15px; height: 15px; }
+.leftover.forming { opacity: 0; }
+
+/* the sea (canvas for the school of fish) */
+#sea { position: absolute; left: 0; top: 0; width: 1600px; height: 900px; pointer-events: none; z-index: 20; }
+
+/* evidence drawer (opens on demand) */
+#drawer { position: absolute; right: 20px; top: 84px; width: 620px; max-height: 760px; overflow: auto; z-index: 30; background: #fff; border: 1px solid var(--line);
+  border-radius: 12px; box-shadow: 0 10px 30px rgba(0,0,0,.18); padding: 12px 16px; }
+#drawer[hidden] { display: none; }
+#drawer .dh { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
+#drawer table { width: 100%; border-collapse: collapse; font-size: 12px; margin-bottom: 12px; }
+#drawer td { border-bottom: 1px solid #EEE7DA; padding: 3px 6px; vertical-align: top; word-break: break-all; line-height: 1.6; }
+#drawer td:first-child { color: var(--mute); width: 150px; }
+#drawer h3 { font-size: 13px; margin: 8px 0 4px; }
+#drawer button { border: 1px solid var(--line); background: var(--sf); border-radius: 8px; padding: 3px 10px; }
+
+@media (prefers-reduced-motion: reduce) {
+  .card, .leftover { transition: opacity .15s linear; }
+}

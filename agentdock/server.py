@@ -11,6 +11,8 @@ POST /api/answer   {"owner", "consultation_id", "option", "idempotency_key", "re
                    role は答えた人（staff・president）。答えが通ると出来事 human_choice を書き、Claude が交渉し直す
 GET  /api/thread?owner=amiya&item=aji&date=2026-11-02   ← 組織のやり取り（送り手・受け手・種類・数量・値・期限・仮押さえ・理由）
 GET  /api/board?owner=amiya                          ← 磁石ボード（最新の版・金額はコードの計算）
+GET  /api/work?owner=amiya&item=buri_xl              ← 作業の画面の一覧（読み取ったこと・AIが済ませたこと・あなたを待つこと・やり取り・残った仕事）
+GET  /api/source?owner=amiya&db=market&table=network_message&id=3   ← 一覧の根拠の行（自社の行と、自社が当事者の市場の行だけ）
 POST /api/decide   {"owner", "case_id", "option_id", "action", "fingerprint", "idempotency_key", "actor"}  ← 担当者（または社長）の承認・見送り・保留
 GET  /api/flow?owner=amiya                           ← 段階と経過（業務 DB の事実からコードが決める）
 POST /api/ask      {"owner", "case_id", "text", "idempotency_key"}  ← 担当者の質問（出来事として記録し、Claude を起こす）
@@ -29,7 +31,7 @@ import sys
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
-from agentdock import agents, consult, db, deal, events, feed, live, scene, stage, workspace
+from agentdock import agents, consult, db, deal, events, feed, live, scene, stage, work, workspace
 from agentdock.db import REPO
 from agentdock.seed import scenario as sc
 
@@ -96,6 +98,15 @@ class Handler(BaseHTTPRequestHandler):
                     raise ValueError(q["owner"])
                 return self._send(200, dict(owner=q["owner"], item=q["item"], unit=_unit(q["owner"], q["item"]),
                                             messages=thread_view(q["owner"], q["item"], q.get("date", sc.DEMO_DATE))))
+            if u.path == "/api/work":
+                return self._send(200, work.view(q["owner"], q["item"], q.get("date", sc.DEMO_DATE)))
+            if u.path == "/api/source":
+                try:
+                    return self._send(200, work.source(q["owner"], q["db"], q["table"], int(q["id"])))
+                except KeyError as e:
+                    if str(e).strip("'") in ("owner", "db", "table", "id"):
+                        raise
+                    return self._send(404, dict(error="not found"))
             if u.path == "/api/board":
                 owner = q["owner"]
                 if owner not in db.OWNER_CODES:
