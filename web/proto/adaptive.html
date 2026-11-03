@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<title>Agent Dock — Adaptive Workspace（体験の試作）</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="stylesheet" href="adaptive.css">
+</head>
+<body>
+<div id="stage">
+  <header class="top">
+    <div class="brand">Agent Dock<small>網谷水産の AI パートナー</small></div>
+    <div class="clock"><span id="clock">05:50</span><small>岩瀬の朝（時間は圧縮）</small></div>
+    <div class="speed" role="group" aria-label="進み方">
+      <button data-speed="0" class="ghost" title="止める">Ⅱ</button>
+      <button data-speed="1" class="ghost on">×1</button>
+      <button data-speed="4" class="ghost">×4</button>
+    </div>
+    <button id="dock" class="dock" hidden><span class="ic" data-icon="ask"></span><span id="dockText">判断待ち</span></button>
+    <div class="flags"><span class="flag">試作</span><span class="flag mute">データは模擬</span></div>
+  </header>
+
+  <section id="lanes" aria-label="任せている仕事">
+    <h2>任せている仕事</h2>
+    <div id="laneList"></div>
+  </section>
+
+  <main id="center" aria-live="polite"></main>
+
+  <aside id="rail" aria-label="決まったこと">
+    <h2>決まったこと</h2>
+    <div id="railList"></div>
+  </aside>
+
+  <footer class="bottom">
+    <div id="avatar" class="avatar"><span class="ic" data-icon="work"></span></div>
+    <div id="say" class="say"></div>
+    <button id="logBtn" class="ghost small">記録を見る</button>
+  </footer>
+
+  <div id="log" class="log" hidden>
+    <div class="logHead"><b>技術の記録</b>（呼んだ API・確かめた条件・監査の記録）<button id="logClose" class="ghost small">閉じる</button></div>
+    <div class="logBody"><div><h3>API</h3><ol id="apiList"></ol></div><div><h3>監査の記録</h3><ol id="auditList"></ol></div></div>
+  </div>
+
+  <canvas id="sand" width="1600" height="900"></canvas>
+  <svg id="links" width="1600" height="900"></svg>
+</div>
+<script src="engine.js"></script>
+<script src="adaptive.js"></script>
+</body>
+</html>
