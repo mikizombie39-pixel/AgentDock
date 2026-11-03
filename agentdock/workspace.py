@@ -8,11 +8,16 @@ Claude の文の中の金額は使わない。文に書かれた金額が計算�
 import hashlib
 import json
 
-from agentdock import criteria, db, disclosure, market, network
+from agentdock import authority, criteria, db, disclosure, market, network
 from agentdock.seed import scenario as sc
 
 CARD_TYPES = ("order", "quote", "agreement", "vault", "customer", "post", "market", "risk", "note")
 ALLOC_KINDS = ("order", "agreement", "customer_lead", "unallocated")
+# 画面の組み方：Claude が選べるのは、決められた焦点・操作の候補・カードの種類だけ（HTML は作らせない）
+FOCUS = ("recommend", "compare", "partner", "vault", "risk")
+ACTIONS = ("approve", "compare", "check_partner", "open_detail", "show_others", "ask", "hold", "reject")
+DECIDING = ("presented", "held")          # 担当者が判断できる案件の状態
+MAX_LAYOUT_CARDS = 4
 CERTAINTY = {"order": "注文あり", "conditional": "条件付きの合意", "needs_staff": "相手の担当者の承認待ち", "lead": "未打診", "none": "売り先なし"}
 
 
@@ -63,6 +68,7 @@ def compute(con, owner: str, item_code: str, option: dict, now: str) -> dict:
             if t["hold_ref"] is None:
                 errors.append(f"条件 {t['id']} に売り手の仮押さえがない")
     allocated = 0
+    ceilings = []
     for a in option.get("allocations", []):
         kind, qty = a["kind"], a["quantity"]
         if kind not in ALLOC_KINDS or qty <= 0:
@@ -82,6 +88,7 @@ def compute(con, owner: str, item_code: str, option: dict, now: str) -> dict:
             pc = _process_cost(con, item["id"], o["name"])
             lines.append(dict(kind="order", ref_id=o["id"], to=o["name"], quantity=qty, unit_price_yen=o["sell_price_yen"],
                               revenue_yen=qty * o["sell_price_yen"], certainty="order", process=pc))
+            ceilings.append(_buy_ceiling(con, item, o["name"]))
         elif kind == "agreement":
             try:
                 ag = network.agreement(a.get("ref_id"))
@@ -113,6 +120,12 @@ def compute(con, owner: str, item_code: str, option: dict, now: str) -> dict:
         else:
             lines.append(dict(kind="unallocated", ref_id=None, to="売り先なし", quantity=qty, unit_price_yen=0, revenue_yen=0,
                               certainty="none", process=dict(status="none", per_unit=0, step=None, note=None)))
+    # 仕入れ値の上限は網谷水産の決まり（強制）：注文に充てる仕入れの値が上限を超える案は実行できない（2026-11-03 SAL・デイブ）
+    if purchase:
+        for lim in ceilings:
+            if lim["ceiling_yen"] is not None and purchase["unit_price_yen"] > lim["ceiling_yen"]:
+                errors.append(f"仕入れ値 {purchase['unit_price_yen']:,}円／{item['unit']} は、網谷水産の決まりの仕入れ値の上限 "
+                              f"{lim['ceiling_yen']:,}円／{item['unit']}（{lim['customer']}の注文）を超えます。現在の条件では実行できません")
     if purchase and allocated != purchase["quantity"]:
         errors.append(f"配分の合計 {allocated} が仕入れの数量 {purchase['quantity']} と合わない")
     if not purchase and any(l["kind"] != "unallocated" for l in lines):
@@ -138,12 +151,36 @@ def compute(con, owner: str, item_code: str, option: dict, now: str) -> dict:
         profit_kind="見込み",   # 正式な確定の前はすべて見込み
         uncertain_quantity=uncertain, unsold_quantity=unsold,
         unsold_loss_yen=unsold * (per_unit_buy + 0) if unsold else 0,
+        limits=dict(buy_ceiling=ceilings, authority=_authority(con, purchase_yen)),
         errors=errors, executable=not errors)
     return numbers
 
 
+def _buy_ceiling(con, item, customer: str) -> dict:
+    """仕入れ値の上限（決まり）と、その内訳（売値 − 加工 − 確保する利益）。"""
+    try:
+        ceiling = criteria.ceiling_yen(con, item["code"], customer)
+    except LookupError:
+        return dict(customer=customer, ceiling_yen=None)
+    sp = con.execute("SELECT s.unit_price_yen FROM sales_price s JOIN customer c ON c.id = s.customer_id WHERE s.item_id = ? AND c.name = ? "
+                     "ORDER BY s.valid_from DESC LIMIT 1", (item["id"], customer)).fetchone()
+    cr = con.execute("SELECT process_cost_yen, target_profit_yen FROM cost_rule WHERE item_id = ? ORDER BY valid_from DESC LIMIT 1",
+                     (item["id"],)).fetchone()
+    return dict(customer=customer, ceiling_yen=ceiling, sell_price_yen=sp[0], process_cost_yen=cr[0], target_profit_yen=cr[1], enforced=True)
+
+
+def _authority(con, amount_yen: int) -> dict:
+    """担当者の承認の権限（1件の上限）。仕入れ値の上限とは別の決まり。確定の時は authority.check で合計を確かめ直す。"""
+    try:
+        limit = authority.limit_for(con, "staff")
+    except Exception:
+        return dict(limit_yen=None, amount_yen=amount_yen, within=None)
+    return dict(limit_yen=limit, amount_yen=amount_yen, within=limit is None or amount_yen <= limit)
+
+
 def fingerprint(plan: dict, numbers: dict) -> str:
-    keep = {k: v for k, v in numbers.items() if k not in ("errors", "executable")}
+    # 決まり（仕入れ値の上限・権限）は照合番号に入れない：その違反は errors と承認の時の権限の検査で止める
+    keep = {k: v for k, v in numbers.items() if k not in ("errors", "executable", "limits")}
     canon = json.dumps(dict(plan=plan, numbers=keep), ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(canon.encode("utf-8")).hexdigest()[:16]
 
@@ -266,6 +303,12 @@ def build(con, owner: str, item_code: str, on_date: str, payload: dict, run_id: 
         raise BoardError([f"文の中の金額 {', '.join(bad)} は、業務 DB の値とも計算とも合いません。金額は書かないか、正しい値にしてください"
                           "（磁石ボードの金額はコードが計算して出します）"])
     cards = [(c, _card_data(con, owner, c)) for c in payload["cards"]]
+    layout = check_layout(con, owner, dict(
+        headline=payload.get("headline") or payload["summary"], focus="recommend", primary=payload["recommended"],
+        alternative=payload.get("alternative"), cards=payload["cards"][:MAX_LAYOUT_CARDS],
+        actions=payload.get("actions") or ["approve", "compare", "show_others", "ask"],
+        suggested_questions=payload.get("suggested_questions") or [], ask_human=payload.get("ask_human")),
+        {o["code"]: n["executable"] for o, _, n in computed}, allowed)
     now_iso = db.now_iso()
     with con:
         case = con.execute("SELECT id, version FROM deal_case WHERE order_id = ?", (oid,)).fetchone()
@@ -286,9 +329,117 @@ def build(con, owner: str, item_code: str, on_date: str, payload: dict, run_id: 
                         "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'offered')",
                         (cid, version, o["code"], o["label"], o["reason"], o["risk"], json.dumps(plan, ensure_ascii=False),
                          json.dumps(n, ensure_ascii=False), int(o["code"] == payload["recommended"]), int(n["executable"]), fingerprint(plan, n)))
+        con.execute("INSERT INTO workspace_turn (case_id, version, source, layout_json, run_id, at) VALUES (?, ?, 'present', ?, ?, ?)",
+                    (cid, version, json.dumps(layout, ensure_ascii=False), run_id, now_iso))
         con.execute("INSERT INTO audit_event (at, actor, event, detail) VALUES (?, 'companion', 'board_presented', ?)",
                     (now_iso, json.dumps(dict(case_id=cid, version=version, run_id=run_id, summary=payload["summary"]), ensure_ascii=False)))
     return dict(case_id=cid, version=version, options=[(o["code"], n["executable"], n["errors"]) for o, _, n in computed])
+
+
+def check_layout(con, owner: str, layout: dict, codes: dict, allowed: set) -> dict:
+    """Claude が選んだ画面の組み方を確かめ、カードの中身を業務 DB から埋めて返す。合わなければ BoardError。
+
+    codes は {案の記号: 実行できるか}。文の中の金額は、業務 DB の値か計算の結果だけを許す。
+    """
+    errs = []
+    head = (layout.get("headline") or "").strip()
+    if not head or len(head) > 120:
+        errs.append("headline は 1〜120字で書いてください")
+    if layout.get("focus") not in FOCUS:
+        errs.append(f"focus は {', '.join(FOCUS)} のどれか")
+    prim, alt = layout.get("primary"), layout.get("alternative")
+    if prim is not None and prim not in codes:
+        errs.append(f"primary の案 {prim} がボードにありません")
+    if alt is not None and (alt not in codes or alt == prim):
+        errs.append(f"alternative の案 {alt} がボードに無いか、primary と同じです")
+    cards = layout.get("cards") or []
+    if len(cards) > MAX_LAYOUT_CARDS:
+        errs.append(f"cards は {MAX_LAYOUT_CARDS} 枚まで（担当者が判断に要るものだけ）")
+    acts = []
+    for a in layout.get("actions") or []:
+        if a not in ACTIONS:
+            errs.append(f"操作 {a} は使えません（使えるのは {', '.join(ACTIONS)}）")
+        elif a not in acts:
+            acts.append(a)
+    sq = [q.strip() for q in (layout.get("suggested_questions") or []) if q and q.strip()]
+    if len(sq) > 3 or any(len(q) > 40 for q in sq):
+        errs.append("suggested_questions は 3件まで・各 40字まで")
+    ask = (layout.get("ask_human") or "").strip() or None
+    ans = (layout.get("answer") or "").strip() or None
+    if ans and len(ans) > 500:
+        errs.append("answer は 500字まで")
+    bad = check_texts([head, ask or "", ans or "", *sq] + [c.get("note") or "" for c in cards], allowed)
+    if bad:
+        errs.append(f"文の中の金額 {', '.join(bad)} は、業務 DB の値とも計算とも合いません。金額は書かないか、正しい値にしてください")
+    if errs:
+        raise BoardError(errs)
+    filled = [dict(card_type=c["card_type"], ref_id=c.get("ref_id"), note=c.get("note"), data=_card_data(con, owner, c)) for c in cards]
+    return dict(headline=head, focus=layout["focus"], primary=prim, alternative=alt, cards=filled, actions=acts,
+                suggested_questions=sq, ask_human=ask, answer=ans)
+
+
+def answer(con, owner: str, item_code: str, on_date: str, case_id: int, layout: dict, question_event_id: int,
+           question: str, run_id: int) -> dict:
+    """担当者の質問への答えと、組み直した画面を記録する（最新の版の案を使う）。"""
+    case = con.execute("SELECT * FROM deal_case WHERE id = ?", (case_id,)).fetchone()
+    if case is None:
+        raise BoardError([f"案件 {case_id} がありません"])
+    if case["status"] not in DECIDING:
+        raise BoardError([f"案件 {case_id} は判断の時ではありません（{case['status']}）"])
+    rows = con.execute("SELECT code, executable, numbers_json FROM board_option WHERE case_id = ? AND version = ?",
+                       (case_id, case["version"])).fetchall()
+    allowed = _amounts_allowed(con, owner, item_code, [json.loads(r["numbers_json"]) for r in rows], on_date)
+    lay = check_layout(con, owner, layout, {r["code"]: bool(r["executable"]) for r in rows}, allowed)
+    with con:
+        tid = con.execute("INSERT INTO workspace_turn (case_id, version, source, question_event_id, question, answer, layout_json, run_id, at) "
+                          "VALUES (?, ?, 'answer', ?, ?, ?, ?, ?, ?)",
+                          (case_id, case["version"], question_event_id, question, lay["answer"], json.dumps(lay, ensure_ascii=False),
+                           run_id, db.now_iso())).lastrowid
+    return dict(turn_id=tid, case_id=case_id, version=case["version"])
+
+
+def _gate_actions(layout: dict, case_status: str, opts: list[dict]) -> dict:
+    """操作の候補は、案件の状態と案の実行の可否でコードが絞る（Claude が選んでも、今できない操作は出さない）。"""
+    by = {o["code"]: o for o in opts}
+    acts = list(layout.get("actions") or [])
+    if case_status not in DECIDING:
+        acts = []
+    prim = by.get(layout.get("primary"))
+    if prim is None or not prim["executable"] or prim["status"] != "offered":
+        acts = [a for a in acts if a != "approve"]
+    if layout.get("alternative") not in by:
+        acts = [a for a in acts if a != "compare"]
+    out = dict(layout, actions=acts)
+    if case_status not in DECIDING:
+        out["suggested_questions"] = []
+        out["ask_human"] = None
+    return out
+
+
+def records(con, case_id: int) -> list[dict]:
+    """確定した案件の、相手ごとの正式な記録（市場の取引帳簿と自社の帳簿から読む）。売れていない数量は売れたことにしない。"""
+    from agentdock import deal
+    props = [dict(r) for r in con.execute("SELECT * FROM proposal WHERE case_id = ? ORDER BY id", (case_id,))]
+    if not props:
+        return []
+    rec = {r["trade_id"]: r for r in deal.reconcile([p["trade_id"] for p in props])}
+    out = []
+    for p in props:
+        r = rec.get(p["trade_id"], {})
+        name = sc.OWNERS.get(p["counterparty"], {}).get("name", p["counterparty"])
+        out.append(dict(kind="market_trade", side=p["side"], counterparty=name, quantity=p["quantity"], unit_price_yen=p["unit_price_yen"],
+                        trade_id=p["trade_id"], market_status=r.get("status"), seller_booked=r.get("seller_booked"),
+                        buyer_booked=r.get("buyer_booked"), proposal_status=p["status"]))
+    buy_tid = next((p["trade_id"] for p in props if p["side"] == "buy"), None)
+    for s in con.execute("SELECT s.quantity, s.status, s.order_id, o.status AS order_status, c.name FROM stock s "
+                         "LEFT JOIN order_book o ON o.id = s.order_id LEFT JOIN customer c ON c.id = o.customer_id "
+                         "WHERE s.trade_id = ? ORDER BY s.id", (buy_tid,)):
+        if s["status"] == "allocated":
+            out.append(dict(kind="order_fill", counterparty=s["name"], quantity=s["quantity"], order_id=s["order_id"],
+                            order_status=s["order_status"]))
+        elif s["status"] == "unallocated":
+            out.append(dict(kind="unallocated", counterparty=None, quantity=s["quantity"]))
+    return out
 
 
 def view(con, case_id: int | None = None) -> dict:
@@ -307,6 +458,15 @@ def view(con, case_id: int | None = None) -> dict:
         o.pop("numbers_json")
         o.pop("plan_json")
     owner = con.execute("SELECT code FROM owner").fetchone()[0]
+    if case["status"] in DECIDING:   # 表示の時に今の条件で計算し直す。変わった案は承認の操作を出さない（承認の時も確かめ直す）
+        item_code = con.execute("SELECT code FROM item WHERE id = ?", (case["item_id"],)).fetchone()[0]
+        now = f"{case['trade_date']}T06:30:00+09:00"
+        for o in opts:
+            if o["status"] != "offered":
+                continue
+            n = compute(con, owner, item_code, o["plan"], now)
+            if fingerprint(o["plan"], n) != o["fingerprint"]:
+                o.update(changed=True, numbers=n, executable=0)
     for c in cards:
         c.pop("data_json")
         if c["card_type"] in ("quote", "agreement"):   # 状態は変わるので、表示の時に読み直す
@@ -323,4 +483,18 @@ def view(con, case_id: int | None = None) -> dict:
             o["chosen"] = True
     summary = con.execute("SELECT detail FROM audit_event WHERE event = 'board_presented' ORDER BY id DESC LIMIT 1").fetchone()
     decisions = [dict(r) for r in con.execute("SELECT action, actor, at, result, detail FROM case_decision WHERE case_id = ? ORDER BY id", (case["id"],))]
-    return dict(case=dict(case), cards=cards, options=opts, summary=json.loads(summary[0])["summary"] if summary else None, decisions=decisions)
+    t = con.execute("SELECT * FROM workspace_turn WHERE case_id = ? AND version = ? ORDER BY id DESC LIMIT 1", (case["id"], v)).fetchone()
+    layout = _gate_actions(json.loads(t["layout_json"]), case["status"], opts) if t else None
+    if layout:
+        for c in layout["cards"]:   # 条件と合意の状態は変わるので、表示の時に読み直す
+            if c["card_type"] in ("quote", "agreement"):
+                try:
+                    c["data"] = _card_data(con, owner, c)
+                except (BoardError, network.NetworkError):
+                    pass
+    turns = [dict(id=r["id"], version=r["version"], question=r["question"], answer=r["answer"], at=r["at"],
+                  focus=json.loads(r["layout_json"])["focus"]) for r in con.execute(
+        "SELECT * FROM workspace_turn WHERE case_id = ? AND source = 'answer' ORDER BY id", (case["id"],))]
+    return dict(case=dict(case), cards=cards, options=opts, summary=json.loads(summary[0])["summary"] if summary else None, decisions=decisions,
+                layout=layout, layout_turn=t["id"] if t else None, turns=turns,
+                records=records(con, case["id"]) if case["status"] == "registered" else [])

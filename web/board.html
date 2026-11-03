@@ -10,26 +10,34 @@
 <div id="stage">
   <header class="top">
     <div class="title">網谷水産<small>Adaptive Workspace（磁石ボード）・若い担当者</small></div>
-    <div class="summary" id="summary">Claude AI パートナーが調べています…</div>
-    <div class="scope">登場する組織と、取引の条件・値は架空です<br><b id="caseinfo">案件 —</b></div>
+    <ol id="rail"></ol>
+    <div class="right">
+      <button id="speed" class="ghost small" title="動きを短くする（キー F）">動き：ふつう</button>
+      <span id="mock" class="mockflag" hidden>模擬の Claude（画面の確かめ用）</span>
+      <span class="scope">登場する組織と、取引の条件・値は架空です</span>
+    </div>
   </header>
 
-  <section class="col cards">
-    <h2>判断の材料<small>Claude が選んで並べた情報</small></h2>
-    <div id="cards"></div>
+  <section id="net">
+    <svg id="lines" width="1600" height="120"></svg>
+    <div id="nodes"></div>
   </section>
 
-  <section class="col options">
-    <h2>取引の案<small>金額はコードが業務 DB から計算した見込みの値です</small></h2>
-    <div id="options"></div>
+  <div id="now"><span class="dot"></span><span id="nowtext">業務の出来事を待っています</span><span id="busy"></span></div>
+
+  <section id="board"></section>
+
+  <section id="dock">
+    <div id="lead"></div>
+    <div id="actions"></div>
+    <form id="askbar" autocomplete="off">
+      <input id="ask" maxlength="200" placeholder="Claude に聞く（例：B社との取引は本当に大丈夫？）">
+      <button type="submit" id="askbtn">聞く</button>
+    </form>
   </section>
 
-  <div class="result" id="result"></div>
-  <footer class="foot">
-    <button id="hold" class="ghost">保留する</button>
-    <button id="reject" class="ghost">見送る</button>
-    <span class="note">承認すると、権限・値・在庫・期限を確かめ直してから、各組織の帳簿に登録します</span>
-  </footer>
+  <div id="drawer" class="off"><div class="dhead"><b id="dtitle"></b><button id="dclose" class="ghost small">閉じる</button></div><div id="dbody"></div></div>
+  <a id="verifylink" href="verify.html" target="_blank">技術の検証</a>
 </div>
 <script src="board.js"></script>
 </body>

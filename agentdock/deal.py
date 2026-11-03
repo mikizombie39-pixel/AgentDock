@@ -239,6 +239,8 @@ def _approve(owner: str, case, opt, shown_fp: str, actor: str, now: str, fail_at
     case, opt = dict(case), dict(opt)
     if opt["status"] != "offered" or opt["version"] != case["version"]:
         return dict(result="stale", case_id=case["id"], reasons=["この案は最新の版ではありません"])
+    if not opt["executable"]:   # 表示の時に実行できない案（決まりの上限を超える等）は、承認しても確定しない
+        return dict(result="not_executable", case_id=case["id"], reasons=json.loads(opt["numbers_json"])["errors"])
     c = db.connect(owner)
     try:
         item_code = _q1(c, "SELECT code FROM item WHERE id = ?", (case["item_id"],))[0]
@@ -311,23 +313,40 @@ def _book_proposals(owner: str, case, opt, numbers, actor) -> None:
         c.close()
 
 
-def _register_trade(trade_id: str, lot_no: str, item_code: str, seller: str, seller_kind: str, buyer: str, qty: int, price: int, date: str) -> None:
-    """市場に取引を登録する。何度呼んでも二重にしない（途中で止まった取引は残りの帳簿を書く）。"""
+def _register_trade(trade_id: str, lot_no: str, item_code: str, seller: str, seller_kind: str, buyer: str, qty: int, price: int, date: str) -> list[str]:
+    """市場に取引を登録する。何度呼んでも二重にしない（途中で止まった取引は残りの帳簿を書く）。呼んだ市場の API の名前を返す。"""
+    calls = []
     try:
         t = market.trade(trade_id)
     except KeyError:
         try:
             market.open_lot(lot_no, item_code, qty, seller, seller_kind, "negotiation", date)
+            calls.append("market.open_lot")
         except Exception:
             pass   # 前の試みで出品だけ作れていた
         market.propose(trade_id, lot_no, buyer, price, qty)
+        calls.append("market.propose")
         t = market.trade(trade_id)
     if t["status"] == "incomplete":
         market.complete(trade_id)
-        return
+        calls.append("market.complete")
+        return calls
     if t["status"] == "awaiting_approval":
         for party in (seller, buyer):
             market.approve(trade_id, party, t["terms_fingerprint"])
+            calls.append(f"market.approve({party})")
+    return calls
+
+
+def _api_audit(owner: str, case_id: int, trade_id: str, calls: list[str]) -> None:
+    """市場の取引帳簿への登録を、呼んだ API と登録の後の状態（市場の帳簿を読み直した値）で記録する。"""
+    t = market.trade(trade_id)
+    _audit(owner, "system", "market_api", dict(case_id=case_id, trade_id=trade_id, calls=calls, status=t["status"],
+                                                seller_booked=t["seller_booked"], buyer_booked=t["buyer_booked"]))
+
+
+def _step_audit(owner: str, case_id: int, step: str) -> None:
+    _audit(owner, "system", "case_step", dict(case_id=case_id, step=step))
 
 
 def _run_steps(owner: str, case_id: int, fail_at: str | None = None) -> dict:
@@ -350,11 +369,14 @@ def _run_steps(owner: str, case_id: int, fail_at: str | None = None) -> dict:
         # 1. 仕入れの取引（漁協 → 網谷水産）：両方の帳簿
         if fail_at == "buy_trade":
             raise DealError("test: stopped before the buy trade")
-        _register_trade(buy["trade_id"], f"T{term['id']}", item_code, term["seller"], "coop", owner, buy["quantity"], buy["unit_price_yen"], case["trade_date"])
+        calls = _register_trade(buy["trade_id"], f"T{term['id']}", item_code, term["seller"], "coop", owner, buy["quantity"], buy["unit_price_yen"], case["trade_date"])
+        _api_audit(owner, case_id, buy["trade_id"], calls)
         done.append("buy_trade")
+        _step_audit(owner, case_id, "buy_trade")
         # 2. 売り手の在庫：仮押さえを確定し、在庫を減らす
         _seller_stock(term, buy)
         done.append("seller_stock")
+        _step_audit(owner, case_id, "seller_stock")
         # 3. 条件：選んだ条件を確定、他の条件と仮押さえは取り消す
         m = db.connect(db.MARKET)
         try:
@@ -364,12 +386,14 @@ def _run_steps(owner: str, case_id: int, fail_at: str | None = None) -> dict:
             m.close()
         _release_all(owner, case_id, "別の条件で確定しました", keep_term=term["id"], keep_agreements={int(p["trade_id"].rsplit("-", 1)[1]) for p in sells})
         done.append("terms")
+        _step_audit(owner, case_id, "terms")
         # 4. 売りの取引（網谷水産 → B社）：両方の帳簿
         if fail_at == "sell_trades":
             raise DealError("test: stopped before the sell trades")
         for p in sells:
             aid = int(p["trade_id"].rsplit("-", 1)[1])
-            _register_trade(p["trade_id"], f"A{aid}", item_code, owner, "buyer", p["counterparty"], p["quantity"], p["unit_price_yen"], case["trade_date"])
+            calls = _register_trade(p["trade_id"], f"A{aid}", item_code, owner, "buyer", p["counterparty"], p["quantity"], p["unit_price_yen"], case["trade_date"])
+            _api_audit(owner, case_id, p["trade_id"], calls)
             m = db.connect(db.MARKET)
             try:
                 with m:
@@ -377,13 +401,16 @@ def _run_steps(owner: str, case_id: int, fail_at: str | None = None) -> dict:
             finally:
                 m.close()
         done.append("sell_trades")
+        _step_audit(owner, case_id, "sell_trades")
         # 5. 買い手（B社）の側：事前の承認を使い済みに、注文に引当、在庫
         for p in sells:
             _buyer_side(p, item_code, case["trade_date"])
         done.append("buyer_side")
+        _step_audit(owner, case_id, "buyer_side")
         # 6. 自社の帳面：在庫の引当・注文の充足・提案の登録済み
         _own_books(owner, case, numbers, props)
         done.append("own_books")
+        _step_audit(owner, case_id, "own_books")
     except Exception as e:
         _audit(owner, "system", "case_incomplete", dict(case_id=case_id, done=done, error=str(e)))
         return dict(result="incomplete", case_id=case_id, done=done, error=str(e))

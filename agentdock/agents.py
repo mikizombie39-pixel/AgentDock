@@ -336,6 +336,26 @@ def present_options(ctx, inp):
     return "磁石ボードに出しました（案件 {}・版 {}）。金額はコードが計算して表示します。\n".format(r["case_id"], r["version"]) + "\n".join(lines)
 
 
+def answer_staff(ctx, inp):
+    """担当者の質問に答え、磁石ボードを組み直す（文と選択は Claude・数字はコード）。"""
+    from agentdock import workspace
+    ev = ctx.event
+    if ev["kind"] != "staff_question":
+        raise ToolError("answer_staff は担当者の質問に答える時だけ使えます")
+    p = ev["payload"]
+    row = ctx.con.execute("SELECT i.code FROM deal_case d JOIN item i ON i.id = d.item_id WHERE d.id = ?", (p["case_id"],)).fetchone()
+    if row is None:
+        raise ToolError(f"案件 {p['case_id']} がありません")
+    try:
+        r = workspace.answer(ctx.con, ctx.owner, row[0], ctx.on_date, p["case_id"], inp, ev["id"], p["text"], ctx.run_id)
+    except workspace.BoardError as e:
+        raise ToolError("; ".join(e.reasons)) from None
+    except network.NetworkError as e:
+        raise ToolError(str(e)) from None
+    ctx.summary = inp.get("answer")
+    return f"担当者に答え、磁石ボードを組み直しました（案件 {r['case_id']}・版 {r['version']}・組み直し {r['turn_id']}）。"
+
+
 def compare_options(ctx, inp):
     from agentdock import workspace
     out = []
@@ -413,14 +433,35 @@ _OPTION = {"type": "object", "additionalProperties": False,
 _CARD = {"type": "object", "additionalProperties": False, "required": ["card_type", "ref_id", "note"],
          "properties": {"card_type": {"type": "string", "enum": ["order", "quote", "agreement", "vault", "customer", "post", "market", "risk", "note"]},
                         "ref_id": NULL_INT, "note": {"type": ["string", "null"]}}}
+_ACTIONS = {"type": "array", "items": {"type": "string", "enum": ["approve", "compare", "check_partner", "open_detail", "show_others", "ask", "hold", "reject"]},
+            "description": "担当者に今出す操作の候補（approve＝勧める案を承認／compare＝代わりの案と比べる／check_partner＝相手の条件を確かめる／"
+                           "open_detail＝勧める案の詳しい数字／show_others＝ほかの案／ask＝Claude に聞く欄／hold＝保留／reject＝見送り）。今の判断に要るものだけ"}
+_CODE_OR_NULL = {"anyOf": [{"type": "string", "enum": ["A", "B", "C", "D", "E"]}, {"type": "null"}]}   # strict の道具は enum と null の型の併記を受け付けない（2026-11-03 実測）
 PRESENT = Tool(
     "present_options",
     "調べた結果と取引の案を、担当者の磁石ボードに出す。確定は担当者がする。見送る・保留する案も含める。"
     "案は、仕入れる条件の番号（buy_term_id）と、仕入れた数量の配分（allocations）で示す。金額・粗利はコードが計算して表示するので、"
-    "label・reason・risk・summary には金額の計算の結果を書かない。cards には、担当者の判断に要る情報だけを選ぶ（注文・条件・合意・Vault・売り先・掲示・相場）。",
-    {"item_code": ITEM, "summary": STR, "cards": {"type": "array", "items": _CARD},
-     "options": {"type": "array", "items": _OPTION}, "recommended": {"type": "string", "enum": ["A", "B", "C", "D", "E"]}},
+    "label・reason・risk・summary・headline には金額の計算の結果を書かない。cards には、担当者の判断に要る情報だけを選ぶ（注文・条件・合意・Vault・売り先・掲示・相場）。"
+    "cards の先頭の4枚までを、勧める案の根拠として画面に出す（大事な順に並べる）。"
+    "画面は一覧ではなく、担当者が今判断することだけを大きく出す：headline（今起きていることと判断してほしいこと・1文）、"
+    "recommended（勧める案）、alternative（比べるべき代わりの案を1つ・無ければ null）、ask_human（担当者への問いかけ）、"
+    "actions（今出す操作）、suggested_questions（担当者が聞きそうな質問を3件まで・各40字まで）。",
+    {"item_code": ITEM, "summary": STR, "headline": STR, "cards": {"type": "array", "items": _CARD},
+     "options": {"type": "array", "items": _OPTION}, "recommended": {"type": "string", "enum": ["A", "B", "C", "D", "E"]},
+     "alternative": _CODE_OR_NULL, "ask_human": STR, "actions": _ACTIONS,
+     "suggested_questions": {"type": "array", "items": STR}},
     present_options, ends="presented")
+ANSWER = Tool(
+    "answer_staff",
+    "担当者の質問に答え、磁石ボードを組み直す。答えの前に、必要な道具（read_thread・compare_options・read_vault など）で業務の状態を確かめる。"
+    "answer は担当者への答え（3文以内・200字ほど・結論を先に。金額はコードの計算か業務 DB の値だけ）。細かい根拠は cards に回す。focus は画面の中心に置くもの"
+    "（recommend＝勧める案／compare＝primary と alternative を並べて比べる／partner＝相手との合意の条件と期限／vault＝社長の経験／risk＝注意点）。"
+    "primary・alternative はボードにある案の記号。cards は答えの根拠のカード（4枚まで）。actions は今出す操作。"
+    "新しい案が要る時は、answer_staff ではなく present_options でボードを出し直す（相手に問い合わせる時は send_inquiry）。",
+    {"answer": STR, "headline": STR, "focus": {"type": "string", "enum": ["recommend", "compare", "partner", "vault", "risk"]},
+     "primary": _CODE_OR_NULL, "alternative": _CODE_OR_NULL, "cards": {"type": "array", "items": _CARD},
+     "actions": _ACTIONS, "suggested_questions": {"type": "array", "items": STR}, "ask_human": {"type": ["string", "null"]}},
+    answer_staff, ends="done", strict=False)
 COMPARE = Tool(
     "compare_options",
     "案ごとの売上・仕入れ・加工の費用・粗利の見込み・売れる確かさ・売れ残りの危険を、コードが計算して返す（ボードには出さない）。"
@@ -435,7 +476,7 @@ NOTHING = Tool("do_nothing", "何もしない（この出来事は自社に関�
 
 TOOLSETS = {
     "amiya": [READ_ORDERS, READ_MARKET, READ_MATERIAL, READ_VAULT, READ_CUSTOMERS, READ_POSTS, READ_THREAD,
-              SEND_INQUIRY, REPLY, WAIT, COMPARE, PRESENT, NOTHING],
+              SEND_INQUIRY, REPLY, WAIT, COMPARE, PRESENT, ANSWER, NOTHING],
     "iwase": [READ_STOCK, READ_MY_MATERIAL, READ_MARKET, READ_THREAD, REPLY, NOTHING],
     "buyer_b": [READ_ORDERS, READ_MARKET, READ_MATERIAL, READ_VAULT, READ_POSTS, READ_THREAD, POST_REQUEST, REPLY, NOTHING],
     "buyer_c": [READ_STOCK, READ_MARKET, READ_THREAD, REPLY, NOTHING],
@@ -443,7 +484,7 @@ TOOLSETS = {
 
 # どの出来事で起きるか（他の出来事は待ちのまま残す）
 WAKE = {
-    "amiya": {"order_new", "quote_received", "info_received:deal_request", "quote_request", "human_choice"},
+    "amiya": {"order_new", "quote_received", "info_received:deal_request", "quote_request", "human_choice", "staff_question"},
     "iwase": {"quote_request"},
     "buyer_b": {"order_new", "quote_request", "quote_received"},
     "buyer_c": {"quote_request"},
@@ -464,7 +505,11 @@ SYSTEMS = {
              "最後は担当者が選び、承認します。返事を待つ時は wait_for_replies、候補が出そろったら present_options を使います。"
              "注文より多く仕入れる案は、追加の分の売れる見込み・売れ残りの損も比べて示します。"
              "問い合わせには希望の値を添えます。案を出す前に compare_options でコードの計算を確かめ、利益の差・売れる確かさ・売れ残りの危険を比べて勧める案を決めます。"
-             "他の組織に売ると申し出る時は、自社の仕入れの確定と担当者の承認が条件だと書きます。" + _COMMON,
+             "他の組織に売ると申し出る時は、自社の仕入れの確定と担当者の承認が条件だと書きます。"
+             "磁石ボードは担当者と一緒に仕事を進める作業の場です。全部を並べず、今の判断に要るものだけを選んで出します。"
+             "勧める案は利益の額だけで決めず、売り先の確かさ・期限・品質・社長の経験・追加の手間も比べます。"
+             "担当者から質問が届いたら、業務の状態を道具で確かめ直してから answer_staff で答え、画面を組み直します。"
+             "仕入れ値の上限は自社の決まりで、超える案は実行できません。" + _COMMON,
     "iwase": "あなたは岩瀬漁協（売り手）の Claude AI パートナーです（Agent Dock）。仲買からの問い合わせに、自社の在庫と数量ごとの最低の値を見て答えます。"
              "最低の値より安い条件は出せません。まとめて買えば値を下げられる場合は、その条件を示してかまいません。" + _COMMON,
     "buyer_b": "あなたは B社（仲買）の Claude AI パートナーです（Agent Dock）。注文を満たす仕入れ先を探します。"
@@ -503,6 +548,33 @@ def _thread_lines(owner: str, item_code: str, on_date: str) -> list[str]:
             for m in thread(owner, item_code, on_date)]
 
 
+def _question_situation(owner: str, p: dict) -> tuple[str, str]:
+    """担当者の質問の時に渡す、今の磁石ボードの状態（案・実行の可否・コードの計算・前の質問と答え）。"""
+    from agentdock import workspace
+    c = db.connect(owner)
+    try:
+        v = workspace.view(c, p["case_id"])
+        row = c.execute("SELECT i.code FROM deal_case d JOIN item i ON i.id = d.item_id WHERE d.id = ?", (p["case_id"],)).fetchone()
+    finally:
+        c.close()
+    item = row[0] if row else "aji"
+    lines = []
+    for o in v.get("options") or []:
+        n = o["numbers"]
+        gp = n["gross_profit_yen"] if n["gross_profit_yen"] is not None else n["gross_profit_without_unconfirmed_yen"]
+        state = "実行できる" if o["executable"] else "実行できない（" + "・".join(n["errors"]) + "）"
+        lines.append(f"- 案 {o['code']}「{o['label']}」：{state}・仕入れ {n['purchase_yen']:,}円・粗利の見込み {gp:,}円・"
+                     f"売れる確かさが未確定の数量 {n['uncertain_quantity']}・売り先なし {n['unsold_quantity']}")
+    lay = v.get("layout") or {}
+    prev = [f"- 質問「{t['question']}」→ 答え「{t['answer']}」" for t in v.get("turns") or []]
+    head = (f"出来事：担当者から質問が届きました（案件 {p['case_id']}・版 {v['case']['version'] if v.get('case') else '?'}）：「{p['text']}」\n"
+            f"今の磁石ボード：勧める案 {lay.get('primary')}・比べる案 {lay.get('alternative')}・中心 {lay.get('focus')}\n"
+            "ボードの案（数字はコードの計算）：\n" + "\n".join(lines) +
+            ("\nこれまでの質問と答え：\n" + "\n".join(prev) if prev else "") +
+            "\n業務の状態を道具で確かめ直してから、answer_staff で答えて画面を組み直してください。")
+    return item, head
+
+
 def situation(owner: str, event: dict, on_date: str) -> tuple[str, str]:
     """状況の報告（Claude に渡す最初の文）と、品目のコードを返す。数字はコードが DB から出す。"""
     p = event["payload"]
@@ -531,6 +603,8 @@ def situation(owner: str, event: dict, on_date: str) -> tuple[str, str]:
         item = row[0] if row else "aji"
         head = ("出来事：担当者が選んだ案は、承認の時の再検証で確定できませんでした（案件 {}）。理由：{}。"
                 "条件を調べ直し、磁石ボードを出し直してください。").format(p["case_id"], "・".join(p.get("reasons", [])))
+    elif event["kind"] == "staff_question":
+        item, head = _question_situation(owner, p)
     else:
         item = p.get("item", "aji")
         head = f"出来事：{event['kind']}"
