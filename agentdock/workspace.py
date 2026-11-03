@@ -71,9 +71,9 @@ def compute(con, owner: str, item_code: str, option: dict, now: str) -> dict:
         allocated += qty
         if kind == "order":
             o = con.execute("SELECT o.id, o.quantity, o.sell_price_yen, o.status, c.name FROM order_book o JOIN customer c ON c.id = o.customer_id "
-                            "WHERE o.id = ? AND o.item_id = ?", (a["ref_id"], item["id"])).fetchone()
+                            "WHERE o.id = ? AND o.item_id = ?", (a.get("ref_id"), item["id"])).fetchone()
             if o is None:
-                errors.append(f"注文 {a['ref_id']} がありません")
+                errors.append(f"注文 {a.get('ref_id')} がありません")
                 continue
             if o["status"] not in ("open", "partly_filled"):
                 errors.append(f"注文 {o['id']} は {o['status']}")
@@ -84,9 +84,9 @@ def compute(con, owner: str, item_code: str, option: dict, now: str) -> dict:
                               revenue_yen=qty * o["sell_price_yen"], certainty="order", process=pc))
         elif kind == "agreement":
             try:
-                ag = network.agreement(a["ref_id"])
+                ag = network.agreement(a.get("ref_id"))
             except network.NetworkError:
-                errors.append(f"合意 {a['ref_id']} がありません")
+                errors.append(f"合意 {a.get('ref_id')} がありません")
                 continue
             if ag["seller"] != owner:
                 errors.append(f"合意 {ag['id']} は {owner} が売る合意ではない")

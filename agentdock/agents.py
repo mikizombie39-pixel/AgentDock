@@ -339,8 +339,12 @@ def present_options(ctx, inp):
 def compare_options(ctx, inp):
     from agentdock import workspace
     out = []
-    for o in inp["options"]:
-        n = workspace.compute(ctx.con, ctx.owner, inp["item_code"], dict(buy_term_id=o["buy_term_id"], allocations=o["allocations"]),
+    for o in inp.get("options") or []:
+        if not isinstance(o, dict) or "allocations" not in o or "buy_term_id" not in o:
+            raise ToolError("options の各案に code・buy_term_id・allocations が要ります")
+        if any(not isinstance(a, dict) or "kind" not in a or "quantity" not in a for a in o["allocations"]):
+            raise ToolError("allocations の各行に kind・ref_id・customer・quantity が要ります")
+        n = workspace.compute(ctx.con, ctx.owner, inp.get("item_code", "aji"), dict(buy_term_id=o["buy_term_id"], allocations=o["allocations"]),
                               demo_now(ctx.on_date))
         out.append(dict(code=o["code"], executable=n["executable"], errors=n["errors"],
                         revenue_yen=n["revenue_yen"], purchase_yen=n["purchase_yen"], process_cost_yen=n["process_cost_yen"],
@@ -365,7 +369,7 @@ def finish(ctx, inp):
 # ── 道具の定義 ──────────────────────────────────────────────────
 
 def _read(name, desc, fn):
-    return Tool(name, desc, {"item_code": ITEM}, fn)
+    return Tool(name, desc, {"item_code": ITEM}, fn, strict=False)
 
 
 READ_ORDERS = _read("read_orders", "自社の今日の注文（売り先・数量・売値・自社の仕入れの上限）を読む。", read_orders)
@@ -425,7 +429,7 @@ COMPARE = Tool(
         "type": "object", "additionalProperties": False, "required": ["code", "buy_term_id", "allocations"],
         "properties": {"code": {"type": "string", "enum": ["A", "B", "C", "D", "E"]},
                        "buy_term_id": {"type": ["integer", "null"]}, "allocations": {"type": "array", "items": _ALLOC}}}}},
-    compare_options)
+    compare_options, strict=False)
 WAIT = Tool("wait_for_replies", "問い合わせの返事を待つ（この起動を終える）。", {"reason": STR}, wait_for_replies, ends="waiting")
 NOTHING = Tool("do_nothing", "何もしない（この出来事は自社に関係しない・動く必要がない）。", {"reason": STR}, finish, ends="nothing")
 

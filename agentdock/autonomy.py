@@ -48,9 +48,10 @@ class Tool:
     properties: dict
     handler: Callable          # (ctx, inp) -> str
     ends: str | None = None    # 成功した時に起動を止める結果（'waiting'・'presented'・'done'・'nothing'）
+    strict: bool = True        # 読むだけの道具は strict を外す（strict の道具が多いと文法が大きすぎて呼べない・2026-11-03 実測）
 
     def schema(self) -> dict:
-        return {"name": self.name, "description": self.description, "strict": True,
+        return {"name": self.name, "description": self.description, "strict": self.strict,
                 "input_schema": {"type": "object", "additionalProperties": False,
                                  "required": list(self.properties), "properties": self.properties}}
 
