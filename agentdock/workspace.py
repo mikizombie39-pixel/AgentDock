@@ -18,6 +18,8 @@ FOCUS = ("recommend", "compare", "partner", "vault", "risk")
 ACTIONS = ("approve", "compare", "check_partner", "open_detail", "show_others", "ask", "hold", "reject")
 DECIDING = ("presented", "held")          # 担当者が判断できる案件の状態
 MAX_LAYOUT_CARDS = 4
+MAX_SHORT_QUESTION = 40   # 現在地の画面の問い
+MAX_SHORT_LABEL = 16      # 現在地の画面のボタン（案の名前）
 CERTAINTY = {"order": "注文あり", "conditional": "条件付きの合意", "needs_staff": "相手の担当者の承認待ち", "lead": "未打診", "none": "売り先なし"}
 
 
@@ -291,11 +293,30 @@ def build(con, owner: str, item_code: str, on_date: str, payload: dict, run_id: 
         if r is None:
             raise BoardError(["この品目の注文がありません"])
         oid = r[0]
+    item_id = con.execute("SELECT id FROM item WHERE code = ?", (item_code,)).fetchone()[0]
+    case = _case_for(con, orders, oid, item_id, on_date)
+    # 現在地の画面に出す短い問いと案の名前（長い文は詳しい内容として残す）
+    sq = (payload.get("short_question") or "").strip() or None
+    errs = [] if sq is None or len(sq) <= MAX_SHORT_QUESTION else [f"short_question は {MAX_SHORT_QUESTION}字まで"]
+    errs += [f"案 {o['code']} の short_label は 1〜{MAX_SHORT_LABEL}字" for o in payload["options"]
+             if o.get("short_label") is not None and not 0 < len(o["short_label"].strip()) <= MAX_SHORT_LABEL]
+    # 人の決定と照合する：決定と違う案は、違うと明示した時だけ出せる（その案は決定した人か網谷さんだけが承認できる）
+    decision = consult.latest_decision(con, case[0]) if case else None
+    unit = sc.unit_label(con.execute("SELECT unit FROM item WHERE id = ?", (item_id,)).fetchone()[0])
     computed = []
     for o in payload["options"]:
         plan = dict(buy_term_id=o["buy_term_id"], allocations=o["allocations"])
+        diff = consult.against_decision(con, decision, o["allocations"]) if o["buy_term_id"] is not None else []
+        if diff and not o.get("differs_from_decision"):
+            errs.append(f"案 {o['code']} は人の決定と違います（{'・'.join(diff)}）。{consult.decision_text(decision, unit)}。"
+                        "決定に沿った案にするか、決定と違う案だと differs_from_decision: true で示してください"
+                        "（その案は、決定した人か網谷さんだけが承認できます）")
+        elif diff:
+            plan["differs_from_decision"] = decision["id"]
         n = compute(con, owner, item_code, plan, now)
         computed.append((o, plan, n))
+    if errs:
+        raise BoardError(errs)
     allowed = _amounts_allowed(con, owner, item_code, [n for _, _, n in computed], on_date)
     bad = check_texts([payload["summary"]] + [x for o, _, _ in computed for x in (o["label"], o["reason"], o["risk"])] +
                       [c.get("note") or "" for c in payload["cards"]], allowed)
@@ -309,15 +330,10 @@ def build(con, owner: str, item_code: str, on_date: str, payload: dict, run_id: 
         actions=payload.get("actions") or ["approve", "compare", "show_others", "ask"],
         suggested_questions=payload.get("suggested_questions") or [], ask_human=payload.get("ask_human")),
         {o["code"]: n["executable"] for o, _, n in computed}, allowed)
+    layout["short_question"] = sq
+    layout["short_labels"] = {o["code"]: o["short_label"].strip() for o in payload["options"] if o.get("short_label")}
     now_iso = db.now_iso()
-    item_id = con.execute("SELECT id FROM item WHERE code = ?", (item_code,)).fetchone()[0]
     with con:
-        case = None
-        for o in orders or [oid]:
-            case = case or con.execute("SELECT id, version FROM deal_case WHERE order_id = ?", (o,)).fetchone()
-        if case is None:   # 案の注文の並びが変わっても（例：料亭だけに回す案）、同じ品目の開いた案件の版を上げる
-            case = con.execute("SELECT id, version FROM deal_case WHERE item_id = ? AND trade_date = ? AND status IN (?, ?, ?, ?, ?) "
-                               "ORDER BY id DESC LIMIT 1", (item_id, on_date, "open", *consult.CASE_OPEN)).fetchone()
         if case is None:
             cid = con.execute("INSERT INTO deal_case (order_id, item_id, trade_date, status, version, created_at, updated_at) VALUES (?, ?, ?, 'open', 0, ?, ?)",
                               (oid, item_id, on_date, now_iso, now_iso)).lastrowid
@@ -343,6 +359,17 @@ def build(con, owner: str, item_code: str, on_date: str, payload: dict, run_id: 
                     (now_iso, json.dumps(dict(case_id=cid, version=version, run_id=run_id, summary=payload["summary"]), ensure_ascii=False)))
     return dict(case_id=cid, version=version, consultation_id=consult_id,
                 options=[(o["code"], n["executable"], n["errors"]) for o, _, n in computed])
+
+
+def _case_for(con, orders: list, oid: int, item_id: int, on_date: str):
+    """案件の行（id, version）。案の注文の並びが変わっても（例：料亭だけに回す案）、同じ品目の開いた案件を使う。無ければ None。"""
+    case = None
+    for o in orders or [oid]:
+        case = case or con.execute("SELECT id, version FROM deal_case WHERE order_id = ?", (o,)).fetchone()
+    if case is None:
+        case = con.execute("SELECT id, version FROM deal_case WHERE item_id = ? AND trade_date = ? AND status IN (?, ?, ?, ?, ?) "
+                           "ORDER BY id DESC LIMIT 1", (item_id, on_date, "open", *consult.CASE_OPEN)).fetchone()
+    return case
 
 
 def check_layout(con, owner: str, layout: dict, codes: dict, allowed: set) -> dict:

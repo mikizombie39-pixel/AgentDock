@@ -234,9 +234,64 @@ def _answer_change(con, c, option_id: int, key: str, reason_text, change, role: 
         con.execute("UPDATE deal_case SET status = 'open', updated_at = ? WHERE id = ?", (now, case["id"]))
         eid = events._insert(con, "human_choice", dict(source="consultation", consultation_id=c["id"], case_id=case["id"], version=c["task_version"],
                                                        option="change", change=change, answered_by=role, priority_change=priority), events._now())
+        # 確定した人の決定を記録する（AI の次の案と承認は、この決定と照合される）
+        con.execute("INSERT INTO human_decision (case_id, consultation_id, version, quantity, allocations_json, priority_change, decided_by, decided_at) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?)", (case["id"], c["id"], c["task_version"], change["quantity"],
+                                                       json.dumps(change["allocations"], ensure_ascii=False) if change.get("allocations") else None,
+                                                       int(priority), role, now))
         _refresh_group(con, c["group_id"])
         _audit(con, "owner", "consultation_answered", c["task_id"], f"consultation {c['id']} change by {role} event {eid}")
     return dict(base, result="answered", event_id=eid)
+
+
+WHO = {"staff": "担当者", "president": "社長（網谷さん）"}
+
+
+def latest_decision(con, case_id: int):
+    """案件の最新の人の決定（無ければ None）。"""
+    r = con.execute("SELECT * FROM human_decision WHERE case_id = ? ORDER BY id DESC LIMIT 1", (case_id,)).fetchone()
+    if r is None:
+        return None
+    d = dict(r)
+    d["allocations"] = json.loads(d["allocations_json"]) if d["allocations_json"] else None
+    return d
+
+
+def decision_text(d: dict, unit: str = "") -> str:
+    """決定の中身（AI と画面に返す）：誰が・どの版で・数量と配分。"""
+    parts = "・".join(f"{a['customer']} {a['quantity']}{unit}" for a in d["allocations"] or [])
+    return f"{WHO.get(d['decided_by'], d['decided_by'])}の決定（版 {d['version']}）：仕入れ {d['quantity']}{unit}" + (f"（{parts}）" if parts else "")
+
+
+def against_decision(con, d: dict | None, allocations: list[dict]) -> list[str]:
+    """案の配分が人の決定と違う点（空なら決定に沿う）。決定が名指しした行き先へ、決定の数量までだけ回すのが「沿う」。
+    行き先が少ないのは、相手の在庫が足りない時などに起きるので沿うとみなす。仕入れない案は沿う。"""
+    if d is None or not allocations:
+        return []
+    def label(kind, ref):
+        if kind == "order":
+            r = con.execute("SELECT c.name FROM order_book o JOIN customer c ON c.id = o.customer_id WHERE o.id = ?", (ref,)).fetchone()
+            return f"注文 {ref}（{r[0] if r else '?'}）"
+        return {"customer": f"{ref}（注文なし）", "agreement": f"合意 {ref}", "unallocated": "売り先なし"}[kind]
+    got = {}
+    for a in allocations:
+        k = ("order", a.get("ref_id")) if a["kind"] == "order" else ("customer", a.get("customer")) if a["kind"] == "customer_lead" else (
+            ("agreement", a.get("ref_id")) if a["kind"] == "agreement" else ("unallocated", None))
+        got[k] = got.get(k, 0) + a["quantity"]
+    if not d["allocations"]:
+        total = sum(got.values())
+        return [f"仕入れ {total} は決定の {d['quantity']} を超えます"] if total > d["quantity"] else []
+    want = {}
+    for a in d["allocations"]:
+        k = ("order", a["order_id"]) if a.get("order_id") is not None else ("customer", a["customer"])
+        want[k] = want.get(k, 0) + a["quantity"]
+    out = []
+    for k, q in got.items():
+        if k not in want:
+            out.append(f"{label(*k)}に {q} を回しています（決定に無い行き先）")
+        elif q > want[k]:
+            out.append(f"{label(*k)}に {q} を回しています（決定は {want[k]}）")
+    return out
 
 
 def revise(con, task_id: int, reason: str) -> int:

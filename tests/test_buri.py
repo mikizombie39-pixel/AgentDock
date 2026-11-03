@@ -267,11 +267,8 @@ class RenegotiationTest(Base):
         self.assertEqual(holds(), [(6, 18000, "released"), (6, 19000, "released"), (6, 19000, "held")])
         a = next(o for o in view()["options"] if o["code"] == "A")
         self.assertTrue(a["executable"])                                                    # 料亭の上限 20,500円の内
-        # 承認：スーパーを欠く案なので担当者だけでは確定しない。社長の承認で正式に登録する
+        # 承認：スーパーを欠く案だが、その優先は社長が相談の答えで決めた（人の決定どおりの案）。担当者の権限の内（114,000円）なので担当者が確定できる
         r = deal.decide("amiya", self.case, a["id"], "approve", a["fingerprint"], "staff-approve")
-        self.assertEqual(r["result"], "needs_president")
-        self.assertEqual(q("market", "SELECT count(*) FROM trade"), [(0,)])
-        r = deal.decide("amiya", self.case, a["id"], "approve", a["fingerprint"], "president-approve", actor="president")
         self.assertEqual(r["result"], "registered")
         self.assertEqual(q("market", "SELECT t.seller, t.buyer, l.item_code, t.quantity, t.unit_price_yen, t.status FROM trade t JOIN lot l ON l.id = t.lot_id"),
                          [("iwase", "amiya", "buri_xl", 6, 19000, "registered")])

@@ -132,6 +132,8 @@ class WorkApiTest(tb.Base):
         self.assertEqual((s, v["item"]["unit"]), (200, "本"))
         self.assertEqual(v, json.loads(json.dumps(work.view("amiya", "buri_xl"), ensure_ascii=False)))
         self.assertEqual(self.get("/api/work?owner=market&item=buri_xl")[0], 400)
+        s, cur = self.get("/api/current?owner=amiya&item=buri_xl")
+        self.assertEqual((s, cur["waiting_for"], len(cur["lines"])), (200, "staff", 2))
         self.assertEqual(self.get("/api/work?owner=amiya&item=nori")[0], 400)
         s, r = self.get(f"/api/source?owner=amiya&db=market&table=network_message&id={self.q1}")
         self.assertEqual((s, r["row"]["from_owner"]), (200, "amiya"))
@@ -147,3 +149,44 @@ class WorkApiTest(tb.Base):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class CurrentTest(tb.Base):
+    """現在地（作業の画面の既定の表示）：注文ごとの状態の行はコードが業務 DB から作る。問いと案は AI が選び、数字はコード。"""
+
+    def lines(self):
+        return [l["text"] for l in work.current("amiya", "buri_xl")["lines"]]
+
+    def test_before_any_decision_the_hold_is_not_assigned(self):
+        cur = work.current("amiya", "buri_xl")
+        self.assertEqual([l["text"] for l in cur["lines"]], ["スーパーの 4本は、まだそろっていません", "料亭の 6本は、まだそろっていません"])
+        self.assertEqual([h["text"] for h in cur["holds"]], ["岩瀬漁協が 6本を 1本 18,000円で押さえています（期限 07:00）。どの注文に回すかは未定です"])
+        self.assertEqual((cur["waiting_for"], cur["question"]["text"]), ("staff", "この配分で進めますか"))   # 短い問いが無い版は ask_human
+        a, e = cur["options"]
+        self.assertEqual((a["code"], a["label"], a["action"], a["recommended"]), ("A", "漁協から 6本、スーパーに 4本・料亭に 2本", "approve", True))
+        self.assertEqual((e["code"], e["action"]), ("E", "reject"))                              # 仕入れない案は「見送る」
+        self.assertEqual([(x["customer"], x["secured_after"], x["short_after"]) for x in a["after"]], [("スーパー", 4, 0), ("料亭", 2, 4)])
+        self.assertEqual((a["numbers"]["purchase_yen"], a["numbers"]["gross_profit_yen"], a["gross_profit_diff_yen"]), (108000, 16000, 0))
+        self.assertEqual(e["gross_profit_diff_yen"], -16000)
+        self.assertEqual(a["grounds"]["reason"], "朝の注文を先に満たす")
+
+    def test_after_approval_waiting_for_the_president_then_registered(self):
+        a = next(o for o in work.current("amiya", "buri_xl")["options"] if o["code"] == "A")
+        deal.decide("amiya", self.case, a["option_id"], "approve", a["fingerprint"], "s1")
+        cur = work.current("amiya", "buri_xl")
+        self.assertEqual(cur["waiting_for"], "president")                                       # 担当者の承認の操作は出さない
+        self.assertEqual((cur["pending"]["kind"], cur["pending"]["option_id"], cur["pending"]["priority_change"]), ("approval", a["option_id"], True))
+        deal.decide("amiya", self.case, a["option_id"], "approve", a["fingerprint"], "p1", actor="president")
+        cur = work.current("amiya", "buri_xl")
+        self.assertEqual([l["text"] for l in cur["lines"]], ["スーパーの注文 4本を確保しています（登録済み 4本）",
+                                                             "料亭の注文 6本のうち 2本を確保しています（登録済み 2本）。4本 足りません"])
+        self.assertEqual((cur["waiting_for"], cur["options"], cur["holds"]), (None, [], []))
+
+    def test_a_decision_assigns_the_held_quantity_to_orders(self):
+        tb.answer(self.cons, "p", dict(quantity=6, allocations=[dict(order_id=self.rest, quantity=6)]), role="president")
+        cur = work.current("amiya", "buri_xl")
+        self.assertEqual(cur["decision"]["text"], "社長（網谷さん）の決定（版 1）：仕入れ 6本（料亭 6本）")
+        self.assertEqual(self.lines(), ["スーパーの 4本は、まだそろっていません", "料亭の注文 6本を確保しています（岩瀬漁協が押さえ中 6本）"])
+        self.assertEqual(cur["holds"], [])
+        self.assertEqual(cur["waiting_for"], None)                                              # 答えた後は AI の番（交渉し直し）
+        self.assertEqual([e["kind"] for e in cur["ai_queue"]], ["human_choice"])

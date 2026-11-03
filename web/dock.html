@@ -17,10 +17,18 @@
       <button id="rprestart"><span class="ic" data-ic="rotate-ccw"></span><span>最初から</span></button>
       <span id="rpclock"></span>
     </div>
+    <button id="viewbtn" class="vbtn" hidden></button>
     <nav class="modes"><a id="mlive" href="?mode=live">ライブ</a><a id="mreplay" href="?mode=replay">記録の再生</a></nav>
   </header>
 
   <aside id="orgs" class="sec" hidden><h2>他の組織</h2><div id="orglist"></div></aside>
+  <main id="nowview" hidden>
+    <div class="nowcap">今の状態（業務の記録から）</div>
+    <div id="nowlines"></div>
+    <div id="nowholds"></div>
+    <div id="nowdecision"></div>
+    <div id="nowask"></div>
+  </main>
   <section id="waiting" class="sec" hidden><h2>あなたを待つこと</h2><div class="cards" id="sec-waiting"></div></section>
   <section id="read" class="sec" hidden><h2>読み取ったこと</h2><div class="cards" id="sec-read"></div></section>
   <section id="done" class="sec" hidden><h2>AIが済ませたこと</h2><div class="cards" id="sec-done"></div></section>

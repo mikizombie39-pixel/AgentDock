@@ -277,11 +277,18 @@ def _approve(owner: str, case, opt, shown_fp: str, actor: str, now: str, fail_at
         allocs = [dict(order_id=l["ref_id"] if l["kind"] == "order" else None, quantity=l["quantity"]) for l in numbers["lines"]]
         priority = consult.changes_priority(c, case, dict(quantity=purchase["quantity"], allocations=allocs))
         may = authority.may_change_priority(c, actor)
+        # 人の決定：決定と違うと明示した案は、決定した人か網谷さんだけが確定できる。
+        # 決定どおりの案で、決定した人が優先を変えてよい役割なら、優先の判断はもう済んでいる
+        decision = consult.latest_decision(c, case["id"])
+        differs = plan.get("differs_from_decision") is not None
+        settled = (decision is not None and not differs and authority.may_change_priority(c, decision["decided_by"])
+                   and not consult.against_decision(c, decision, plan["allocations"]))
+        by_decider = not differs or actor == decision["decided_by"] or may
     finally:
         c.close()
-    if not auth["allowed"] or (priority and not may):
+    if not auth["allowed"] or (priority and not may and not settled) or not by_decider:
         _set_case(owner, case["id"], "needs_president")
-        return dict(result="needs_president", case_id=case["id"], authority=auth, priority_change=priority)
+        return dict(result="needs_president", case_id=case["id"], authority=auth, priority_change=priority, differs_from_decision=differs)
     _book_proposals(owner, case, opt, numbers, actor)
     _set_case(owner, case["id"], "incomplete")
     return _run_steps(owner, case["id"], fail_at)

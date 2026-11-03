@@ -344,3 +344,149 @@ def source(owner: str, dbname: str, table: str, rid: int) -> dict:
                 out["step"] = dict(s)
         return out
     raise ValueError(f"{dbname}.{table}")
+
+
+# ── 現在地（作業の画面の既定の表示）────────────────────────────────
+# 注文ごとの状態の行は、コードが業務 DB の事実から決まった言い方で作る（AI の文は使わない）。
+# 確保 ＝ 登録済み（自社の在庫に注文の引当がある）＋ 押さえ中（相手の仮押さえ）のうち、人の決定がその注文に回した数
+
+def _now_demo(on_date: str) -> str:
+    return f"{on_date}T06:30:00+09:00"
+
+
+def current(owner: str, item: str, on_date: str = sc.DEMO_DATE) -> dict:
+    from agentdock import consult
+    if owner not in db.OWNER_CODES:
+        raise ValueError(owner)
+    con = db.connect(owner)
+    try:
+        it = con.execute("SELECT id, code, name, unit FROM item WHERE code = ?", (item,)).fetchone()
+        if it is None:
+            raise ValueError(item)
+        unit = sc.unit_label(it["unit"])
+        orders = [dict(r) for r in con.execute(
+            "SELECT o.id, c.name AS customer, o.quantity, o.status FROM order_book o JOIN customer c ON c.id = o.customer_id "
+            "WHERE o.item_id = ? AND o.order_date = ? ORDER BY o.id", (it["id"], on_date))]
+        for o in orders:
+            o["registered"] = con.execute("SELECT coalesce(sum(quantity), 0) FROM stock WHERE order_id = ? AND status = 'allocated'", (o["id"],)).fetchone()[0]
+        case = con.execute("SELECT * FROM deal_case WHERE item_id = ? AND trade_date = ? ORDER BY updated_at DESC, id DESC LIMIT 1", (it["id"], on_date)).fetchone()
+        decision = consult.latest_decision(con, case["id"]) if case and case["status"] not in CLOSED_CASE else None
+        holds = _live_holds(owner, item, on_date)
+        # 押さえ中の数を、人の決定の配分の順に注文へ回す（決定が無ければ、どの注文にも回さない）
+        held_for, left_hold = {}, sum(h["quantity"] for h in holds)
+        for a in (decision or {}).get("allocations") or []:
+            if a.get("order_id") is not None and left_hold > 0:
+                n = min(a["quantity"], left_hold)
+                held_for[a["order_id"]] = held_for.get(a["order_id"], 0) + n
+                left_hold -= n
+        lines = [_order_line(o, held_for.get(o["id"], 0), holds, unit) for o in orders]
+        hold_lines = [] if decision and decision.get("allocations") else [
+            dict(h, text=f"{h['seller_name']}が {h['quantity']}{unit}を 1{unit} {h['unit_price_yen']:,}円で押さえています（期限 {h['valid_until'][11:16]}）。"
+                         "どの注文に回すかは未定です") for h in holds]
+        ask = _ask(con, case, orders, unit) if case else dict(waiting_for=None, pending=None, question=None, options=[], case=None)
+        # AI の順番を待つ出来事（まだ誰も引き受けていない・この組織の AI を起こす・この品目）
+        ai_queue = []
+        for r in con.execute("SELECT id, at, kind, payload_json FROM biz_event WHERE status = 'pending' AND run_id IS NULL ORDER BY id"):
+            ev = dict(id=r["id"], kind=r["kind"], payload=json.loads(r["payload_json"]))
+            if agents.wakes(owner, ev) and agents.event_item(owner, ev) == item:
+                ai_queue.append(dict(event_id=r["id"], kind=r["kind"], at=r["at"]))
+        ask["ai_queue"] = ai_queue
+        out = dict(owner=owner, item=dict(code=it["code"], name=it["name"], unit=unit), lines=lines, holds=hold_lines,
+                   decision=dict(decision, text=consult.decision_text(decision, unit)) if decision else None, **ask)
+    finally:
+        con.close()
+    return out
+
+
+def _live_holds(owner, item, on_date):
+    now = _now_demo(on_date)
+    m = db.connect(db.MARKET)
+    try:
+        rows = [dict(r) for r in m.execute(
+            "SELECT t.id, t.seller, t.quantity, t.unit_price_yen, t.valid_until, t.message_id FROM offer_term t JOIN network_message n ON n.id = t.message_id "
+            "WHERE t.buyer = ? AND t.item_code = ? AND n.trade_date = ? AND t.status = 'offered' AND t.hold_ref IS NOT NULL AND t.valid_until > ? ORDER BY t.id",
+            (owner, item, on_date, now))]
+    finally:
+        m.close()
+    # 1つの返事の条件は二者択一（押さえは1件）。返事ごとに最も多い数量の条件を押さえとして数える
+    best = {}
+    for r in rows:
+        if r["message_id"] not in best or r["quantity"] > best[r["message_id"]]["quantity"]:
+            best[r["message_id"]] = r
+    return [dict(term_id=r["id"], seller=r["seller"], seller_name=sc.OWNERS[r["seller"]]["name"], quantity=r["quantity"],
+                 unit_price_yen=r["unit_price_yen"], valid_until=r["valid_until"]) for r in best.values()]
+
+
+def _order_line(o, held, holds, unit):
+    q, reg = o["quantity"], o["registered"]
+    secured = reg + held
+    seller = holds[0]["seller_name"] if holds else ""
+    detail = "・".join(x for x in ((f"登録済み {reg}{unit}" if reg else ""), (f"{seller}が押さえ中 {held}{unit}" if held else "")) if x)
+    if secured >= q:
+        text = f"{o['customer']}の注文 {q}{unit}を確保しています（{detail}）"
+        state = "secured"
+    elif secured > 0:
+        text = f"{o['customer']}の注文 {q}{unit}のうち {secured}{unit}を確保しています（{detail}）。{q - secured}{unit} 足りません"
+        state = "short"
+    else:
+        text = f"{o['customer']}の {q}{unit}は、まだそろっていません"
+        state = "none"
+    return dict(order_id=o["id"], customer=o["customer"], quantity=q, registered=reg, held=held, secured=secured, short=max(0, q - secured),
+                state=state, text=text)
+
+
+def _ask(con, case, orders, unit):
+    """人を待つこと：最新の版の問い（短い問い）と案（短い名前・コードの数字・根拠）。網谷さんを待つ間は担当者の操作を出さない。"""
+    from agentdock import consult
+    waiting_for = pending = None
+    cons = con.execute("SELECT * FROM consultation WHERE case_id = ? ORDER BY id DESC LIMIT 1", (case["id"],)).fetchone()
+    last = con.execute("SELECT * FROM case_decision WHERE case_id = ? ORDER BY id DESC LIMIT 1", (case["id"],)).fetchone()
+    if case["status"] == "needs_president" and last is not None and last["result"] == "needs_president":
+        waiting_for = "president"
+        d = json.loads(last["detail"] or "{}")
+        pending = dict(kind="approval", option_id=last["option_id"], asked_by=last["actor"], priority_change=bool(d.get("priority_change")),
+                       over_limit=(d.get("authority") or {}).get("allowed") is False, differs_from_decision=bool(d.get("differs_from_decision")),
+                       amount_yen=(d.get("authority") or {}).get("amount_yen"), limit_yen=(d.get("authority") or {}).get("limit_yen"))
+    elif cons is not None and cons["status"] == "needs_president":
+        waiting_for = "president"
+        pending = dict(kind="consultation", consultation_id=cons["id"], asked_by=cons["answered_by"], priority_change=True,
+                       change=json.loads(cons["change_json"]) if cons["change_json"] else None)
+    elif case["status"] in ("presented", "held"):
+        waiting_for = "staff"
+    if waiting_for is None:
+        return dict(waiting_for=None, pending=None, question=None, options=[], case=dict(id=case["id"], version=case["version"], status=case["status"]))
+    t = con.execute("SELECT layout_json, at FROM workspace_turn WHERE case_id = ? AND version = ? AND source = 'present' ORDER BY id DESC LIMIT 1",
+                    (case["id"], case["version"])).fetchone()
+    layout = json.loads(t["layout_json"]) if t else {}
+    short = layout.get("short_labels") or {}
+    vault = [c["data"] for c in layout.get("cards") or [] if c.get("card_type") == "vault"]
+    rows = [dict(r) for r in con.execute("SELECT * FROM board_option WHERE case_id = ? AND version = ? AND status = 'offered' ORDER BY code",
+                                         (case["id"], case["version"]))]
+    nums = {r["id"]: json.loads(r["numbers_json"]) for r in rows}
+    gp = lambda n: n["gross_profit_yen"] if n["gross_profit_yen"] is not None else n["gross_profit_without_unconfirmed_yen"]
+    rec = next((r for r in rows if r["recommended"]), rows[0] if rows else None)
+    base = gp(nums[rec["id"]]) if rec else 0
+    options = []
+    for r in rows:
+        n, plan = nums[r["id"]], json.loads(r["plan_json"])
+        to = {}
+        for l in n["lines"]:
+            if l["kind"] == "order":
+                to[l["ref_id"]] = to.get(l["ref_id"], 0) + l["quantity"]
+        after = [dict(order_id=o["id"], customer=o["customer"], quantity=o["quantity"], secured_after=min(o["quantity"], o["registered"] + to.get(o["id"], 0)),
+                      short_after=max(0, o["quantity"] - o["registered"] - to.get(o["id"], 0))) for o in orders if o["status"] in ("open", "partly_filled")]
+        options.append(dict(
+            option_id=r["id"], code=r["code"], label=short.get(r["code"]) or r["label"], long_label=r["label"], recommended=bool(r["recommended"]),
+            executable=bool(r["executable"]), fingerprint=r["fingerprint"], version=r["version"], differs_from_decision=plan.get("differs_from_decision") is not None,
+            action="approve" if n["purchase"] else "reject", after=after,
+            numbers=dict(purchase=n["purchase"] and dict(seller=n["purchase"]["seller_name"], quantity=n["purchase"]["quantity"],
+                                                         unit_price_yen=n["purchase"]["unit_price_yen"]),
+                         purchase_yen=n["purchase_yen"], revenue_yen=n["revenue_yen"], process_cost_yen=n["process_cost_yen"], gross_profit_yen=gp(n),
+                         lines=[dict(to=l["to"], quantity=l["quantity"]) for l in n["lines"]], errors=n["errors"]),
+            gross_profit_diff_yen=gp(n) - base,
+            grounds=dict(reason=r["reason"], risk=r["risk"], vault=[dict(title=v.get("title"), author=v.get("author"), written_on=v.get("written_on")) for v in vault])))
+    question = (layout.get("short_question") or layout.get("ask_human") or layout.get("headline")) if t else None
+    return dict(waiting_for=waiting_for, pending=pending, question=dict(text=question, at=t["at"] if t else None, version=case["version"]) if question else None,
+                options=options, case=dict(id=case["id"], version=case["version"], status=case["status"]),
+                consultation=dict(id=cons["id"], status=cons["status"], version=cons["task_version"],
+                                  change=json.loads(cons["change_json"]) if cons["change_json"] else None) if cons else None)

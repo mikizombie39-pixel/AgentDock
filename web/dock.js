@@ -9,6 +9,8 @@
   const Q = new URLSearchParams(location.search);
   const MODE = Q.get("mode") === "replay" ? "replay" : "live";
   const ITEM = Q.get("item") || "buri_xl";
+  // live mode opens on the worker's current state; the five sections are the 「仕組みと根拠」 side. Replay shows the sections
+  let VIEW = MODE === "live" && Q.get("view") !== "evidence" ? "now" : "evidence";
   const $ = (id) => document.getElementById(id);
   const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
   const NOREC = "記録なし";
@@ -55,6 +57,7 @@
       confirmed: "ok", registered: "ok", filled: "ok" }[state] || "";
     return state && STATE[state] ? `<span class="badge ${cls}">${STATE[state]}</span>` : "";
   }
+  function presidentWaited() { return [...shown.values()].some((s) => s.item.kind === "approval" && s.state === "needs_president"); }
   function srcBtn(it) { return `<button class="src" data-src="${esc(it.key)}">${icon("file-search")}記録</button>`; }
   function terms(d) { return d.terms && d.terms.length ? d.terms : [{ quantity: null, unit_price_yen: null, valid_until: null }]; }
 
@@ -96,12 +99,12 @@
     const opts = (d.options || []).map((o) => {
       const buy = o.purchase ? `${esc(o.purchase.seller)}から ${o.purchase.quantity}${unit} × ${yen(o.purchase.unit_price_yen)}` : "仕入れない";
       const to = (o.lines || []).map((l) => `${esc(l.to)} ${l.quantity}${unit}`).join("・");
-      const can = live && state === "open" && o.executable && o.status === "offered";
+      const can = live && state === "open" && o.executable && o.status === "offered" && !presidentWaited();
       return `<div class="opt"><div class="lb">案 ${esc(o.code)}${o.recommended ? '<span class="badge">AIの勧め</span>' : ""}　${esc(o.label)}</div>
         <div class="kv"><div>${buy}${to ? "　→ " + to : ""}</div><div class="v">${o.purchase ? yen(o.purchase.amount_yen) : ""}</div>
         <div>粗利（見込み・コードの計算）</div><div class="v">${yen(o.gross_profit_yen)}</div></div>
         ${o.executable ? "" : `<div class="err">実行できません：${(o.errors || []).map(esc).join("・")}</div>`}
-        ${can ? `<button class="act" data-decide="${esc(it.key)}" data-opt="${o.option_id}">この案で承認する</button>` : ""}</div>`;
+        ${can ? `<button class="act" data-decide="${esc(it.key)}" data-opt="${o.option_id}">${o.purchase ? "この案で承認する" : "見送る"}</button>` : ""}</div>`;
     }).join("");
     const ch = d.change ? `<div class="sub">答え：仕入れ ${d.change.quantity}${unit}（${(d.change.allocations || []).map((a) => `${esc(a.customer)} ${a.quantity}${unit}`).join("・")}）・${d.answered_by === "president" ? "網谷さん" : "担当者"}</div>` : "";
     let ctl = "";
@@ -244,18 +247,12 @@
     if (it.section === "network" || it.section === "left") parent.appendChild(el); else parent.insertBefore(el, parent.firstChild);
     $(it.section === "network" ? "network" : it.section).hidden = false;
     shown.set(it.key, { item: it, state, el });
-    if (!animate || REDUCED) return;
-    if (it.section === "network") {   // rows appear final; the fish only carry the information to the row
-      const r = rectOf(el); el.style.visibility = "hidden";
-      Sea.school({ from: originFor(it, r), to: r, n: 14, stagger: 360, hold: 120, onFormed: () => (el.style.visibility = "") });
-      return;
-    }
-    el.classList.add("forming");
-    requestAnimationFrame(() => {
+    // cards and rows appear at once; the school swims only when information arrives from another organisation
+    if (!animate || REDUCED || VIEW !== "evidence") return;
+    if (it.section === "network" && !it.data.outgoing) {
       const r = rectOf(el);
-      Sea.school({ from: originFor(it, r), to: r, n: it.section === "waiting" ? 40 : it.section === "left" ? 12 : 24, tone: tone(it),
-        onFormed: () => el.classList.remove("forming") });
-    });
+      Sea.school({ from: originFor(it, r), to: r, n: 14, stagger: 360, hold: 120 });
+    }
   }
 
   function update(it, state, animate) {
@@ -355,27 +352,164 @@
     if (Q.get("autoplay") === "1") $("rpplay").click();
   }
 
-  // ── live: follow the server (one request at a time: the audit stream, then the work view when something moved) ──
+  // ── live: follow the server (one request at a time: the audit stream, then the current state and the work view) ──
   async function live() {
     let cursor = 0, n = 0, first = true;
     async function loop() {
       try {
         const e = await (await fetch(`/api/events?owner=${OWNER}&since=${cursor}`)).json();
         const moved = e.cursor !== cursor; cursor = e.cursor;
-        if (first || moved || n++ % 3 === 0) {
+        if (first || moved || n++ % 3 === 0 || nowState.refresh) {
+          nowState.refresh = false;
+          const cur = await (await fetch(`/api/current?owner=${OWNER}&item=${encodeURIComponent(ITEM)}`)).json();
           const v = await (await fetch(`/api/work?owner=${OWNER}&item=${encodeURIComponent(ITEM)}`)).json();
-          if (first) {   // the screen starts from nothing: what is already recorded forms one by one
-            header(v);
-            v.items.forEach((it, k) => setTimeout(() => apply([it], true), k * 140));
-          } else apply(v.items, true);
+          if (first) header(v);
+          // information that arrived from another organisation since the last look
+          const fresh = first ? [] : v.items.filter((it) => it.kind === "message" && !it.data.outgoing && !shown.has(it.key));
+          apply(v.items, !first);
           activity = v.activity; aiText(activity, null);
+          const changed = renderNow(cur, !first);
+          if (!first && VIEW === "now" && !REDUCED) {
+            if (fresh.length) for (const m of fresh) streamFrom(m.data.from_owner, changed.length ? changed : [$("nowask")]);   // (a)
+            else for (const el of changed) { const r = rectOf(el); Sea.school({ from: { x: r.x - 30, y: r.y + r.h / 2 }, to: r, n: 18, hold: 160 }); }   // (b)
+          }
           first = false;
         }
       } catch (err) { /* keep the last view; try again */ }
-      setTimeout(loop, 1000);
+      setTimeout(loop, nowState.refresh ? 50 : 1000);
     }
     loop();
   }
+
+  // ── the worker's current state (code-made status lines; the AI's short question and its options) ──
+  const nowState = { lines: new Map(), key: "", open: null, cur: null, stop: "", ack: null, refresh: false };
+  function streamFrom(org, targets) {
+    const o = orgsShown.get(org);
+    if (!o) return;
+    const f = rectOf(o);
+    for (const el of targets) Sea.school({ from: { x: f.x + f.w - 8, y: f.y + f.h / 2 }, to: rectOf(el), n: 16, stagger: 420, hold: 180 });
+  }
+  function renderNow(cur, animate) {
+    if (!cur || !cur.lines) return [];
+    unit = cur.item.unit;
+    const changed = [], seen = new Set(), box = $("nowlines");
+    for (const l of cur.lines) {
+      const k = "o" + l.order_id; seen.add(k);
+      let el = nowState.lines.get(k);
+      if (!el) { el = document.createElement("div"); el._text = null; box.appendChild(el); nowState.lines.set(k, el); }
+      if (el._text !== l.text) {
+        el.className = `line ${l.state}`;
+        el.innerHTML = `${icon("fish")}<span>${esc(l.text)}</span>`;
+        if (el._text !== null) changed.push(el);
+        el._text = l.text;
+      }
+    }
+    for (const [k, el] of nowState.lines) if (!seen.has(k)) { el.remove(); nowState.lines.delete(k); }
+    $("nowholds").innerHTML = (cur.holds || []).map((x) => `<div class="holdline">${icon("hourglass")}<span>${esc(x.text)}</span></div>`).join("");
+    $("nowdecision").textContent = cur.decision ? `人の決定：${cur.decision.text}` : "";
+    const k = JSON.stringify([cur.waiting_for, cur.case && cur.case.version, cur.case && cur.case.status, cur.consultation && cur.consultation.status,
+      (cur.options || []).map((o) => o.option_id + ":" + o.fingerprint + ":" + o.executable)]);
+    if (k !== nowState.key) {
+      // (c) the situation changed while the person was choosing: stop them, show what changed, re-form
+      if (nowState.open && nowState.key && animate) { Sea.ripple(rectOf($("nowask"))); nowState.stop = "状況が変わったので、選んでいた内容を止めました。新しい内容を見てください"; }
+      nowState.key = k; nowState.open = null;
+    }
+    nowState.cur = cur;
+    drawAsk();
+    return changed;
+  }
+  function aiNow() {
+    const r = [...activity].reverse().find((x) => !x.ended_at);
+    if (r) return `AI：${RUN[r.event_kind] || "出来事を確かめています"}`;
+    const qd = (nowState.cur && nowState.cur.ai_queue) || [];
+    if (qd.length) return `AIの番です：${RUN[qd[0].kind] || "出来事を確かめます"}（起きるのを待っています）`;
+    return "あなたを待つことはありません。AIが次の出来事を見張っています";
+  }
+  function ackLine() {
+    return (nowState.stop ? `<div class="ack bad">${esc(nowState.stop)}</div>` : "") + (nowState.ack ? `<div class="ack ${nowState.ack.bad ? "bad" : ""}">${esc(nowState.ack.text)}</div>` : "");
+  }
+  function drawAsk() {
+    const cur = nowState.cur, box = $("nowask");
+    if (!cur) return;
+    if (!cur.waiting_for) { box.innerHTML = `<div class="aiturn">${icon("bot")}<span>${esc(aiNow())}</span></div>${ackLine()}`; return; }
+    if (cur.waiting_for === "president") {
+      const p = cur.pending || {};
+      const why = [p.priority_change ? "売り先の注文を欠いてほかへ回すため（顧客の間の優先）" : "", p.over_limit ? `担当者の上限 ${yen(p.limit_yen)} を超えるため` : "",
+        p.differs_from_decision ? "人の決定と違う案のため" : ""].filter(Boolean).join("・");
+      const o = p.kind === "approval" ? (cur.options || []).find((x) => x.option_id === p.option_id) : null;
+      const ch = p.kind === "consultation" && p.change ? `仕入れ ${p.change.quantity}${unit}（${(p.change.allocations || []).map((a) => `${esc(a.customer)} ${a.quantity}${unit}`).join("・")}）` : "";
+      box.innerHTML = `<div class="ask-q">網谷さん（社長）の判断を待っています</div><div class="ask-sub">${esc(why || NOREC)}</div>
+        ${o ? `<div class="choices"><button class="choice on" disabled>${esc(o.label)}<small>担当者が選んだ案</small></button></div>${panelHtml(o, "president")}` : ""}
+        ${p.kind === "consultation" ? `<div class="waitpres"><span>担当者の答え：${ch}</span><button class="act main" data-pgo="consult">網谷さん（社長）として、この答えで確定する</button></div>` : ""}${ackLine()}`;
+      return;
+    }
+    const q = cur.question;
+    box.innerHTML = `<div class="ask-q">${esc(q ? q.text : NOREC)}</div><div class="ask-sub">AIの問い（版 ${cur.case.version}）</div>
+      <div class="choices">${(cur.options || []).map((o) => `<button class="choice ${nowState.open === o.option_id ? "on" : ""} ${o.executable || o.action === "reject" ? "" : "off"}" data-choice="${o.option_id}">
+        ${esc(o.label)}<small>${o.recommended ? "AIの勧め" : ""}${o.differs_from_decision ? "　人の決定と違う案" : ""}</small></button>`).join("")}</div>
+      ${nowState.open ? panelHtml((cur.options || []).find((o) => o.option_id === nowState.open), "staff") : ""}${ackLine()}`;
+  }
+  function panelHtml(o, actor) {
+    if (!o) return "";
+    const n = o.numbers;
+    const after = (o.after || []).map((a) => `<div>${esc(a.customer)}の注文 ${a.quantity}${unit}</div><div class="v">${a.short_after ? `確保 ${a.secured_after}${unit}・${a.short_after}${unit} 足りない` : `確保 ${a.secured_after}${unit}`}</div>`).join("");
+    const buy = n.purchase ? `<div>仕入れ ${esc(n.purchase.seller)} ${n.purchase.quantity}${unit} × ${yen(n.purchase.unit_price_yen)}</div><div class="v">${yen(n.purchase_yen)}</div>` : `<div>仕入れない</div><div class="v"></div>`;
+    const d = o.gross_profit_diff_yen;
+    const gp = `<div>粗利（見込み）</div><div class="v">${yen(n.gross_profit_yen)}</div><div>勧める案との差</div><div class="v">${d === 0 ? "0円" : (d > 0 ? "+" : "−") + yen(Math.abs(d))}</div>`;
+    const errs = n.errors && n.errors.length ? `<div class="err">実行できません：${n.errors.map(esc).join("・")}</div>` : "";
+    const vault = o.grounds.vault.length ? o.grounds.vault.map((v) => `<div>${esc(v.title)}</div><div class="sub">${esc(v.author)}・${esc(v.written_on)}</div>`).join("") : NOREC;
+    const label = actor === "president" ? "網谷さん（社長）として承認する" : o.action === "approve" ? "これで進める" : "見送る";
+    const live = MODE === "live" && (o.action === "reject" || o.executable);
+    return `<div class="panel"><div><h4>変わること（コードの計算）</h4><div class="kv">${after}${buy}${gp}</div>${errs}</div>
+      <div><h4>参照した経験（Vault）</h4>${vault}</div><div><h4>AIの理由</h4><div>${esc(o.grounds.reason || NOREC)}</div><div class="sub">${esc(o.grounds.risk || "")}</div></div></div>
+      <div class="go"><button class="act main" data-go="${o.option_id}" data-actor="${actor}" ${live ? "" : "disabled"}>${label}</button></div>`;
+  }
+  async function confirm(o, actor) {
+    const cur = nowState.cur;
+    const body = o.action === "approve" ? { owner: OWNER, case_id: cur.case.id, option_id: o.option_id, action: "approve", fingerprint: o.fingerprint, idempotency_key: key(), actor }
+      : { owner: OWNER, case_id: cur.case.id, option_id: null, action: "reject", fingerprint: null, idempotency_key: key(), actor };
+    nowState.ack = { text: "送っています…", bad: false }; drawAsk();
+    let r, j;
+    try { r = await fetch("/api/decide", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }); j = await r.json(); }
+    catch (e) { nowState.ack = { text: "送れませんでした（サーバーに届いていません）", bad: true }; drawAsk(); return; }
+    settle(r.status, j);
+  }
+  function settle(status, j) {
+    if (status === 409 || j.result === "stale" || j.result === "not_executable") {   // what changed, from the code's re-check
+      nowState.ack = { text: `確定しませんでした。変わったこと：${(j.reasons || [j.detail || j.error || ""]).join("・")}`, bad: true };
+      if (!REDUCED) Sea.ripple(rectOf($("nowask")));
+    } else if (j.result === "needs_president") nowState.ack = { text: "網谷さん（社長）の承認を待ちます", bad: false };
+    else if (j.result === "registered") nowState.ack = { text: "✓ 登録しました（サーバーが受け付けました）", bad: false };
+    else if (j.result === "rejected") nowState.ack = { text: "✓ 見送りました（サーバーが受け付けました）", bad: false };
+    else if (j.result === "answered") nowState.ack = { text: "✓ 答えを記録しました。AIが交渉し直します", bad: false };
+    else nowState.ack = { text: j.detail || j.error || j.result || NOREC, bad: true };
+    nowState.open = null; nowState.stop = ""; nowState.refresh = true; drawAsk();
+  }
+  $("nowask").addEventListener("click", async (e) => {
+    const b = e.target.closest("button");
+    if (!b || b.disabled || MODE !== "live") return;
+    const cur = nowState.cur;
+    if (b.dataset.choice) { nowState.open = Number(b.dataset.choice) === nowState.open ? null : Number(b.dataset.choice); nowState.stop = ""; nowState.ack = null; return drawAsk(); }
+    if (b.dataset.go) {
+      const o = cur.options.find((x) => x.option_id === Number(b.dataset.go));
+      b.disabled = true;
+      return confirm(o, b.dataset.actor);
+    }
+    if (b.dataset.pgo === "consult") {
+      b.disabled = true;
+      const p = cur.pending;
+      const r = await fetch("/api/answer", { method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ owner: OWNER, consultation_id: p.consultation_id, option: "change", idempotency_key: key(), change: p.change, role: "president" }) });
+      settle(r.status, await r.json().catch(() => ({})));
+    }
+  });
+  function setView(v) {
+    VIEW = v;
+    document.body.dataset.view = v;
+    $("nowview").hidden = v !== "now";
+    $("viewbtn").textContent = v === "now" ? "仕組みと根拠を見る" : "今の状態に戻る";
+  }
+  $("viewbtn").addEventListener("click", () => setView(VIEW === "now" ? "evidence" : "now"));
 
   // ── the person's operations (live only; the existing APIs) ──
   const key = () => (crypto.randomUUID && crypto.randomUUID()) || String(Date.now()) + Math.random();
@@ -412,7 +546,8 @@
     if (b.dataset.decide) {
       const o = d.options.find((x) => String(x.option_id) === b.dataset.opt);
       b.disabled = true;
-      return post("/api/decide", { owner: OWNER, case_id: d.case_id, option_id: o.option_id, action: "approve", fingerprint: o.fingerprint, idempotency_key: key(), actor: "staff" }, it.key);
+      return post("/api/decide", o.purchase ? { owner: OWNER, case_id: d.case_id, option_id: o.option_id, action: "approve", fingerprint: o.fingerprint, idempotency_key: key(), actor: "staff" }
+        : { owner: OWNER, case_id: d.case_id, option_id: null, action: "reject", fingerprint: null, idempotency_key: key(), actor: "staff" }, it.key);
     }
     if (b.dataset.approve) { b.disabled = true; return post("/api/decide", { owner: OWNER, case_id: d.case_id, option_id: d.option_id, action: "approve", fingerprint: d.fingerprint, idempotency_key: key(), actor: "president" }, it.key); }
     if (b.dataset.pres) { b.disabled = true; return post("/api/answer", { owner: OWNER, consultation_id: d.consultation_id, option: "change", idempotency_key: key(), change: d.change, role: "president" }, it.key); }
@@ -444,6 +579,7 @@
   fetch(`/api/work?owner=${OWNER}&item=${encodeURIComponent(ITEM)}`).then((r) => r.json()).then((v) => {
     if (!v.item) { $("aitext").textContent = NOREC; return; }
     header(v);
+    if (MODE === "live") { $("viewbtn").hidden = false; setView(VIEW); } else document.body.dataset.view = "evidence";
     if (MODE === "replay") replay(v); else live();
   });
 })();

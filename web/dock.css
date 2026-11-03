@@ -109,6 +109,43 @@ button:disabled { cursor: default; opacity: .45; }
 .leftover .shoal .ic { width: 15px; height: 15px; }
 .leftover.forming { opacity: 0; }
 
+/* current state (the worker's default view in live mode) */
+body[data-view="now"] .sec:not(#orgs) { display: none !important; }
+body[data-view="evidence"] #nowview { display: none !important; }
+.vbtn { border: 1px solid var(--line); background: var(--sf); border-radius: 14px; padding: 5px 12px; font-size: 13px; color: var(--ink); }
+#nowview { position: absolute; left: 230px; top: 84px; width: 1130px; height: 800px; }
+#nowview[hidden] { display: none; }
+.nowcap { font-size: 13px; color: var(--mute); margin-bottom: 10px; }
+.line { display: flex; align-items: center; gap: 14px; font-size: 27px; line-height: 1.35; padding: 10px 4px; border-bottom: 1px solid #EAE2D3; }
+.line .ic { width: 30px; height: 30px; flex: none; color: var(--mute); }
+.line.secured .ic { color: var(--ok); }
+.line.short .ic { color: var(--warn); }
+.line.none { color: var(--mute); }
+.holdline { font-size: 18px; color: var(--data); padding: 8px 4px; display: flex; gap: 10px; align-items: center; }
+.holdline .ic { width: 22px; height: 22px; }
+#nowdecision { font-size: 14px; color: var(--own); padding: 6px 4px; min-height: 8px; }
+#nowask { margin-top: 18px; }
+.ask-q { font-size: 30px; font-weight: bold; line-height: 1.35; }
+.ask-sub { font-size: 13px; color: var(--mute); margin: 4px 0 14px; }
+.choices { display: flex; gap: 16px; }
+.choice { min-width: 230px; padding: 16px 22px; font-size: 22px; font-weight: bold; border: 2px solid var(--own); border-radius: 14px; background: var(--sf); color: var(--own);
+  display: flex; flex-direction: column; align-items: flex-start; gap: 4px; }
+.choice small { font-size: 12px; font-weight: normal; color: var(--mute); }
+.choice.on { background: var(--own); color: #fff; }
+.choice.on small { color: #F4E3C2; }
+.choice.off { border-color: var(--line); color: var(--mute); }
+.panel { margin-top: 16px; display: grid; grid-template-columns: 1.3fr 1fr 1fr; gap: 18px; border: 1px solid var(--line); border-radius: 12px; background: var(--sf); padding: 14px 16px; font-size: 14px; }
+.panel h4 { margin: 0 0 6px; font-size: 12px; font-weight: normal; color: var(--mute); }
+.panel .kv { font-size: 15px; }
+.panel .err { color: var(--out); font-size: 13px; }
+.go { margin-top: 14px; display: flex; gap: 14px; align-items: center; }
+.go .act { font-size: 18px; padding: 10px 22px; }
+.ack { font-size: 18px; color: var(--ok); }
+.ack.bad { color: var(--out); font-size: 15px; }
+.waitpres { font-size: 22px; color: var(--own); display: flex; gap: 16px; align-items: center; margin-top: 8px; }
+.aiturn { font-size: 20px; color: var(--data); display: flex; gap: 10px; align-items: center; }
+.aiturn .ic { width: 26px; height: 26px; }
+
 /* the sea (canvas for the school of fish) */
 #sea { position: absolute; left: 0; top: 0; width: 1600px; height: 900px; pointer-events: none; z-index: 20; }
 

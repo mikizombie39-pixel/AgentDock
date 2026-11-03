@@ -529,8 +529,10 @@ _ALLOC = {"type": "object", "additionalProperties": False, "required": ["kind", 
                                                  "customer_lead＝まだ打診していない売り先（customer に名前）／unallocated＝売り先なし"},
                          "ref_id": NULL_INT, "customer": {"type": ["string", "null"]}, "quantity": INT}}
 _OPTION = {"type": "object", "additionalProperties": False,
-           "required": ["code", "label", "buy_term_id", "allocations", "reason", "risk"],
+           "required": ["code", "label", "short_label", "buy_term_id", "allocations", "reason", "risk", "differs_from_decision"],
            "properties": {"code": {"type": "string", "enum": ["A", "B", "C", "D", "E"]}, "label": STR,
+                          "short_label": {"type": "string", "description": "担当者の画面の大きなボタンに出す案の名前（16字まで。例：料亭に 6本）"},
+                          "differs_from_decision": {"type": "boolean", "description": "人の決定（担当者・社長が相談で決めた配分）と違う案なら true。その案は決定した人か網谷さんだけが承認できる"},
                           "buy_term_id": {"type": ["integer", "null"], "description": "仕入れる条件の番号（届いた条件の番号）。仕入れない案は null"},
                           "allocations": {"type": "array", "items": _ALLOC}, "reason": STR, "risk": STR}}
 _CARD = {"type": "object", "additionalProperties": False, "required": ["card_type", "ref_id", "note"],
@@ -549,7 +551,9 @@ PRESENT = Tool(
     "画面は一覧ではなく、担当者が今判断することだけを大きく出す：headline（今起きていることと判断してほしいこと・1文）、"
     "recommended（勧める案）、alternative（比べるべき代わりの案を1つ・無ければ null）、ask_human（担当者への問いかけ）、"
     "actions（今出す操作）、suggested_questions（担当者が聞きそうな質問を3件まで・各40字まで）。",
-    {"item_code": ITEM, "summary": STR, "headline": STR, "cards": {"type": "array", "items": _CARD},
+    {"item_code": ITEM, "summary": STR, "headline": STR,
+     "short_question": {"type": "string", "description": "担当者の画面の中央に大きく出す問い（40字まで。例：料亭に回しますか、スーパーに回しますか）"},
+     "cards": {"type": "array", "items": _CARD},
      "options": {"type": "array", "items": _OPTION}, "recommended": {"type": "string", "enum": ["A", "B", "C", "D", "E"]},
      "alternative": _CODE_OR_NULL, "ask_human": STR, "actions": _ACTIONS,
      "suggested_questions": {"type": "array", "items": STR}},
@@ -614,7 +618,8 @@ SYSTEMS = {
              "担当者から質問が届いたら、業務の状態を道具で確かめ直してから answer_staff で答え、画面を組み直します。"
              "仕入れ値の上限は自社の決まりで、超える案は実行できません。"
              "担当者が相談に答えて数量や配分を変えたら、注文・在庫・やり取りを道具で確かめ直し、変えた条件で相手に問い合わせ直します（前の条件は使いません）。"
-             "返事を確かめ、取引ができない（断られた・決まりを超える）時は、present_options で担当者に相談し直します。" + _COMMON,
+             "返事を確かめ、取引ができない（断られた・決まりを超える）時は、present_options で担当者に相談し直します。"
+             "担当者や社長が相談で決めた配分は、次の案の前提です。決定と違う案を出す時は differs_from_decision を true にします。" + _COMMON,
     "iwase": "あなたは岩瀬漁協（売り手）の Claude AI パートナーです（Agent Dock）。仲買からの問い合わせに、自社の在庫と数量ごとの最低の値を見て答えます。"
              "最低の値より安い条件は出せません。まとめて買えば値を下げられる場合は、その条件を示してかまいません。"
              "同じ仲買から条件を変えた問い合わせが届いたら、その問い合わせに、今の在庫と数量ごとの最低の値で答え直します（前の仮押さえは新しい返事に置き換わります）。" + _COMMON,
