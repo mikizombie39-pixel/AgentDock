@@ -3,6 +3,7 @@
 順1 漁協の資料 → 順2 注文 → 順3 網谷水産が調べる → 順4 B社の掲示 → 順5 漁協に問い合わせ（断り・15kg の条件）
 → 順6 C社に問い合わせ（まとめての条件で断り）→ 順7 B社に問い合わせ（受ける）→ 順8 磁石ボードに候補
 """
+import json
 import os
 import tempfile
 import unittest
@@ -410,3 +411,38 @@ class VariantTest(unittest.TestCase):
         self.assertEqual(len(market.requests_visible_to("amiya", "aji", now=agents.demo_now(D))), 2)   # C社と B社の掲示
         with self.assertRaises(ValueError):
             scene.apply_variant("unknown")
+
+
+class NormalizeAndCompareTest(unittest.TestCase):
+    def test_escaped_unicode_in_tool_input_is_restored(self):
+        raw = {"summary": "\u6599\u4ead\u306f 5kg", "options": [{"label": "\u898b\u9001\u308b"}], "n": 3}
+        self.assertEqual(autonomy.normalize(raw), {"summary": "料亭は 5kg", "options": [{"label": "見送る"}], "n": 3})
+        self.assertEqual(autonomy.normalize("そのまま"), "そのまま")
+
+    def test_compare_returns_code_numbers(self):
+        tmp = tempfile.TemporaryDirectory()
+        os.environ["AGENTDOCK_DATA"] = tmp.name
+        try:
+            self.assertEqual(build.main([]), 0)
+            scene.start()
+            scene.run({"amiya": MockClient(AMIYA[:3]), "buyer_b": MockClient(B), "iwase": MockClient(IWASE), "buyer_c": MockClient(C)}, max_runs=4)
+            c = db.connect("amiya")
+            try:
+                ctx = autonomy.Ctx(owner="amiya", con=c, run_id=0, event={}, on_date=D)
+                out = json.loads(agents.compare_options(ctx, dict(item_code="aji", options=[
+                    dict(code="A", buy_term_id=2, allocations=[dict(kind="order", ref_id=3, customer=None, quantity=10),
+                                                              dict(kind="customer_lead", ref_id=None, customer="料亭", quantity=5)]),
+                    dict(code="B", buy_term_id=1, allocations=[dict(kind="order", ref_id=3, customer=None, quantity=10)])])))
+            finally:
+                c.close()
+            a, b = out["options"]
+            self.assertEqual((a["gross_profit_yen"], b["gross_profit_yen"]), (33000 - 22500 - 3000, 21000 - 17200 - 2000))
+            self.assertEqual([l["certainty"] for l in a["lines"]], ["order", "lead"])
+            m = db.connect("amiya")
+            try:
+                self.assertEqual(m.execute("SELECT count(*) FROM board_option").fetchone()[0], 0)   # ボードには書かない
+            finally:
+                m.close()
+        finally:
+            os.environ.pop("AGENTDOCK_DATA", None)
+            tmp.cleanup()

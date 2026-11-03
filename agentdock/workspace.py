@@ -104,7 +104,8 @@ def compute(con, owner: str, item_code: str, option: dict, now: str) -> dict:
             c = con.execute("SELECT c.id, c.name, c.allow_contact, s.unit_price_yen FROM customer c JOIN sales_price s ON s.customer_id = c.id "
                             "AND s.item_id = ? WHERE c.name = ?", (item["id"], a.get("customer"))).fetchone()
             if c is None:
-                errors.append(f"売り先 {a.get('customer')} の売値がありません")
+                errors.append("customer_lead には customer（売り先の名前）が要ります" if not a.get("customer")
+                              else f"売り先 {a.get('customer')} の売値がありません")
                 continue
             pc = _process_cost(con, item["id"], c["name"])
             lines.append(dict(kind="customer_lead", ref_id=c["id"], to=c["name"], quantity=qty, unit_price_yen=c["unit_price_yen"],
@@ -183,6 +184,8 @@ def _amounts_allowed(con, owner: str, item_code: str, computed: list[dict], on_d
             out |= {row[0], row[0] * (row[1] or 1)}
     finally:
         m.close()
+    unit = {v for v in out if 100 <= v < 10000}   # 1単位の値どうしの差（例：上限より 40円高い）
+    out |= {abs(a - b) for a in unit for b in unit if a != b}
     inbox = con.execute("SELECT body_json FROM inbox_broadcast").fetchall()
     for (b,) in inbox:
         for i in json.loads(b)["items"]:

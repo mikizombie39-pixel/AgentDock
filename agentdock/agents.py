@@ -336,6 +336,22 @@ def present_options(ctx, inp):
     return "磁石ボードに出しました（案件 {}・版 {}）。金額はコードが計算して表示します。\n".format(r["case_id"], r["version"]) + "\n".join(lines)
 
 
+def compare_options(ctx, inp):
+    from agentdock import workspace
+    out = []
+    for o in inp["options"]:
+        n = workspace.compute(ctx.con, ctx.owner, inp["item_code"], dict(buy_term_id=o["buy_term_id"], allocations=o["allocations"]),
+                              demo_now(ctx.on_date))
+        out.append(dict(code=o["code"], executable=n["executable"], errors=n["errors"],
+                        revenue_yen=n["revenue_yen"], purchase_yen=n["purchase_yen"], process_cost_yen=n["process_cost_yen"],
+                        gross_profit_yen=n["gross_profit_yen"], gross_profit_without_unconfirmed_yen=n["gross_profit_without_unconfirmed_yen"],
+                        uncertain_quantity=n["uncertain_quantity"], unsold_quantity=n["unsold_quantity"], unsold_loss_yen=n["unsold_loss_yen"],
+                        lines=[dict(to=l["to"], quantity=l["quantity"], certainty=l["certainty"]) for l in n["lines"]],
+                        uncounted_costs=n["uncounted_costs"]))
+    return _j(dict(note="コードが業務 DB と条件の番号から計算した見込みの値。売れる確かさ（certainty）と売れ残りの危険も見て比べる",
+                   options=out))
+
+
 def wait_for_replies(ctx, inp):
     ctx.summary = inp["reason"]
     return "返事を待ちます。届いたら、また起こします。"
@@ -401,12 +417,21 @@ PRESENT = Tool(
     {"item_code": ITEM, "summary": STR, "cards": {"type": "array", "items": _CARD},
      "options": {"type": "array", "items": _OPTION}, "recommended": {"type": "string", "enum": ["A", "B", "C", "D", "E"]}},
     present_options, ends="presented")
+COMPARE = Tool(
+    "compare_options",
+    "案ごとの売上・仕入れ・加工の費用・粗利の見込み・売れる確かさ・売れ残りの危険を、コードが計算して返す（ボードには出さない）。"
+    "present_options の前に使い、計算の結果も見て勧める案を決める。",
+    {"item_code": ITEM, "options": {"type": "array", "items": {
+        "type": "object", "additionalProperties": False, "required": ["code", "buy_term_id", "allocations"],
+        "properties": {"code": {"type": "string", "enum": ["A", "B", "C", "D", "E"]},
+                       "buy_term_id": {"type": ["integer", "null"]}, "allocations": {"type": "array", "items": _ALLOC}}}}},
+    compare_options)
 WAIT = Tool("wait_for_replies", "問い合わせの返事を待つ（この起動を終える）。", {"reason": STR}, wait_for_replies, ends="waiting")
 NOTHING = Tool("do_nothing", "何もしない（この出来事は自社に関係しない・動く必要がない）。", {"reason": STR}, finish, ends="nothing")
 
 TOOLSETS = {
     "amiya": [READ_ORDERS, READ_MARKET, READ_MATERIAL, READ_VAULT, READ_CUSTOMERS, READ_POSTS, READ_THREAD,
-              SEND_INQUIRY, REPLY, WAIT, PRESENT, NOTHING],
+              SEND_INQUIRY, REPLY, WAIT, COMPARE, PRESENT, NOTHING],
     "iwase": [READ_STOCK, READ_MY_MATERIAL, READ_MARKET, READ_THREAD, REPLY, NOTHING],
     "buyer_b": [READ_ORDERS, READ_MARKET, READ_MATERIAL, READ_VAULT, READ_POSTS, READ_THREAD, POST_REQUEST, REPLY, NOTHING],
     "buyer_c": [READ_STOCK, READ_MARKET, READ_THREAD, REPLY, NOTHING],
@@ -434,7 +459,7 @@ SYSTEMS = {
              "漁協や他の仲買に問い合わせ、取引の候補を磁石ボードに出します。取引を確定する権限はあなたにありません。"
              "最後は担当者が選び、承認します。返事を待つ時は wait_for_replies、候補が出そろったら present_options を使います。"
              "注文より多く仕入れる案は、追加の分の売れる見込み・売れ残りの損も比べて示します。"
-             "問い合わせには希望の値を添えます。"
+             "問い合わせには希望の値を添えます。案を出す前に compare_options でコードの計算を確かめ、利益の差・売れる確かさ・売れ残りの危険を比べて勧める案を決めます。"
              "他の組織に売ると申し出る時は、自社の仕入れの確定と担当者の承認が条件だと書きます。" + _COMMON,
     "iwase": "あなたは岩瀬漁協（売り手）の Claude AI パートナーです（Agent Dock）。仲買からの問い合わせに、自社の在庫と数量ごとの最低の値を見て答えます。"
              "最低の値より安い条件は出せません。まとめて買えば値を下げられる場合は、その条件を示してかまいません。" + _COMMON,

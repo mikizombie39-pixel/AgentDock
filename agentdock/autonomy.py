@@ -9,6 +9,7 @@
 - 出来事は起動が引き受けてから処理し、終われば済みにする。途中の失敗（'error'）は待ちに戻す
 """
 import json
+import re
 from dataclasses import dataclass, field
 from typing import Callable
 
@@ -20,6 +21,20 @@ EFFORT = "medium"
 OUTCOMES = ("presented", "waiting", "nothing", "done", "error", "max_turns", "refusal")
 # 起動の種類（agent_run：mock・real）と、費用の記録の種類（api_usage：mock・scene_check・full_run・recording）の対応
 USAGE_KIND = {"mock": "mock", "real": "full_run"}
+
+
+_UESC = re.compile(r"\\u([0-9a-fA-F]{4})")
+
+
+def normalize(v):
+    """文字の中の \\uXXXX の書き方を文字に戻す（入れ子の dict・list も）。"""
+    if isinstance(v, str):
+        return _UESC.sub(lambda m: chr(int(m.group(1), 16)), v) if "\\u" in v else v
+    if isinstance(v, list):
+        return [normalize(x) for x in v]
+    if isinstance(v, dict):
+        return {k: normalize(x) for k, x in v.items()}
+    return v
 
 
 class ToolError(Exception):
@@ -94,7 +109,7 @@ def run(client, owner: str, event_id: int, role: str, tools: list[Tool], system:
                     break
                 results = []
                 for b in uses:
-                    name, inp = _get(b, "name"), _get(b, "input")
+                    name, inp = _get(b, "name"), normalize(_get(b, "input"))
                     seq += 1
                     tool = by_name.get(name)
                     if tool is None:
