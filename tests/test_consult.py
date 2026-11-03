@@ -21,7 +21,7 @@ class ConsultTest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         os.environ["AGENTDOCK_DATA"] = self.tmp.name
-        self.assertEqual(build.main([]), 0)
+        self.assertEqual(build.main(["--with-aji-s"]), 0)
         self.con = db.connect("amiya")
 
     def tearDown(self):

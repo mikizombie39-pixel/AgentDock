@@ -2,6 +2,10 @@
 
   python -m agentdock.seed.build            # 本編の種
   python -m agentdock.seed.build --scene-c  # 不成立の場面の種（漁協の下限が 19,000円）
+  python -m agentdock.seed.build --with-aji-s  # 会期の前半の部品の試験用：アジ（小）も入れる
+
+本編の DB にはアジ（小）を入れない（本編のアジ 1kg 1,500円と並ぶと値の差が不自然なため・2026-11-03 デイブ）。
+アジ（小）の行も作ってから外すので、他の品目の模擬の値は入れる時と同じになる。
 
 安全装置：消すのは置き場の中の既知の5ファイルだけ。置き場が OneDrive の中なら止める。
 帳面（vault）の置き場は消さず、「vault-退避-日時」の名前で脇へ移す（DB の索引と帳面のファイルを常にそろえるため）。
@@ -18,22 +22,26 @@ def _ids(con, table, key="code"):
     return {r[key]: r["id"] for r in con.execute(f"SELECT id, {key} FROM {table}")}
 
 
-def build_owner(code: str, public_rows, scene_c: bool = False) -> None:
+def build_owner(code: str, public_rows, scene_c: bool = False, with_aji_s: bool = False) -> None:
     con = db.connect(code)
     try:
-        _fill_owner(con, code, public_rows, scene_c)
+        _fill_owner(con, code, public_rows, scene_c, with_aji_s)
     finally:
         con.close()
 
 
-def _fill_owner(con, code: str, public_rows, scene_c: bool) -> None:
+def _fill_owner(con, code: str, public_rows, scene_c: bool, with_aji_s: bool = False) -> None:
     db.migrate(con, "owner")
     o = sc.OWNERS[code]
     now = db.now_iso()
+    skip = set() if with_aji_s else set(sc.LEGACY_ITEMS)
+
+    def keep(rows, pos):
+        return [r for r in rows if r[pos] not in skip]
     with con:
         con.execute("INSERT INTO owner (id, code, name, role, person_name, companion_name) VALUES (1, ?, ?, ?, ?, ?)",
                     (code, o["name"], o["role"], o["person_name"], o["companion_name"]))
-        con.executemany("INSERT INTO item (code, name, unit, unit_weight_g) VALUES (?, ?, ?, ?)", sc.ITEMS)
+        con.executemany("INSERT INTO item (code, name, unit, unit_weight_g) VALUES (?, ?, ?, ?)", keep(sc.ITEMS, 0))
         item = _ids(con, "item")
         con.executemany("INSERT INTO customer (name, kind) VALUES (?, ?)", sc.CUSTOMERS.get(code, []))
         cust = _ids(con, "customer", "name")
@@ -42,19 +50,19 @@ def _fill_owner(con, code: str, public_rows, scene_c: bool) -> None:
         if o["role"] == "buyer":
             con.executemany(
                 "INSERT INTO price_history (item_id, trade_date, kind, unit_price_yen, quantity, source, lot_no) VALUES (?, ?, ?, ?, ?, 'public_result', ?)",
-                [(item[c], d, k, p, q, n) for c, d, k, p, q, n in public_rows])
+                [(item[c], d, k, p, q, n) for c, d, k, p, q, n in keep(public_rows, 0)])
             handled = {i for _, i, *_ in sc.ORDERS.get(code, [])}
             mine = prices.own_trades(code, handled, public_rows)
         else:
             mine = public_rows   # 漁協の販売の記録＝自分の売った結果
         con.executemany(
             "INSERT INTO price_history (item_id, trade_date, kind, unit_price_yen, quantity, source, lot_no) VALUES (?, ?, ?, ?, ?, 'own_trade', ?)",
-            [(item[c], d, k, p, q, n) for c, d, k, p, q, n in mine])
+            [(item[c], d, k, p, q, n) for c, d, k, p, q, n in keep(mine, 0)])
 
         con.executemany("INSERT INTO sales_price (item_id, customer_id, unit_price_yen, valid_from) VALUES (?, ?, ?, ?)",
-                        [(item[i], cust[c], p, sc.HISTORY_FROM) for i, c, p in sc.SALES_PRICES.get(code, [])])
+                        [(item[i], cust[c], p, sc.HISTORY_FROM) for i, c, p in keep(sc.SALES_PRICES.get(code, []), 0)])
         con.executemany("INSERT INTO cost_rule (item_id, process_cost_yen, target_profit_yen, valid_from) VALUES (?, ?, ?, ?)",
-                        [(item[i], c, p, sc.HISTORY_FROM) for i, c, p in sc.COST_RULES.get(code, [])])
+                        [(item[i], c, p, sc.HISTORY_FROM) for i, c, p in keep(sc.COST_RULES.get(code, []), 0)])
         con.executemany("INSERT INTO buyer_rule (item_id, extra_qty_on_cheap_day, valid_from) VALUES (?, ?, ?)",
                         [(item[i], n, sc.HISTORY_FROM) for i, n in sc.BUYER_RULES.get(code, [])])
         rules = sc.SELLER_RULES.get(code, [])
@@ -63,14 +71,14 @@ def _fill_owner(con, code: str, public_rows, scene_c: bool) -> None:
         sp = {(i, c): p for i, c, p in sc.SALES_PRICES.get(code, [])}
         con.executemany(
             "INSERT INTO sales_history (customer_id, item_id, sale_date, ordered_qty, sold_qty, unit_price_yen) VALUES (?, ?, ?, ?, ?, ?)",
-            [(cust[c], item[i], d, o, s_, p) for c, i, d, o, s_, p in sales.history(code, public_rows, sp)])
+            [(cust[c], item[i], d, o, s_, p) for c, i, d, o, s_, p in keep(sales.history(code, public_rows, sp), 1)])
         con.executemany(
             "INSERT INTO order_book (customer_id, item_id, quantity, sell_price_yen, order_date, received_at) VALUES (?, ?, ?, ?, ?, ?)",
-            [(cust[c], item[i], q, p, sc.DEMO_DATE, f"{sc.DEMO_DATE}T05:00:00+09:00") for c, i, q, p in sc.ORDERS.get(code, [])])
+            [(cust[c], item[i], q, p, sc.DEMO_DATE, f"{sc.DEMO_DATE}T05:00:00+09:00") for c, i, q, p in keep(sc.ORDERS.get(code, []), 1)])
         tomorrow = sc.DEMO_DATE  # 見込みの行も「デモの日に作った明日の見込み」として同じ日付で持つ
         con.executemany(
             "INSERT INTO landing (item_id, landing_date, kind, quantity, size_note, caught_at, area, water_temp_c) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-            [(item[i], tomorrow, k, q, s, c, a, w) for i, k, q, s, c, a, w in sc.LANDINGS.get(code, [])])
+            [(item[i], tomorrow, k, q, s, c, a, w) for i, k, q, s, c, a, w in keep(sc.LANDINGS.get(code, []), 0)])
         _fill_autonomy(con, code, item, cust, now)
         con.execute("INSERT INTO audit_event (at, actor, event, detail) VALUES (?, 'system', 'seed', ?)",
                     (now, "scene_c" if scene_c else "main"))
@@ -117,6 +125,7 @@ def build_market() -> None:
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--scene-c", action="store_true")
+    ap.add_argument("--with-aji-s", action="store_true")
     a = ap.parse_args(argv)
 
     folder = db.data_dir()
@@ -136,7 +145,7 @@ def main(argv=None) -> int:
 
     rows = prices.public_results(sc.HISTORY_FROM, sc.HISTORY_TO)
     for code in db.OWNER_CODES:
-        build_owner(code, rows, scene_c=a.scene_c)
+        build_owner(code, rows, scene_c=a.scene_c, with_aji_s=a.with_aji_s)
     build_market()
     print(f"built {len(db.OWNER_CODES) + 1} dbs in {folder} ({len(rows)} public results)")
     return 0

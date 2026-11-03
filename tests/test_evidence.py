@@ -16,7 +16,7 @@ class EvidenceTest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         os.environ["AGENTDOCK_DATA"] = self.tmp.name
-        self.assertEqual(build.main([]), 0)
+        self.assertEqual(build.main(["--with-aji-s"]), 0)
         self.con = db.connect("amiya")
         plans.approve(self.con, "aji_s", "purchase", D, 3000, 3)
         self.task = consult.open_task(self.con, "purchase", "aji_s")

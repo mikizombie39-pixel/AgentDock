@@ -43,14 +43,14 @@ class SeedTest(unittest.TestCase):
         for code in db.OWNER_CODES:
             c = self.con(code)
             self.assertEqual(c.execute("SELECT count(*) FROM owner").fetchone()[0], 1)
-            self.assertEqual(c.execute("SELECT count(*) FROM item").fetchone()[0], 4)
+            self.assertEqual(c.execute("SELECT count(*) FROM item").fetchone()[0], 3)
+            self.assertEqual(c.execute("SELECT count(*) FROM item WHERE code = 'aji_s'").fetchone()[0], 0)   # 本編の DB にアジ（小）は無い
 
     def test_ceilings(self):
         c = self.con("amiya")
         self.assertEqual(criteria.ceiling_yen(c, "buri_xl", "スーパー"), 18500)
         self.assertEqual(criteria.ceiling_yen(c, "buri_xl", "料亭"), 20500)
         self.assertEqual(criteria.ceiling_yen(c, "shiroebi", "スーパー"), 4800)
-        self.assertEqual(criteria.ceiling_yen(c, "aji_s", "スーパー"), 3000)
 
     def test_floor_main(self):
         c = self.con("iwase")
@@ -86,11 +86,8 @@ class SeedTest(unittest.TestCase):
         c = self.con("amiya")
         buri = criteria.market_stats(c, "buri_xl", sc.DEMO_DATE)
         ebi = criteria.market_stats(c, "shiroebi", sc.DEMO_DATE)
-        aji = criteria.market_stats(c, "aji_s", sc.DEMO_DATE)
         self.assertTrue(17000 <= buri["median"] <= 18500, buri)
         self.assertTrue(4300 <= ebi["median"] <= 4600, ebi)
-        self.assertTrue(3200 <= aji["median"] <= 3800, aji)          # kg 320〜380円
-        self.assertLess(2500, aji["median"])                          # 今日の見込み kg 250円は直近より安い
         ly = criteria.last_year_stats(c, "buri_xl", sc.DEMO_DATE)
         self.assertIsNotNone(ly)
 
@@ -139,6 +136,35 @@ class SeedTest(unittest.TestCase):
         with self.assertRaises(sqlite3.IntegrityError):
             c.execute("INSERT INTO plan (item_id, kind, trade_date, max_unit_price_yen, max_quantity, status) VALUES (?, 'tender', ?, 4900, 8, 'approved')", (iid, sc.DEMO_DATE))
         c.rollback()
+
+
+class WithAjiSTest(unittest.TestCase):
+    """会期の前半の部品の試験用の種（--with-aji-s）。他の品目の値は本編と同じ。"""
+
+    def test_aji_s_and_same_other_values(self):
+        q = ("SELECT i.code, p.trade_date, p.source, p.unit_price_yen, p.quantity FROM price_history p "
+             "JOIN item i ON i.id = p.item_id WHERE i.code != 'aji_s' ORDER BY 1, 2, 3, 4, 5")
+        q2 = ("SELECT c.name, i.code, h.sale_date, h.ordered_qty, h.sold_qty FROM sales_history h JOIN item i ON i.id = h.item_id "
+              "JOIN customer c ON c.id = h.customer_id WHERE i.code != 'aji_s' ORDER BY 1, 2, 3")
+        got = {}
+        for flag in ([], ["--with-aji-s"]):
+            with tempfile.TemporaryDirectory() as tmp:
+                os.environ["AGENTDOCK_DATA"] = tmp
+                try:
+                    self.assertEqual(build.main(flag), 0)
+                    c = db.connect("amiya")
+                    try:
+                        got[bool(flag)] = (list(map(tuple, c.execute(q))), list(map(tuple, c.execute(q2))))
+                        if flag:
+                            self.assertEqual(criteria.ceiling_yen(c, "aji_s", "スーパー"), 3000)
+                            aji = criteria.market_stats(c, "aji_s", sc.DEMO_DATE)
+                            self.assertTrue(3200 <= aji["median"] <= 3800, aji)   # kg 320〜380円
+                            self.assertLess(2500, aji["median"])                  # 今日の見込み kg 250円は直近より安い
+                    finally:
+                        c.close()
+                finally:
+                    os.environ.pop("AGENTDOCK_DATA", None)
+        self.assertEqual(got[False], got[True])
 
 
 class SceneCTest(unittest.TestCase):

@@ -15,6 +15,9 @@ ITEMS = [
     ("aji", "アジ", "kg", 1000),   # 本編（自律の場面）の品目。kg で扱う
 ]
 
+# 会期の前半の部品の試験だけで使う品目（本編の DB には入れない・build の --with-aji-s で入る）
+LEGACY_ITEMS = ("aji_s",)
+
 OWNERS = {
     "iwase": dict(name="岩瀬漁協", role="seller", person_name="三井さん", companion_name=None),
     "amiya": dict(name="網谷水産", role="buyer", person_name="網谷さん", companion_name=None),

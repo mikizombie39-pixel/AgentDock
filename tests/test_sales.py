@@ -13,7 +13,7 @@ class SalesTest(unittest.TestCase):
     def setUpClass(cls):
         cls.tmp = tempfile.TemporaryDirectory()
         os.environ["AGENTDOCK_DATA"] = cls.tmp.name
-        assert build.main([]) == 0
+        assert build.main(["--with-aji-s"]) == 0
 
     @classmethod
     def tearDownClass(cls):
