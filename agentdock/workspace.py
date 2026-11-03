@@ -303,8 +303,21 @@ def view(con, case_id: int | None = None) -> dict:
     for o in opts:
         o.pop("numbers_json")
         o.pop("plan_json")
+    owner = con.execute("SELECT code FROM owner").fetchone()[0]
     for c in cards:
         c.pop("data_json")
+        if c["card_type"] in ("quote", "agreement"):   # 状態は変わるので、表示の時に読み直す
+            try:
+                c["data"] = _card_data(con, owner, c)
+            except (BoardError, network.NetworkError):
+                pass
+    done = con.execute("SELECT option_id FROM case_decision WHERE case_id = ? AND result = 'registered' ORDER BY id DESC LIMIT 1", (case["id"],)).fetchone()
+    if done is None and case["status"] == "registered":
+        done = con.execute("SELECT option_id FROM proposal WHERE case_id = ? LIMIT 1", (case["id"],)).fetchone()
+    for o in opts:
+        if done is not None and o["id"] == done[0] and case["status"] == "registered":
+            o["numbers"]["profit_kind"] = "確定"
+            o["chosen"] = True
     summary = con.execute("SELECT detail FROM audit_event WHERE event = 'board_presented' ORDER BY id DESC LIMIT 1").fetchone()
     decisions = [dict(r) for r in con.execute("SELECT action, actor, at, result, detail FROM case_decision WHERE case_id = ? ORDER BY id", (case["id"],))]
     return dict(case=dict(case), cards=cards, options=opts, summary=json.loads(summary[0])["summary"] if summary else None, decisions=decisions)

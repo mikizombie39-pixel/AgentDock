@@ -37,7 +37,7 @@
     }
     rows.push(`<tr><td>加工（下処理と箱詰め）</td><td class="v">−${yen(n.process_cost_yen)}</td></tr>`);
     const gp = n.gross_profit_yen !== null && n.gross_profit_yen !== undefined
-      ? `<tr class="total"><td>粗利（見込み）</td><td class="v">${yen(n.gross_profit_yen)}</td></tr>`
+      ? `<tr class="total"><td>粗利（${esc(n.profit_kind || "見込み")}）</td><td class="v">${yen(n.gross_profit_yen)}</td></tr>`
       : `<tr class="total"><td>粗利（未確認の加工の費用を除く参考の値）</td><td class="v">${yen(n.gross_profit_without_unconfirmed_yen)}</td></tr>`;
     rows.push(gp);
     let extra = "";
@@ -71,7 +71,7 @@
   function showResult(r) {
     const el = $("result");
     const M = {
-      registered: () => `正式に確定しました。取引 ${(r.trades || []).map(esc).join("・")} を、各組織の帳簿に登録しました。粗利の見込み ${yen(r.gross_profit_expected_yen)}`,
+      registered: () => `正式に確定しました。取引 ${(r.trades || []).map(esc).join("・")} を、各組織の帳簿に登録しました。粗利 ${yen(r.gross_profit_expected_yen)}（運賃は未計上）`,
       stale: () => `確定できませんでした。表示した時から条件が変わっています：${(r.reasons || []).map(esc).join("・")}。Claude AI パートナーがボードを出し直します`,
       rejected: () => `見送りました。仮押さえと条件付きの合意を取り消し、相手に知らせました`,
       held: () => `保留にしました。条件の期限まで仮押さえは残ります`,

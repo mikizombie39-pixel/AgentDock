@@ -7,7 +7,7 @@ import os
 import tempfile
 import unittest
 
-from agentdock import agents, autonomy, db, events, scene
+from agentdock import agents, autonomy, db, events, market, scene
 from agentdock.companion import MockClient, Reply
 from agentdock.seed import build
 from agentdock.seed import scenario as sc
@@ -372,3 +372,41 @@ class TermsTest(unittest.TestCase):
 
     def test_amiya_is_told_to_add_a_price(self):
         self.assertIn("問い合わせには希望の値を添えます。", agents.SYSTEMS["amiya"])
+
+
+class VariantTest(unittest.TestCase):
+    """条件を変えた通しの種（業務 DB の事実だけを変える。Claude への指示は変えない）。"""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        os.environ["AGENTDOCK_DATA"] = self.tmp.name
+        self.assertEqual(build.main([]), 0)
+
+    def tearDown(self):
+        os.environ.pop("AGENTDOCK_DATA", None)
+        self.tmp.cleanup()
+
+    def one(self, owner, sql):
+        c = db.connect(owner)
+        try:
+            return c.execute(sql).fetchall()
+        finally:
+            c.close()
+
+    def test_price_up(self):
+        scene.apply_variant("price_up")
+        self.assertEqual([tuple(r) for r in self.one("iwase", "SELECT min_qty, floor_yen FROM quote_rule ORDER BY min_qty")], [(1, 1700), (15, 1640)])
+
+    def test_vault_changed(self):
+        scene.apply_variant("vault_changed")
+        self.assertIn("休業", self.one("amiya", "SELECT body FROM vault_note WHERE kind = 'customer'")[0][0])
+
+    def test_b_declines(self):
+        scene.apply_variant("b_declines")
+        st = scene.start(variant="b_declines")
+        self.assertNotIn("b_order", st)
+        self.assertEqual(self.one("buyer_b", "SELECT status FROM preapproval")[0][0], "cancelled")
+        self.assertEqual(self.one("buyer_b", "SELECT count(*) FROM biz_event WHERE kind = 'order_new'")[0][0], 0)
+        self.assertEqual(len(market.requests_visible_to("amiya", "aji", now=agents.demo_now(D))), 2)   # C社と B社の掲示
+        with self.assertRaises(ValueError):
+            scene.apply_variant("unknown")
