@@ -129,9 +129,27 @@ def thread(owner: str, item_code: str, on_date: str) -> list[dict]:
                          (owner, owner, item_code, on_date)).fetchall()
     finally:
         m.close()
-    return [dict(message_id=r["id"], frm=OWNER_NAMES[r["from_owner"]], to=OWNER_NAMES[r["to_owner"]], from_owner=r["from_owner"],
-                 to_owner=r["to_owner"], kind=r["kind"], quantity=r["quantity"], unit_price_yen=r["unit_price_yen"],
-                 terms=network.terms_of(dict(r)), body=r["body"], in_reply_to=r["in_reply_to"], request_id=r["request_id"]) for r in rows]
+    out = []
+    for r in rows:
+        tl = []
+        for t in network.terms_for_message(r["id"]):
+            ag = _agreement_for_term(t["id"])
+            tl.append(dict(term_id=t["id"], seller=t["seller"], buyer=t["buyer"], quantity=t["quantity"], unit_price_yen=t["unit_price_yen"],
+                           status=t["status"], valid_until=t["valid_until"],
+                           agreement_id=ag["id"] if ag else None, agreement_status=ag["status"] if ag else None))
+        out.append(dict(message_id=r["id"], frm=OWNER_NAMES[r["from_owner"]], to=OWNER_NAMES[r["to_owner"]], from_owner=r["from_owner"],
+                        to_owner=r["to_owner"], kind=r["kind"], side=r["side"], quantity=r["quantity"], unit_price_yen=r["unit_price_yen"],
+                        terms=network.terms_of(dict(r)), term_list=tl, body=r["body"], in_reply_to=r["in_reply_to"], request_id=r["request_id"]))
+    return out
+
+
+def _agreement_for_term(term_id: int):
+    m = market._con()
+    try:
+        r = m.execute("SELECT id, status FROM agreement WHERE term_id = ?", (term_id,)).fetchone()
+    finally:
+        m.close()
+    return dict(r) if r else None
 
 
 def read_thread(ctx, inp):
@@ -298,11 +316,24 @@ def post_request(ctx, inp):
 
 
 def present_options(ctx, inp):
+    from agentdock import workspace
     if not inp["options"]:
         raise ToolError("候補が1つもありません")
+    if inp["recommended"] not in {o["code"] for o in inp["options"]}:
+        raise ToolError("勧める案が候補の中にありません")
+    if len({o["code"] for o in inp["options"]}) != len(inp["options"]):
+        raise ToolError("案の記号が重なっています")
+    try:
+        r = workspace.build(ctx.con, ctx.owner, inp["item_code"], ctx.on_date, inp, ctx.run_id, demo_now(ctx.on_date))
+    except workspace.BoardError as e:
+        raise ToolError("; ".join(e.reasons)) from None
+    except network.NetworkError as e:
+        raise ToolError(str(e)) from None
     ctx.data["presented"] = inp
+    ctx.data["board"] = r
     ctx.summary = inp["summary"]
-    return "磁石ボードに出しました。担当者の選択を待ちます。"
+    lines = [f"{code}：{'実行できる' if ok else '実行できない（' + '・'.join(errs) + '）'}" for code, ok, errs in r["options"]]
+    return "磁石ボードに出しました（案件 {}・版 {}）。金額はコードが計算して表示します。\n".format(r["case_id"], r["version"]) + "\n".join(lines)
 
 
 def wait_for_replies(ctx, inp):
@@ -349,14 +380,26 @@ POST_REQUEST = Tool(
     "post_request", "仲買どうしの掲示を出す（買いたい・譲りたい）。他の全ての組織に届く。文に自社の上限・売り先の名前は書かない。",
     {"side": {"type": "string", "enum": ["buy", "sell"]}, "item_code": ITEM, "quantity": INT, "min_qty": INT, "unit_price_yen": INT, "message": STR},
     post_request, ends="done")
+_ALLOC = {"type": "object", "additionalProperties": False, "required": ["kind", "ref_id", "customer", "quantity"],
+          "properties": {"kind": {"type": "string", "enum": ["order", "agreement", "customer_lead", "unallocated"],
+                                  "description": "order＝自社の注文に充てる（ref_id は注文の番号）／agreement＝条件付きの合意の相手に売る（ref_id は合意の番号）／"
+                                                 "customer_lead＝まだ打診していない売り先（customer に名前）／unallocated＝売り先なし"},
+                         "ref_id": NULL_INT, "customer": {"type": ["string", "null"]}, "quantity": INT}}
 _OPTION = {"type": "object", "additionalProperties": False,
-           "required": ["code", "label", "counterparty", "quantity", "unit_price_yen", "resell_to", "reason"],
+           "required": ["code", "label", "buy_term_id", "allocations", "reason", "risk"],
            "properties": {"code": {"type": "string", "enum": ["A", "B", "C", "D", "E"]}, "label": STR,
-                          "counterparty": {"type": ["string", "null"]}, "quantity": NULL_INT, "unit_price_yen": NULL_INT,
-                          "resell_to": {"type": ["string", "null"]}, "reason": STR}}
+                          "buy_term_id": {"type": ["integer", "null"], "description": "仕入れる条件の番号（届いた条件の番号）。仕入れない案は null"},
+                          "allocations": {"type": "array", "items": _ALLOC}, "reason": STR, "risk": STR}}
+_CARD = {"type": "object", "additionalProperties": False, "required": ["card_type", "ref_id", "note"],
+         "properties": {"card_type": {"type": "string", "enum": ["order", "quote", "agreement", "vault", "customer", "post", "market", "risk", "note"]},
+                        "ref_id": NULL_INT, "note": {"type": ["string", "null"]}}}
 PRESENT = Tool(
-    "present_options", "調べた結果と取引の候補を、担当者の磁石ボードに出す。確定は担当者がする。見送る・保留する候補も含める。",
-    {"summary": STR, "options": {"type": "array", "items": _OPTION}, "recommended": {"type": "string", "enum": ["A", "B", "C", "D", "E"]}},
+    "present_options",
+    "調べた結果と取引の案を、担当者の磁石ボードに出す。確定は担当者がする。見送る・保留する案も含める。"
+    "案は、仕入れる条件の番号（buy_term_id）と、仕入れた数量の配分（allocations）で示す。金額・粗利はコードが計算して表示するので、"
+    "label・reason・risk・summary には金額の計算の結果を書かない。cards には、担当者の判断に要る情報だけを選ぶ（注文・条件・合意・Vault・売り先・掲示・相場）。",
+    {"item_code": ITEM, "summary": STR, "cards": {"type": "array", "items": _CARD},
+     "options": {"type": "array", "items": _OPTION}, "recommended": {"type": "string", "enum": ["A", "B", "C", "D", "E"]}},
     present_options, ends="presented")
 WAIT = Tool("wait_for_replies", "問い合わせの返事を待つ（この起動を終える）。", {"reason": STR}, wait_for_replies, ends="waiting")
 NOTHING = Tool("do_nothing", "何もしない（この出来事は自社に関係しない・動く必要がない）。", {"reason": STR}, finish, ends="nothing")
@@ -410,7 +453,16 @@ def wakes(owner: str, event: dict) -> bool:
 
 
 def _terms_text(m: dict) -> str:
-    """条件の表示：［10 で 1,720円／15 で 1,600円］。条件が無ければ空。"""
+    """条件の表示：［条件 3：10 で 1,720円／条件 4：15 で 1,600円］。番号の付いた条件があれば番号と合意も出す。"""
+    tl = m.get("term_list")
+    if tl:
+        parts = []
+        for t in tl:
+            s = f"条件 {t['term_id']}：{t['quantity']} で {t['unit_price_yen']:,}円（{t['status']}・期限 {t['valid_until'][11:16]}）"
+            if t.get("agreement_id"):
+                s += f"・合意 {t['agreement_id']}（{t['agreement_status']}）"
+            parts.append(s)
+        return "［" + "／".join(parts) + "］"
     terms = m.get("terms") or ([(m["quantity"], m["unit_price_yen"])] if m["quantity"] or m["unit_price_yen"] else [])
     if not terms:
         return ""
@@ -438,7 +490,8 @@ def situation(owner: str, event: dict, on_date: str) -> tuple[str, str]:
         m = network.message_for(owner, p["message_id"])
         item = m["item_code"]
         what = "問い合わせ" if event["kind"] == "quote_request" else "返事"
-        cond = _terms_text(dict(m, terms=network.terms_of(m)))
+        tm = next((x for x in thread(owner, m["item_code"], on_date) if x["message_id"] == m["id"]), None)
+        cond = _terms_text(tm) if tm else ""
         head = f"出来事：{OWNER_NAMES[m['from_owner']]}から{what}が届きました（番号 {m['id']}・{m['kind']}）：「{m['body']}」{cond}"
     else:
         item = p.get("item", "aji")

@@ -27,11 +27,17 @@ def tools(*calls):
 
 
 A = {"item_code": "aji"}
-OPTS = [
-    dict(code="B", label="漁協から 15kg、追加の 5kg を料亭へ", counterparty="iwase", quantity=15, unit_price_yen=1500, resell_to="料亭", reason="料亭は 4〜6kg を引き取ることが多い"),
-    dict(code="C", label="漁協から 15kg、追加の 5kg を B社へ", counterparty="iwase", quantity=15, unit_price_yen=1500, resell_to="buyer_b", reason="B社が 1,650円で受けると返事"),
-    dict(code="E", label="見送る", counterparty=None, quantity=None, unit_price_yen=None, resell_to=None, reason="注文に応えられない"),
+OPTS = [   # 条件の番号：漁協の 10kg＝1・15kg＝2、B社の受け入れ＝条件 3（合意 1）。網谷水産のアジの注文＝注文 3
+    dict(code="A", label="漁協から 15kg、10kg をスーパー、5kg を B社へ", buy_term_id=2,
+         allocations=[dict(kind="order", ref_id=3, customer=None, quantity=10), dict(kind="agreement", ref_id=1, customer=None, quantity=5)],
+         reason="B社が受けると返事をくれたので、追加の 5kg の売り先がある", risk="B社との合意は条件付き"),
+    dict(code="B", label="漁協から 15kg、追加の 5kg を料亭へ", buy_term_id=2,
+         allocations=[dict(kind="order", ref_id=3, customer=None, quantity=10), dict(kind="customer_lead", ref_id=None, customer="料亭", quantity=5)],
+         reason="料亭は 4〜6kg を引き取ることが多い", risk="当日の朝の連絡は断られることがある（Vault）"),
+    dict(code="E", label="見送る", buy_term_id=None, allocations=[], reason="注文に応えられない", risk="スーパーの注文を落とす"),
 ]
+CARDS = [dict(card_type="order", ref_id=3, note=None), dict(card_type="quote", ref_id=2, note="15kg まとめての条件"),
+         dict(card_type="agreement", ref_id=1, note=None), dict(card_type="vault", ref_id=1, note="同じ形で売り切った事例")]
 
 AMIYA = [
     # 起動1（注文）：調べる → 漁協と C社に問い合わせ → 待つ
@@ -49,7 +55,8 @@ AMIYA = [
     tools(("read_thread", A), ("wait_for_replies", dict(reason="B社の返事を待つ"))),
     tools(("wait_for_replies", dict(reason="B社の返事を待つ"))),
     # 起動5（B社の返事）：磁石ボードに出す
-    tools(("present_options", dict(summary="漁協は 15kg なら 1,500円。C社は 8kg まとめてのみ。B社は 5kg を 1,650円で受ける。", options=OPTS, recommended="C"))),
+    tools(("present_options", dict(item_code="aji", summary="漁協は 15kg なら 1,500円。C社は 8kg まとめてのみ。B社は 5kg を 1,650円で受ける。",
+                                   cards=CARDS, options=OPTS, recommended="A"))),
 ]
 B = [
     # 起動1（料亭の注文）：調べる → 掲示を出す
@@ -118,7 +125,22 @@ class SceneTest(unittest.TestCase):
         self.assertEqual(runs, {"amiya": 5, "iwase": 1, "buyer_b": 2, "buyer_c": 1})
         # 最後の起動は候補を出した
         last = log[-1]
-        self.assertEqual([o["code"] for o in last["data"]["presented"]["options"]], ["B", "C", "E"])
+        self.assertEqual([o["code"] for o in last["data"]["presented"]["options"]], ["A", "B", "E"])
+        # 磁石ボード：金額はコードが計算する（15kg × 1,500円・加工 15kg × 200円・売り 10 × 2,100 + 5 × 1,650）
+        from agentdock import workspace
+        c = db.connect("amiya")
+        try:
+            v = workspace.view(c)
+        finally:
+            c.close()
+        a = next(o for o in v["options"] if o["code"] == "A")["numbers"]
+        self.assertEqual((a["revenue_yen"], a["purchase_yen"], a["process_cost_yen"], a["gross_profit_yen"]), (29250, 22500, 3000, 3750))
+        self.assertEqual([l["certainty"] for l in a["lines"]], ["order", "conditional"])
+        self.assertTrue(a["executable"])
+        b = next(o for o in v["options"] if o["code"] == "B")["numbers"]
+        self.assertEqual([l["certainty"] for l in b["lines"]], ["order", "lead"])
+        self.assertEqual([c["card_type"] for c in v["cards"]], ["order", "quote", "agreement", "vault"])
+        self.assertEqual(next(o for o in v["options"] if o["recommended"])["code"], "A")
         # 漁協が受け取った問い合わせの文に、網谷水産の上限・売り先は入っていない（開示の検査を通った文だけ）
         sent = self.q("amiya", "SELECT count(*) FROM agent_step WHERE tool = 'send_inquiry' AND is_error = 0")[0][0]
         self.assertEqual(sent, 3)
@@ -141,7 +163,8 @@ class SceneTest(unittest.TestCase):
         prompt, item = agents.situation("amiya", ev, D)
         self.assertEqual(item, "aji")
         self.assertIn("15kg まとめてなら", prompt)
-        self.assertIn("［10 で 1,720円／15 で 1,500円］", prompt)                # 条件の2つの組が Claude に渡る
+        self.assertIn("条件 1：10 で 1,720円", prompt)                          # 条件の番号と組が Claude に渡る
+        self.assertIn("条件 2：15 で 1,500円", prompt)
         self.assertIn("今日のこの品目のやり取り", prompt)
 
 
