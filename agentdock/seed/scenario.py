@@ -106,8 +106,9 @@ TODAY_TENDER = dict(lot_no="T-shiroebi-1", item="shiroebi", quantity=20,
 
 # デモの日の朝のせり（人が行う）：(buyer, unit_price, quantity)。ブリ 12本のうち6本が売れ、6本が相対へ残る
 # 'other' は Agent Dock を使っていない仲買。網谷水産の若いスタッフの落札は未決のため0本（HAL 案）
+# B社は料亭の注文 2本より多い 4本を落札した（模擬・2026-11-03 デイブ）。引当のない 2本は、ほかの仲買に譲れる（STOCK・QUOTE_RULES）
 TODAY_AUCTION = dict(lot_no="A-buri_xl-1", item="buri_xl",
-                     sales=[("buyer_b", 18200, 2), ("other", 17900, 4)])
+                     sales=[("buyer_b", 18200, 4), ("other", 17900, 2)])
 
 # 入札の場面の画面に出す、網谷水産の承認済みの計画と仲間の入札（模擬の仲間の言葉・試作の画面の値を引き継いだ仮の値）
 AMIYA_TENDER_PLAN = dict(max_unit_price_yen=4800, max_quantity=8)
@@ -119,9 +120,11 @@ AJI_ORDER = dict(owner="amiya", customer="スーパー", item="aji", quantity=10
 # B社の料亭の注文 5kg もデモの中で入る。B社の AI が自分で判断して、仲買への掲示（買いたい）を出す（2026-11-03 デイブ）
 B_AJI_ORDER = dict(owner="buyer_b", customer="料亭", item="aji", quantity=5, sell_price_yen=2400)
 
-# ── ブリ（本）の通し：スーパーの 4本（22,000円）は朝の注文として種にある。料亭の追加の注文 6本（24,000円）がデモの中で入り、
-#    出来事から網谷水産の仲間が起きる。漁協の相対の残りは 6本（せりで 12本のうち 6本が売れた）、最低の値は 17,000円（SELLER_RULES）
-BURI_ORDER = dict(owner="amiya", customer="料亭", item="buri_xl", quantity=6, sell_price_yen=24000)
+# ── ブリ（本）の通し：始まりはスーパーの 4本（22,000円・朝の注文として種にある）だけ。業務を始めると、その注文の出来事で網谷水産の仲間が起きる。
+#    料亭の追加の注文 6本（24,000円）は作業の途中で入る（実演の操作・POST /api/order）。
+#    漁協の相対の残りは 6本（せりで 12本のうち 6本が売れた）、最低の値は 17,000円（SELLER_RULES）
+BURI_ORDER = dict(owner="amiya", customer="スーパー", item="buri_xl", quantity=4, sell_price_yen=22000, existing=True)   # 種の注文を読み始める
+BURI_ADDED_ORDER = dict(owner="amiya", customer="料亭", item="buri_xl", quantity=6)   # 途中の注文（売値は売り先の表から）
 
 # 品目ごとに、デモの中で入る注文（scene.start が品目で選ぶ）
 SCENE_ORDERS = {
@@ -133,6 +136,8 @@ SCENE_ORDERS = {
 # 15kg × 1,500円 ＝ 22,500円（担当者の権限 500,000円の内）。追加の 5kg は料亭へ回す当てがあるかが判断の分かれ目
 QUOTE_RULES = {
     "iwase": [("aji", 1, 1700), ("aji", 15, 1500)],   # (item, この数量以上なら, 最低の値/kg)
+    # B社の引当のない ブリは、せりの仕入れ値 18,200円を割って譲らない（転売は加工しないので加工費は入れない・模擬の前提）
+    "buyer_b": [("buri_xl", 1, 18200)],
 }
 
 # 在庫：(item, quantity, status, lot_no)
@@ -140,6 +145,7 @@ STOCK = {
     # ブリはせりの残り：水揚げ 12本 − せりで売れた 6本（TODAY_AUCTION）＝ 6本を相対で売りに出す
     "iwase": [("aji", 15, "for_sale", "S-aji-1"), ("buri_xl", 6, "for_sale", "S-buri_xl-1")],
     "buyer_c": [("aji", 8, "unallocated", "C-aji-1")],   # C社の引当のない分（相対で譲りに出す）
+    "buyer_b": [("buri_xl", 2, "unallocated", "B-buri_xl-1")],   # せりで 4本を落札・料亭の注文 2本に充てた残り（模擬）
 }
 
 # 他の仲買からの相対の申し込み（Agent Network の掲示）：(owner, side, item, quantity, min_qty, unit_price, message)
@@ -224,6 +230,11 @@ VAULT_NOTES = {
          "脂の乗った中型を好む。前日までに知らせれば、4〜6kg を引き取ることが多い。当日の朝の連絡では断られることがある。",
          "aji", "料亭", "網谷さん", "社長の聞き取り", "2026-09-20",
          "料亭にアジを案内する時"),
+        # 仲買の慣行（2026-11-03 デイブの聞き取り。特定の人の経験としては記録しない・模擬）
+        ("customer", "欠品になりそうな時は、早めにスーパーに伝え、代わりの品を提案する",
+         "注文の数がそろわない見込みになったら、当日の朝のうちにスーパーへ知らせる。代わりに出せる品（同じ日に手に入る魚）を添えて提案する。",
+         None, "スーパー", "仲買の慣行（聞き取り・模擬）", "聞き取り（模擬）", "2026-11-03",
+         "スーパーの注文が欠品になりそうな時"),
     ],
 }
 

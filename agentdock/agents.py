@@ -478,6 +478,32 @@ def compare_options(ctx, inp):
                    options=out))
 
 
+MAX_DRAFT = 300
+
+
+def draft_to_customer(ctx, inp):
+    """売り先への連絡の下書きを残す（送らない）。売り先と品目、代わりの品はコードが自社の DB で確かめる。送るかは担当者が決める。"""
+    c = ctx.con.execute("SELECT id, name FROM customer WHERE name = ?", (inp["customer"],)).fetchone()
+    if c is None:
+        raise ToolError(f"売り先がありません：{inp['customer']}")
+    it = _item(ctx.con, inp["item_code"])
+    sub = None
+    if inp.get("substitute_item_code"):
+        sub = ctx.con.execute("SELECT id, code, name FROM item WHERE code = ?", (inp["substitute_item_code"],)).fetchone()
+        if sub is None:
+            raise ToolError(f"代わりの品 {inp['substitute_item_code']} は自社の品目にありません。読める品目から選ぶか、代わりの品が無いと書いてください")
+        if sub["id"] == it["id"]:
+            raise ToolError("代わりの品が、欠ける品と同じです")
+    msg = (inp.get("message") or "").strip()
+    if not msg or len(msg) > MAX_DRAFT:
+        raise ToolError(f"message は 1〜{MAX_DRAFT}字で書いてください")
+    with ctx.con:
+        did = ctx.con.execute("INSERT INTO customer_draft (customer_id, item_id, substitute_item_id, body, reason, status, run_id, created_at) "
+                              "VALUES (?, ?, ?, ?, ?, 'draft', ?, ?)", (c["id"], it["id"], sub["id"] if sub else None, msg, _reason(inp), ctx.run_id,
+                                                                       db.now_iso())).lastrowid
+    return f"{c['name']}への連絡の下書きを残しました（番号 {did}）。送ってはいません。送るかは担当者が決めます。"
+
+
 def wait_for_replies(ctx, inp):
     ctx.summary = inp["reason"]
     return "返事を待ちます。届いたら、また起こします。"
@@ -529,10 +555,11 @@ _ALLOC = {"type": "object", "additionalProperties": False, "required": ["kind", 
                                                  "customer_lead＝まだ打診していない売り先（customer に名前）／unallocated＝売り先なし"},
                          "ref_id": NULL_INT, "customer": {"type": ["string", "null"]}, "quantity": INT}}
 _OPTION = {"type": "object", "additionalProperties": False,
-           "required": ["code", "label", "short_label", "buy_term_id", "allocations", "reason", "risk", "differs_from_decision"],
+           "required": ["code", "label", "short_label", "buy_term_id", "allocations", "reason", "risk", "differs_from_decision", "vault_refs"],
            "properties": {"code": {"type": "string", "enum": ["A", "B", "C", "D", "E"]}, "label": STR,
                           "short_label": {"type": "string", "description": "担当者の画面の大きなボタンに出す案の名前（16字まで。例：料亭に 6本）"},
                           "differs_from_decision": {"type": "boolean", "description": "人の決定（担当者・社長が相談で決めた配分）と違う案なら true。その案は決定した人か網谷さんだけが承認できる"},
+                          "vault_refs": {"type": "array", "items": INT, "description": "この案の根拠に引いた Vault の番号（read_vault の id・引かなければ空）"},
                           "buy_term_id": {"type": ["integer", "null"], "description": "仕入れる条件の番号（届いた条件の番号）。仕入れない案は null"},
                           "allocations": {"type": "array", "items": _ALLOC}, "reason": STR, "risk": STR}}
 _CARD = {"type": "object", "additionalProperties": False, "required": ["card_type", "ref_id", "note"],
@@ -578,20 +605,26 @@ COMPARE = Tool(
         "properties": {"code": {"type": "string", "enum": ["A", "B", "C", "D", "E"]},
                        "buy_term_id": {"type": ["integer", "null"]}, "allocations": {"type": "array", "items": _ALLOC}}}}},
     compare_options, strict=False)
+DRAFT = Tool(
+    "draft_to_customer",
+    "自社の売り先への連絡の下書きを残す（送らない。送るかは担当者が決める）。欠品の見込みを早めに伝える時など。"
+    "代わりの品を添えるなら substitute_item_code に自社の品目のコードを書く（読める品目だけ。無ければ null にして、代わりの品が無いと文に書く）。",
+    {"customer": STR, "item_code": ITEM, "message": STR, "substitute_item_code": {"type": ["string", "null"]}, "reason": REASON},
+    draft_to_customer, strict=False)
 WAIT = Tool("wait_for_replies", "問い合わせの返事を待つ（この起動を終える）。", {"reason": STR}, wait_for_replies, ends="waiting")
 NOTHING = Tool("do_nothing", "何もしない（この出来事は自社に関係しない・動く必要がない）。", {"reason": STR}, finish, ends="nothing")
 
 TOOLSETS = {
     "amiya": [READ_ORDERS, READ_MARKET, READ_MATERIAL, READ_VAULT, READ_CUSTOMERS, READ_POSTS, READ_THREAD,
-              SEND_INQUIRY, REPLY, WAIT, COMPARE, PRESENT, ANSWER, NOTHING],
+              SEND_INQUIRY, REPLY, WAIT, COMPARE, PRESENT, ANSWER, DRAFT, NOTHING],
     "iwase": [READ_STOCK, READ_MY_MATERIAL, READ_MARKET, READ_THREAD, REPLY, NOTHING],
-    "buyer_b": [READ_ORDERS, READ_MARKET, READ_MATERIAL, READ_VAULT, READ_POSTS, READ_THREAD, POST_REQUEST, REPLY, NOTHING],
+    "buyer_b": [READ_ORDERS, READ_STOCK, READ_MARKET, READ_MATERIAL, READ_VAULT, READ_POSTS, READ_THREAD, POST_REQUEST, REPLY, NOTHING],
     "buyer_c": [READ_STOCK, READ_MARKET, READ_THREAD, REPLY, NOTHING],
 }
 
 # どの出来事で起きるか（他の出来事は待ちのまま残す）
 WAKE = {
-    "amiya": {"order_new", "quote_received", "info_received:deal_request", "quote_request", "human_choice", "staff_question"},
+    "amiya": {"order_new", "quote_received", "info_received:deal_request", "quote_request", "human_choice", "staff_question", "trade_registered"},
     "iwase": {"quote_request"},
     "buyer_b": {"order_new", "quote_request", "quote_received"},
     "buyer_c": {"quote_request"},
@@ -619,12 +652,17 @@ SYSTEMS = {
              "仕入れ値の上限は自社の決まりで、超える案は実行できません。"
              "担当者が相談に答えて数量や配分を変えたら、注文・在庫・やり取りを道具で確かめ直し、変えた条件で相手に問い合わせ直します（前の条件は使いません）。"
              "返事を確かめ、取引ができない（断られた・決まりを超える）時は、present_options で担当者に相談し直します。"
-             "担当者や社長が相談で決めた配分は、次の案の前提です。決定と違う案を出す時は differs_from_decision を true にします。" + _COMMON,
+             "担当者や社長が相談で決めた配分は、次の案の前提です。決定と違う案を出す時は differs_from_decision を true にします。"
+             "取引が登録された後も、満たしていない注文が残れば続けます（漁協やほかの仲買に問い合わせる・担当者に相談する）。"
+             "問い合わせ・期限つきの仮押さえまでは、あなたが進めてよい予約です。登録・優先の変更は担当者が決めます。"
+             "売り先（スーパー・料亭など）への連絡は draft_to_customer で下書きするだけです。送るかは担当者が決めます。"
+             "案の根拠に Vault の経験を使ったら、その番号を vault_refs に入れます。" + _COMMON,
     "iwase": "あなたは岩瀬漁協（売り手）の Claude AI パートナーです（Agent Dock）。仲買からの問い合わせに、自社の在庫と数量ごとの最低の値を見て答えます。"
              "最低の値より安い条件は出せません。まとめて買えば値を下げられる場合は、その条件を示してかまいません。"
              "同じ仲買から条件を変えた問い合わせが届いたら、その問い合わせに、今の在庫と数量ごとの最低の値で答え直します（前の仮押さえは新しい返事に置き換わります）。" + _COMMON,
     "buyer_b": "あなたは B社（仲買）の Claude AI パートナーです（Agent Dock）。注文を満たす仕入れ先を探します。"
-               "少量なら仲買どうしの掲示で探す方法があります。問い合わせが届いたら、注文と上限を見て答えます。" + _COMMON,
+               "少量なら仲買どうしの掲示で探す方法があります。問い合わせが届いたら、注文と上限を見て答えます。"
+               "自社の引当のない在庫（read_stock）は、ほかの仲買に譲れます。自社の最低の値（仕入れの原価）より安くは出しません（コードが止めます）。" + _COMMON,
     "buyer_c": "あなたは C社（仲買）の Claude AI パートナーです（Agent Dock）。引当のない在庫を掲示で譲りに出しています。"
                "掲示への問い合わせに、自社の在庫と掲示の条件を見て答えます。" + _COMMON,
 }
@@ -707,6 +745,19 @@ def _change_situation(owner: str, p: dict) -> tuple[str, str]:
     return item, head
 
 
+def _open_orders(owner: str, item: str) -> list[dict]:
+    """この品目の開いている注文と、まだ満たしていない数（自社の在庫の引当から）。"""
+    c = db.connect(owner)
+    try:
+        return [dict(order_id=r["id"], customer=r["name"], quantity=r["quantity"], unit=sc.unit_label(r["unit"]),
+                     remaining=r["quantity"] - c.execute("SELECT coalesce(sum(quantity), 0) FROM stock WHERE order_id = ? AND status = 'allocated'",
+                                                         (r["id"],)).fetchone()[0])
+                for r in c.execute("SELECT o.id, c.name, o.quantity, i.unit FROM order_book o JOIN customer c ON c.id = o.customer_id JOIN item i ON i.id = o.item_id "
+                                   "WHERE i.code = ? AND o.status IN ('open', 'partly_filled') ORDER BY o.id", (item,))]
+    finally:
+        c.close()
+
+
 def situation(owner: str, event: dict, on_date: str) -> tuple[str, str]:
     """状況の報告（Claude に渡す最初の文）と、品目のコードを返す。数字はコードが DB から出す。"""
     p = event["payload"]
@@ -719,6 +770,10 @@ def situation(owner: str, event: dict, on_date: str) -> tuple[str, str]:
             c.close()
         what = f"{it['name']}（{item}）を {p['quantity']}{sc.unit_label(it['unit'])}" if it else f"{item} を {p['quantity']}"
         head = f"出来事：注文が入りました。{p['customer']}から {what}（注文の番号 {p['order_id']}）。"
+        opened = _open_orders(owner, item)
+        if len(opened) > 1:   # 作業の途中の注文：ほかの注文と合わせて足りるかを確かめる
+            head += ("\n今日のこの品目の注文（開いているもの）：" + "・".join(f"{o['customer']} {o['quantity']}{o['unit']}" for o in opened) +
+                     "。前のやり取りと押さえは下のとおりです。合わせて足りるかを道具で確かめ、足りなければ問い合わせ直すか、担当者に優先を相談してください。")
     elif event["kind"] == "info_received" and p.get("source") == "deal_request":
         r = network.request_for(owner, p["request_id"])
         item = r["item_code"]
@@ -740,6 +795,13 @@ def situation(owner: str, event: dict, on_date: str) -> tuple[str, str]:
                 "条件を調べ直し、磁石ボードを出し直してください。").format(p["case_id"], "・".join(p.get("reasons", [])))
     elif event["kind"] == "staff_question":
         item, head = _question_situation(owner, p)
+    elif event["kind"] == "trade_registered":
+        item = p["item"]
+        left = [o for o in _open_orders(owner, item) if o["remaining"] > 0]
+        head = (f"出来事：取引を登録しました（案件 {p['case_id']}・{', '.join(p.get('trades') or [])}）。" +
+                ("満たしていない注文：" + "・".join(f"{o['customer']} {o['quantity']}{o['unit']}（注文 {o['order_id']}）のうち {o['remaining']}{o['unit']}" for o in left) +
+                 "。残りを満たす仕入れ先を探すか（漁協・ほかの仲買への問い合わせ）、担当者に相談してください。売り先への連絡は下書きだけです。"
+                 if left else "満たしていない注文はありません。"))
     else:
         item = event_item(owner, event)
         head = f"出来事：{event['kind']}"

@@ -87,11 +87,14 @@ class Base(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         os.environ["AGENTDOCK_DATA"] = self.tmp.name
         self.assertEqual(build.main([]), 0)
-        self.started = scene.start(item="buri_xl")                                   # 料亭の追加の注文が出来事として入る
-        self.rest = self.started["amiya_order"][0]
-        self.sup = q("amiya", "SELECT o.id FROM order_book o JOIN item i ON i.id = o.item_id JOIN customer c ON c.id = o.customer_id "
-                              "WHERE i.code = 'buri_xl' AND c.name = 'スーパー'")[0][0]
+        self.started = scene.start(item="buri_xl")                                   # 始まり：スーパーの注文 4本が出来事として入る
+        self.sup = self.started["amiya_order"][0]
         self.wake = scene.next_event()
+        c = db.connect("amiya")
+        try:                                                                          # 料亭の追加の注文 6本（作業の途中で入る）
+            self.rest, _ = events.order_received(c, "料亭", "buri_xl", 6, 24000, D)
+        finally:
+            c.close()
         settle()
         self.q1 = network.send("amiya", "iwase", "inquiry", "buri_xl", "ブリを 6本、1本 17,500円でいかがでしょうか。", D, 6, 17500, side="buy")
         c = db.connect("iwase")
@@ -169,10 +172,10 @@ class SeedTest(Base):
         self.assertEqual(q("amiya", "SELECT c.name, o.quantity, o.sell_price_yen FROM order_book o JOIN customer c ON c.id = o.customer_id "
                                     "JOIN item i ON i.id = o.item_id WHERE i.code = 'buri_xl' ORDER BY o.id"), [("スーパー", 4, 22000), ("料亭", 6, 24000)])
         owner, ev = self.wake                                                              # 料亭の注文の出来事で網谷水産が起きる
-        self.assertEqual((owner, ev["kind"], ev["payload"]["item"], ev["payload"]["quantity"]), ("amiya", "order_new", "buri_xl", 6))
+        self.assertEqual((owner, ev["kind"], ev["payload"]["item"], ev["payload"]["quantity"]), ("amiya", "order_new", "buri_xl", 4))
         prompt, item = agents.situation(owner, ev, D)
         self.assertEqual(item, "buri_xl")
-        self.assertIn("6本", prompt)
+        self.assertIn("4本", prompt)
         # ブリの加工の費用（1本 2,000円）がボードの計算に入る。上限は売り先ごと
         a = next(o for o in view()["options"] if o["code"] == "A")
         n = a["numbers"]
@@ -328,7 +331,7 @@ class AnswerTest(Base):
             answer(self.cons, "k2", self.rest6())
         self.assertEqual(len(human_events()), 1)
 
-    def test_take_change_with_allocations_by_customer(self):
+    def test_take_change_with_allocations_by_customer(self):   # 撮影の入口（scene.staff_change）も同じ答えの道
         r = scene.staff_change(6, {"料亭": 6})
         self.assertEqual((r["result"], r["change"]["allocations"]), ("needs_president", [dict(order_id=self.rest, quantity=6)]))
         r = scene.president_answer()
@@ -425,7 +428,7 @@ class ApiTest(Base):
         s, r = self.call("/api/start", dict(item="buri_xl"))
         self.assertEqual((s, r["item"]), (200, "buri_xl"))
         self.assertEqual(q("amiya", "SELECT c.name, o.quantity FROM order_book o JOIN customer c ON c.id = o.customer_id JOIN item i ON i.id = o.item_id "
-                                    "WHERE i.code = 'buri_xl' ORDER BY o.id"), [("スーパー", 4), ("料亭", 6)])
+                                    "WHERE i.code = 'buri_xl' ORDER BY o.id"), [("スーパー", 4)])   # 料亭の注文は途中で入る
         self.assertEqual(self.call("/api/start", dict(item="nori"))[0], 400)
 
 

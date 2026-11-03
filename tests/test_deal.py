@@ -92,7 +92,7 @@ class DealTest(unittest.TestCase):
         self.assertEqual(q("market", "SELECT status FROM agreement"), [("confirmed",)])
         self.assertEqual(q("iwase", "SELECT status, quantity FROM stock_hold"), [("confirmed", 15)])
         self.assertEqual(q("iwase", "SELECT status FROM stock WHERE id = 1"), [("sold",)])           # 15kg 全部が売れた
-        self.assertEqual(q("buyer_b", "SELECT quantity, status FROM stock"), [(5, "allocated")])
+        self.assertEqual(q("buyer_b", "SELECT s.quantity, s.status FROM stock s JOIN item i ON i.id = s.item_id WHERE i.code = 'aji'"), [(5, "allocated")])   # B社のブリの余り（模擬）は別
         self.assertEqual(q("buyer_b", "SELECT status FROM preapproval"), [("used",)])
         self.assertEqual(q("buyer_b", "SELECT o.status FROM order_book o JOIN item i ON i.id = o.item_id WHERE i.code = 'aji'"), [("filled",)])
         self.assertEqual(sorted(q("amiya", "SELECT quantity, status FROM stock")), [(5, "sold"), (10, "allocated")])

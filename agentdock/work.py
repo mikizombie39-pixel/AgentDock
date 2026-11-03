@@ -242,7 +242,7 @@ def _consultations(con, it, on_date):
             nxt = con.execute("SELECT at FROM workspace_turn WHERE case_id = ? AND version > ? AND source = 'present' ORDER BY id LIMIT 1",
                               (c["case_id"], c["task_version"])).fetchone()
             hist.append(dict(at=nxt["at"] if nxt else c["case_at"], state="stale"))
-        if c["status"] in ("open", "needs_president") and c["case_status"] in CLOSED_CASE:   # 案件が登録・見送りで閉じた
+        if c["status"] == "closed" or (c["status"] in ("open", "needs_president") and c["case_status"] in CLOSED_CASE):   # 案件が登録・見送りで閉じた
             hist.append(dict(at=c["case_at"], state="closed"))
         out.append(_item(f"cons:{c['id']}", "waiting", "consultation", opened,
                          dict(consultation_id=c["id"], case_id=c["case_id"], version=c["task_version"], question=c["question"],
@@ -379,7 +379,8 @@ def current(owner: str, item: str, on_date: str = sc.DEMO_DATE) -> dict:
                 n = min(a["quantity"], left_hold)
                 held_for[a["order_id"]] = held_for.get(a["order_id"], 0) + n
                 left_hold -= n
-        lines = [_order_line(o, held_for.get(o["id"], 0), holds, unit) for o in orders]
+        asking = _open_inquiries(owner, item, on_date)
+        lines = [_order_line(o, held_for.get(o["id"], 0), holds, unit, asking) for o in orders]
         hold_lines = [] if decision and decision.get("allocations") else [
             dict(h, text=f"{h['seller_name']}が {h['quantity']}{unit}を 1{unit} {h['unit_price_yen']:,}円で押さえています（期限 {h['valid_until'][11:16]}）。"
                          "どの注文に回すかは未定です") for h in holds]
@@ -391,6 +392,11 @@ def current(owner: str, item: str, on_date: str = sc.DEMO_DATE) -> dict:
             if agents.wakes(owner, ev) and agents.event_item(owner, ev) == item:
                 ai_queue.append(dict(event_id=r["id"], kind=r["kind"], at=r["at"]))
         ask["ai_queue"] = ai_queue
+        # 売り先への連絡の下書き（AI が作った・まだ送っていない。送るかは人が決める）
+        ask["drafts"] = [dict(draft_id=r["id"], customer=r["customer"], substitute=r["sub"], body=r["body"], reason=r["reason"], status=r["status"],
+                              created_at=r["created_at"], decided_by=r["decided_by"]) for r in con.execute(
+            "SELECT d.id, c.name AS customer, s.name AS sub, d.body, d.reason, d.status, d.created_at, d.decided_by FROM customer_draft d "
+            "JOIN customer c ON c.id = d.customer_id LEFT JOIN item s ON s.id = d.substitute_item_id WHERE d.item_id = ? ORDER BY d.id", (it["id"],))]
         out = dict(owner=owner, item=dict(code=it["code"], name=it["name"], unit=unit), lines=lines, holds=hold_lines,
                    decision=dict(decision, text=consult.decision_text(decision, unit)) if decision else None, **ask)
     finally:
@@ -417,7 +423,18 @@ def _live_holds(owner, item, on_date):
                  unit_price_yen=r["unit_price_yen"], valid_until=r["valid_until"]) for r in best.values()]
 
 
-def _order_line(o, held, holds, unit):
+def _open_inquiries(owner, item, on_date) -> list[str]:
+    """返事の来ていない自社の問い合わせの宛先（組織の名前）。"""
+    m = db.connect(db.MARKET)
+    try:
+        rows = m.execute("SELECT q.to_owner FROM network_message q WHERE q.from_owner = ? AND q.kind = 'inquiry' AND q.item_code = ? AND q.trade_date = ? "
+                         "AND NOT EXISTS (SELECT 1 FROM network_message r WHERE r.in_reply_to = q.id) ORDER BY q.id", (owner, item, on_date)).fetchall()
+    finally:
+        m.close()
+    return list(dict.fromkeys(sc.OWNERS[r[0]]["name"] for r in rows))
+
+
+def _order_line(o, held, holds, unit, asking=()):
     q, reg = o["quantity"], o["registered"]
     secured = reg + held
     seller = holds[0]["seller_name"] if holds else ""
@@ -426,10 +443,11 @@ def _order_line(o, held, holds, unit):
         text = f"{o['customer']}の注文 {q}{unit}を確保しています（{detail}）"
         state = "secured"
     elif secured > 0:
-        text = f"{o['customer']}の注文 {q}{unit}のうち {secured}{unit}を確保しています（{detail}）。{q - secured}{unit} 足りません"
+        text = f"{o['customer']}の注文 {q}{unit}のうち {secured}{unit}を確保しています（{detail}）。{q - secured}{unit} 足りません" + (
+            f"（{'・'.join(asking)}に問い合わせ中）" if asking else "")
         state = "short"
     else:
-        text = f"{o['customer']}の {q}{unit}は、まだそろっていません"
+        text = f"{o['customer']}の {q}{unit}は、{'・'.join(asking)}に問い合わせ中です" if asking else f"{o['customer']}の {q}{unit}は、まだそろっていません"
         state = "none"
     return dict(order_id=o["id"], customer=o["customer"], quantity=q, registered=reg, held=held, secured=secured, short=max(0, q - secured),
                 state=state, text=text)
@@ -459,7 +477,13 @@ def _ask(con, case, orders, unit):
                     (case["id"], case["version"])).fetchone()
     layout = json.loads(t["layout_json"]) if t else {}
     short = layout.get("short_labels") or {}
-    vault = [c["data"] for c in layout.get("cards") or [] if c.get("card_type") == "vault"]
+    vault_cards = [c["data"] for c in layout.get("cards") or [] if c.get("card_type") == "vault"]
+    refs = layout.get("vault_refs") or {}
+    def vault_for(code):   # 案が根拠に引いた Vault（番号はコードが確かめた）と、画面のカードの Vault
+        rows = [dict(r) for r in con.execute(f"SELECT id, title, author, written_on FROM vault_note WHERE id IN ({','.join('?' * len(refs.get(code, [])))})",
+                                             refs.get(code, []))] if refs.get(code) else []
+        seen = {r["id"] for r in rows}
+        return rows + [dict(id=v.get("id"), title=v.get("title"), author=v.get("author"), written_on=v.get("written_on")) for v in vault_cards if v.get("id") not in seen]
     rows = [dict(r) for r in con.execute("SELECT * FROM board_option WHERE case_id = ? AND version = ? AND status = 'offered' ORDER BY code",
                                          (case["id"], case["version"]))]
     nums = {r["id"]: json.loads(r["numbers_json"]) for r in rows}
@@ -484,7 +508,7 @@ def _ask(con, case, orders, unit):
                          purchase_yen=n["purchase_yen"], revenue_yen=n["revenue_yen"], process_cost_yen=n["process_cost_yen"], gross_profit_yen=gp(n),
                          lines=[dict(to=l["to"], quantity=l["quantity"]) for l in n["lines"]], errors=n["errors"]),
             gross_profit_diff_yen=gp(n) - base,
-            grounds=dict(reason=r["reason"], risk=r["risk"], vault=[dict(title=v.get("title"), author=v.get("author"), written_on=v.get("written_on")) for v in vault])))
+            grounds=dict(reason=r["reason"], risk=r["risk"], vault=vault_for(r["code"]))))
     question = (layout.get("short_question") or layout.get("ask_human") or layout.get("headline")) if t else None
     return dict(waiting_for=waiting_for, pending=pending, question=dict(text=question, at=t["at"] if t else None, version=case["version"]) if question else None,
                 options=options, case=dict(id=case["id"], version=case["version"], status=case["status"]),

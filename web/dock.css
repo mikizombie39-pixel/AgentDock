@@ -113,6 +113,14 @@ button:disabled { cursor: default; opacity: .45; }
 body[data-view="now"] .sec:not(#orgs) { display: none !important; }
 body[data-view="evidence"] #nowview { display: none !important; }
 .vbtn { border: 1px solid var(--line); background: var(--sf); border-radius: 14px; padding: 5px 12px; font-size: 13px; color: var(--ink); }
+.opbtn { border: 1px dashed var(--mute); background: transparent; border-radius: 8px; padding: 5px 10px; font-size: 12px; color: var(--mute); }
+.opbtn[hidden] { display: none; }
+#nowdrafts { margin-top: 18px; display: flex; flex-direction: column; gap: 10px; }
+.draft { border: 1px solid var(--own); border-radius: 12px; background: var(--sf); padding: 12px 16px; font-size: 15px; max-width: 900px; }
+.draft .dk { font-size: 12px; color: var(--own); margin-bottom: 4px; }
+.draft .db { font-size: 17px; line-height: 1.5; }
+.draft .ds { font-size: 13px; color: var(--mute); margin-top: 4px; }
+.draft.done { border-color: var(--line); opacity: .7; }
 #nowview { position: absolute; left: 230px; top: 84px; width: 1130px; height: 800px; }
 #nowview[hidden] { display: none; }
 .nowcap { font-size: 13px; color: var(--mute); margin-bottom: 10px; }

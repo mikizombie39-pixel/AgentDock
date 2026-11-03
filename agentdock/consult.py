@@ -235,8 +235,8 @@ def _answer_change(con, c, option_id: int, key: str, reason_text, change, role: 
         eid = events._insert(con, "human_choice", dict(source="consultation", consultation_id=c["id"], case_id=case["id"], version=c["task_version"],
                                                        option="change", change=change, answered_by=role, priority_change=priority), events._now())
         # 確定した人の決定を記録する（AI の次の案と承認は、この決定と照合される）
-        con.execute("INSERT INTO human_decision (case_id, consultation_id, version, quantity, allocations_json, priority_change, decided_by, decided_at) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?)", (case["id"], c["id"], c["task_version"], change["quantity"],
+        con.execute("INSERT INTO human_decision (case_id, source, consultation_id, version, quantity, allocations_json, priority_change, decided_by, decided_at) "
+                    "VALUES (?, 'consultation', ?, ?, ?, ?, ?, ?, ?)", (case["id"], c["id"], c["task_version"], change["quantity"],
                                                        json.dumps(change["allocations"], ensure_ascii=False) if change.get("allocations") else None,
                                                        int(priority), role, now))
         _refresh_group(con, c["group_id"])
@@ -292,6 +292,27 @@ def against_decision(con, d: dict | None, allocations: list[dict]) -> list[str]:
         elif q > want[k]:
             out.append(f"{label(*k)}に {q} を回しています（決定は {want[k]}）")
     return out
+
+
+def decide_draft(con, draft_id: int, action: str, role: str) -> dict:
+    """売り先への連絡の下書きを、人が使うか使わないか決める（Agent Dock は売り先に送らない。人が決めた記録を残す）。
+    同じ決定の繰り返しは repeated=True。決めた後に別の決定はできない。"""
+    if action not in ("approve", "discard"):
+        raise ConsultError(f"unknown action: {action}")
+    authority.limit_for(con, role)   # 表に無い役割は止める
+    d = con.execute("SELECT id, status, decided_by FROM customer_draft WHERE id = ?", (draft_id,)).fetchone()
+    if d is None:
+        raise KeyError(draft_id)
+    want = "approved" if action == "approve" else "discarded"
+    if d["status"] != "draft":
+        if d["status"] == want:
+            return dict(draft_id=d["id"], status=d["status"], repeated=True)
+        raise ConsultError(f"draft {draft_id} is {d['status']}")
+    now = db.now_iso()
+    with con:
+        con.execute("UPDATE customer_draft SET status = ?, decided_by = ?, decided_at = ? WHERE id = ? AND status = 'draft'", (want, role, now, d["id"]))
+        _audit(con, "owner", f"customer_draft_{want}", None, f"draft {d['id']} by {role}")
+    return dict(draft_id=d["id"], status=want, repeated=False)
 
 
 def revise(con, task_id: int, reason: str) -> int:

@@ -40,6 +40,7 @@
   const KIND_MSG = { inquiry: "問い合わせ", offer: "条件の返事", decline: "断りの返事" };
   const RUN = { order_new: "注文を読み、仕入れ先に問い合わせています", quote_received: "相手の返事を読み、案を組んでいます",
     human_choice: "あなたの答えを受けて、交渉し直しています", staff_question: "あなたの質問に答えています", quote_request: "問い合わせに答えています",
+    trade_registered: "登録を受けて、残った注文を確かめています",
     "info_received": "届いた情報を確かめています" };
   const WAIT = new Set(["open", "needs_president"]);
   const PAST = new Set(["released", "expired", "answered", "closed", "stale"]);
@@ -370,7 +371,11 @@
           activity = v.activity; aiText(activity, null);
           const changed = renderNow(cur, !first);
           if (!first && VIEW === "now" && !REDUCED) {
-            if (fresh.length) for (const m of fresh) streamFrom(m.data.from_owner, changed.length ? changed : [$("nowask")]);   // (a)
+            if (fresh.length) for (const m of fresh) {   // (a) from that organisation's badge to the lines its answer changed (and its hold line)
+              const holds = [...document.querySelectorAll("#nowholds .holdline")].filter((e) => e.innerText.includes(m.data.frm));
+              const to = [...changed, ...holds];
+              streamFrom(m.data.from_owner, to.length ? to : [$("nowask")]);
+            }
             else for (const el of changed) { const r = rectOf(el); Sea.school({ from: { x: r.x - 30, y: r.y + r.h / 2 }, to: r, n: 18, hold: 160 }); }   // (b)
           }
           first = false;
@@ -407,6 +412,7 @@
     for (const [k, el] of nowState.lines) if (!seen.has(k)) { el.remove(); nowState.lines.delete(k); }
     $("nowholds").innerHTML = (cur.holds || []).map((x) => `<div class="holdline">${icon("hourglass")}<span>${esc(x.text)}</span></div>`).join("");
     $("nowdecision").textContent = cur.decision ? `人の決定：${cur.decision.text}` : "";
+    drawDrafts(cur.drafts || []);
     const k = JSON.stringify([cur.waiting_for, cur.case && cur.case.version, cur.case && cur.case.status, cur.consultation && cur.consultation.status,
       (cur.options || []).map((o) => o.option_id + ":" + o.fingerprint + ":" + o.executable)]);
     if (k !== nowState.key) {
@@ -503,6 +509,33 @@
       settle(r.status, await r.json().catch(() => ({})));
     }
   });
+  // the AI's drafts to a customer: nothing is sent by Agent Dock; the person decides and tells the customer
+  function drawDrafts(list) {
+    const html = list.map((d) => d.status === "draft"
+      ? `<div class="draft"><div class="dk">${esc(d.customer)}への連絡の下書き（AIが作成・まだ送っていません）</div><div class="db">${esc(d.body)}</div>
+         <div class="ds">代わりの品：${esc(d.substitute || "なし（AIが読める品目に無い）")}${d.reason ? "　理由：" + esc(d.reason) : ""}</div>
+         <div class="go"><button class="act main" data-draft="${d.draft_id}" data-act="approve" ${MODE === "live" ? "" : "disabled"}>この文で伝える（あなたが伝えます）</button>
+         <button class="act" data-draft="${d.draft_id}" data-act="discard" ${MODE === "live" ? "" : "disabled"}>使わない</button></div></div>`
+      : `<div class="draft done"><div class="dk">${esc(d.customer)}への連絡：${d.status === "approved" ? "伝えることにしました" : "使わないことにしました"}（${d.decided_by === "president" ? "網谷さん" : "担当者"}）</div><div class="db">${esc(d.body)}</div></div>`).join("");
+    if ($("nowdrafts")._html !== html) { $("nowdrafts").innerHTML = html; $("nowdrafts")._html = html; }
+  }
+  $("nowdrafts").addEventListener("click", async (e) => {
+    const b = e.target.closest("button[data-draft]");
+    if (!b || b.disabled || MODE !== "live") return;
+    b.disabled = true;
+    await fetch("/api/draft", { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ owner: OWNER, draft_id: Number(b.dataset.draft), action: b.dataset.act, role: "staff" }) });
+    nowState.refresh = true;
+  });
+  // the demonstration operator: a customer's additional order arrives mid-flow (a business event, like any order)
+  $("opbtn").addEventListener("click", async () => {
+    $("opbtn").disabled = true;
+    const r = await fetch("/api/order", { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ owner: OWNER, customer: "料亭", item: "buri_xl", quantity: 6, idempotency_key: "demo-ryotei-buri-6" }) });
+    const j = await r.json().catch(() => ({}));
+    $("opbtn").textContent = r.ok ? `（実演の操作）料亭の追加注文を入れました（注文 ${j.order_id}）` : `（実演の操作）入れられませんでした：${j.error || r.status}`;
+    nowState.refresh = true;
+  });
   function setView(v) {
     VIEW = v;
     document.body.dataset.view = v;
@@ -579,7 +612,7 @@
   fetch(`/api/work?owner=${OWNER}&item=${encodeURIComponent(ITEM)}`).then((r) => r.json()).then((v) => {
     if (!v.item) { $("aitext").textContent = NOREC; return; }
     header(v);
-    if (MODE === "live") { $("viewbtn").hidden = false; setView(VIEW); } else document.body.dataset.view = "evidence";
+    if (MODE === "live") { $("viewbtn").hidden = false; $("opbtn").hidden = ITEM !== "buri_xl"; setView(VIEW); } else document.body.dataset.view = "evidence";
     if (MODE === "replay") replay(v); else live();
   });
 })();

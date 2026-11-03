@@ -120,7 +120,7 @@ class SeedTest(unittest.TestCase):
         self.assertEqual(15 * 1500, 22500)
         self.assertEqual(a.execute("SELECT name FROM customer WHERE allow_contact = 1").fetchall()[0][0], "料亭")
         kinds = sorted(r[0] for r in a.execute("SELECT kind FROM vault_note"))
-        self.assertEqual(kinds, ["case", "case", "customer", "policy"])
+        self.assertEqual(kinds, ["case", "case", "customer", "customer", "policy"])   # 2つ目の customer はスーパーの欠品の慣行（品目を問わない）
         self.assertEqual(a.execute("SELECT count(*) FROM vault_note WHERE applies_when IS NULL OR source = ''").fetchone()[0], 0)
         self.assertEqual(s.execute("SELECT count(*) FROM vault_note").fetchone()[0], 0)
         ryotei = a.execute("SELECT count(*) FROM sales_history h JOIN item i ON i.id = h.item_id "

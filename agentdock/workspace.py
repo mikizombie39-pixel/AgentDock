@@ -300,6 +300,10 @@ def build(con, owner: str, item_code: str, on_date: str, payload: dict, run_id: 
     errs = [] if sq is None or len(sq) <= MAX_SHORT_QUESTION else [f"short_question は {MAX_SHORT_QUESTION}字まで"]
     errs += [f"案 {o['code']} の short_label は 1〜{MAX_SHORT_LABEL}字" for o in payload["options"]
              if o.get("short_label") is not None and not 0 < len(o["short_label"].strip()) <= MAX_SHORT_LABEL]
+    # 根拠に引いた Vault の番号は、自社の Vault にある番号だけ
+    known = {r[0] for r in con.execute("SELECT id FROM vault_note")}
+    errs += [f"案 {o['code']} の vault_refs {v} は Vault にありません（read_vault の id を使ってください）"
+             for o in payload["options"] for v in o.get("vault_refs") or [] if v not in known]
     # 人の決定と照合する：決定と違う案は、違うと明示した時だけ出せる（その案は決定した人か網谷さんだけが承認できる）
     decision = consult.latest_decision(con, case[0]) if case else None
     unit = sc.unit_label(con.execute("SELECT unit FROM item WHERE id = ?", (item_id,)).fetchone()[0])
@@ -332,6 +336,7 @@ def build(con, owner: str, item_code: str, on_date: str, payload: dict, run_id: 
         {o["code"]: n["executable"] for o, _, n in computed}, allowed)
     layout["short_question"] = sq
     layout["short_labels"] = {o["code"]: o["short_label"].strip() for o in payload["options"] if o.get("short_label")}
+    layout["vault_refs"] = {o["code"]: list(dict.fromkeys(o.get("vault_refs") or [])) for o in payload["options"] if o.get("vault_refs")}
     now_iso = db.now_iso()
     with con:
         if case is None:
@@ -364,8 +369,9 @@ def build(con, owner: str, item_code: str, on_date: str, payload: dict, run_id: 
 def _case_for(con, orders: list, oid: int, item_id: int, on_date: str):
     """案件の行（id, version）。案の注文の並びが変わっても（例：料亭だけに回す案）、同じ品目の開いた案件を使う。無ければ None。"""
     case = None
-    for o in orders or [oid]:
-        case = case or con.execute("SELECT id, version FROM deal_case WHERE order_id = ?", (o,)).fetchone()
+    for o in orders or [oid]:   # 登録・見送りで閉じた案件は使わない（残った注文は新しい案件で続ける）
+        case = case or con.execute("SELECT id, version FROM deal_case WHERE order_id = ? AND status NOT IN ('registered', 'rejected') "
+                                   "ORDER BY id DESC LIMIT 1", (o,)).fetchone()
     if case is None:
         case = con.execute("SELECT id, version FROM deal_case WHERE item_id = ? AND trade_date = ? AND status IN (?, ?, ?, ?, ?) "
                            "ORDER BY id DESC LIMIT 1", (item_id, on_date, "open", *consult.CASE_OPEN)).fetchone()
@@ -481,7 +487,7 @@ def records(con, case_id: int) -> list[dict]:
 def view(con, case_id: int | None = None) -> dict:
     """画面に出すボード（最新の版）。"""
     case = (con.execute("SELECT * FROM deal_case WHERE id = ?", (case_id,)) if case_id else
-            con.execute("SELECT * FROM deal_case ORDER BY updated_at DESC LIMIT 1")).fetchone()
+            con.execute("SELECT * FROM deal_case ORDER BY updated_at DESC, id DESC LIMIT 1")).fetchone()
     if case is None:
         return dict(case=None)
     v = case["version"]

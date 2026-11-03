@@ -164,6 +164,8 @@ def _set_case(owner: str, case_id: int, status: str) -> None:
     try:
         with c:
             c.execute("UPDATE deal_case SET status = ?, updated_at = ? WHERE id = ?", (status, db.now_iso(), case_id))
+            if status in ("registered", "rejected"):   # 案件が閉じたら、その相談も閉じる（答えを待たない）
+                c.execute("UPDATE consultation SET status = 'closed' WHERE case_id = ? AND status IN ('open', 'needs_president')", (case_id,))
     finally:
         c.close()
 
@@ -291,7 +293,29 @@ def _approve(owner: str, case, opt, shown_fp: str, actor: str, now: str, fail_at
         return dict(result="needs_president", case_id=case["id"], authority=auth, priority_change=priority, differs_from_decision=differs)
     _book_proposals(owner, case, opt, numbers, actor)
     _set_case(owner, case["id"], "incomplete")
-    return _run_steps(owner, case["id"], fail_at)
+    out = _run_steps(owner, case["id"], fail_at)
+    if out["result"] == "registered":
+        _record_approval(owner, case, opt, plan, purchase, priority, actor)
+    return out
+
+
+def _record_approval(owner: str, case: dict, opt: dict, plan: dict, purchase: dict, priority: bool, actor: str) -> None:
+    """案の承認も人の決定として残す（だれが・どの版で・どの配分を）。次の案と承認は、この決定と照合される。"""
+    c = db.connect(owner)
+    try:
+        allocs = []
+        for a in plan["allocations"]:
+            if a["kind"] == "order":
+                name = c.execute("SELECT c.name FROM order_book o JOIN customer c ON c.id = o.customer_id WHERE o.id = ?", (a["ref_id"],)).fetchone()[0]
+                allocs.append(dict(order_id=a["ref_id"], customer=name, quantity=a["quantity"]))
+            elif a["kind"] == "customer_lead":
+                allocs.append(dict(order_id=None, customer=a.get("customer"), quantity=a["quantity"]))
+        with c:
+            c.execute("INSERT INTO human_decision (case_id, source, option_id, version, quantity, allocations_json, priority_change, decided_by, decided_at) "
+                      "VALUES (?, 'approval', ?, ?, ?, ?, ?, ?, ?)", (case["id"], opt["id"], opt["version"], purchase["quantity"],
+                                                                     json.dumps(allocs, ensure_ascii=False) if allocs else None, int(bool(priority)), actor, db.now_iso()))
+    finally:
+        c.close()
 
 
 def _wake_for_new_board(owner: str, case_id: int, reasons: list[str]) -> None:
@@ -381,7 +405,8 @@ def _run_steps(owner: str, case_id: int, fail_at: str | None = None) -> dict:
         # 1. 仕入れの取引（漁協 → 網谷水産）：両方の帳簿
         if fail_at == "buy_trade":
             raise DealError("test: stopped before the buy trade")
-        calls = _register_trade(buy["trade_id"], f"T{term['id']}", item_code, term["seller"], "coop", owner, buy["quantity"], buy["unit_price_yen"], case["trade_date"])
+        seller_kind = "coop" if sc.OWNERS[term["seller"]]["role"] == "seller" else "buyer"   # 仲買どうしの相対なら buyer
+        calls = _register_trade(buy["trade_id"], f"T{term['id']}", item_code, term["seller"], seller_kind, owner, buy["quantity"], buy["unit_price_yen"], case["trade_date"])
         _api_audit(owner, case_id, buy["trade_id"], calls)
         done.append("buy_trade")
         _step_audit(owner, case_id, "buy_trade")
@@ -428,6 +453,12 @@ def _run_steps(owner: str, case_id: int, fail_at: str | None = None) -> dict:
         return dict(result="incomplete", case_id=case_id, done=done, error=str(e))
     _set_case(owner, case_id, "registered")
     _audit(owner, "system", "case_registered", dict(case_id=case_id, trades=[p["trade_id"] for p in props]))
+    # 登録は業務の出来事：網谷水産の AI が起き、残った注文を読んで続ける
+    c = db.connect(owner)
+    try:
+        events.emit(c, "trade_registered", dict(case_id=case_id, item=item_code, trades=[p["trade_id"] for p in props]))
+    finally:
+        c.close()
     return dict(result="registered", case_id=case_id, trades=[p["trade_id"] for p in props], done=done,
                 gross_profit_expected_yen=numbers["gross_profit_yen"])
 

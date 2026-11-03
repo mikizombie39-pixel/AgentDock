@@ -64,7 +64,10 @@ def start(on_date: str = sc.DEMO_DATE, variant: str = "normal", item: str = "aji
     for key, o in orders:
         c = db.connect(o["owner"])
         try:
-            out[key] = events.order_received(c, o["customer"], o["item"], o["quantity"], o["sell_price_yen"], on_date)
+            if o.get("existing"):   # 朝に入っていた注文：業務を始めた時に、その注文の出来事を書く（注文は増やさない）
+                out[key] = events.order_noticed(c, o["customer"], o["item"], on_date)
+            else:
+                out[key] = events.order_received(c, o["customer"], o["item"], o["quantity"], o["sell_price_yen"], on_date)
         finally:
             c.close()
     return out

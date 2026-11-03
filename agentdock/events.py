@@ -38,7 +38,7 @@ def emit(con, kind: str, payload: dict, at: str | None = None) -> int:
 
 
 def order_received(con, customer: str, item_code: str, quantity: int, sell_price_yen: int,
-                   order_date: str, at: str | None = None) -> tuple[int, int]:
+                   order_date: str, at: str | None = None, key: str | None = None) -> tuple[int, int]:
     """注文を受けた：注文の行と出来事 order_new を同じトランザクションで書く。(注文の番号, 出来事の番号) を返す。"""
     at = at or _now()
     with con:
@@ -49,9 +49,23 @@ def order_received(con, customer: str, item_code: str, quantity: int, sell_price
         oid = con.execute(
             "INSERT INTO order_book (customer_id, item_id, quantity, sell_price_yen, order_date, received_at) VALUES (?, ?, ?, ?, ?, ?)",
             (cust[0], item[0], quantity, sell_price_yen, order_date, at)).lastrowid
-        eid = _insert(con, "order_new", dict(order_id=oid, customer=customer, item=item_code,
-                                             quantity=quantity, order_date=order_date), at)
+        payload = dict(order_id=oid, customer=customer, item=item_code, quantity=quantity, order_date=order_date)
+        if key:
+            payload["key"] = key   # 画面の操作の押し直しを見分ける
+        eid = _insert(con, "order_new", payload, at)
     return oid, eid
+
+
+def order_noticed(con, customer: str, item_code: str, order_date: str, at: str | None = None) -> tuple[int, int]:
+    """すでに入っている注文（朝の注文）の出来事 order_new を書く。注文の行は増やさない。(注文の番号, 出来事の番号) を返す。"""
+    with con:
+        o = con.execute("SELECT o.id, o.quantity FROM order_book o JOIN customer c ON c.id = o.customer_id JOIN item i ON i.id = o.item_id "
+                        "WHERE c.name = ? AND i.code = ? AND o.order_date = ? AND o.status IN ('open', 'partly_filled') ORDER BY o.id LIMIT 1",
+                        (customer, item_code, order_date)).fetchone()
+        if o is None:
+            raise EventError(f"no open order: {customer} / {item_code}")
+        eid = _insert(con, "order_new", dict(order_id=o[0], customer=customer, item=item_code, quantity=o[1], order_date=order_date), at or _now())
+    return o[0], eid
 
 
 def _row(r) -> dict:

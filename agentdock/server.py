@@ -19,6 +19,8 @@ GET  /api/flow?owner=amiya                           ← 段階と経過（業�
 POST /api/ask      {"owner", "case_id", "text", "idempotency_key"}  ← 担当者の質問（出来事として記録し、Claude を起こす）
 GET  /api/verify?owner=amiya                         ← 技術の検証（Claude の道具の呼び出し・市場の取引帳簿の API・照合・費用）
 POST /api/start    {"variant", "item"}                ← 業務を始める（漁協の資料と品目の注文を入れる・1回だけ・item は aji か buri_xl）
+POST /api/order    {"owner", "customer", "item", "quantity", "idempotency_key"}  ← 作業の途中で売り先の注文が入る（実演の操作・売値は売り先の表から）
+POST /api/draft    {"owner", "draft_id", "action": "approve"|"discard", "role"}  ← 売り先への連絡の下書きを人が決める（送るのは人）
 POST /api/worker/resume                               ← 止まった実演の通しを再開する
 
   python -m agentdock.server --port 8792 --real --new-take   # 本物の Claude で通す（記録は AgentDock-local の takes フォルダの「日時-live」）
@@ -133,6 +135,10 @@ class Handler(BaseHTTPRequestHandler):
             return self._ask()
         if u.path == "/api/start":
             return self._start()
+        if u.path == "/api/order":
+            return self._order()
+        if u.path == "/api/draft":
+            return self._draft()
         if u.path == "/api/worker/resume":
             if WORKER:
                 WORKER.resume()
@@ -189,6 +195,46 @@ class Handler(BaseHTTPRequestHandler):
             finally:
                 c.close()
             return self._send(200, dict(event_id=eid))
+        except (KeyError, ValueError, json.JSONDecodeError) as e:
+            return self._send(400, dict(error=f"bad request: {e}"))
+
+    def _order(self):
+        """作業の途中で売り先の注文が入る（実演の操作）。注文と出来事 order_new を同じトランザクションで書く。売値は売り先の表から読む。"""
+        try:
+            b = self._body()
+            owner, customer, item, qty, key = b["owner"], str(b["customer"]), str(b["item"]), b["quantity"], str(b["idempotency_key"])
+            if owner not in db.OWNER_CODES or not isinstance(qty, int) or isinstance(qty, bool) or not 0 < qty <= 1000:
+                raise ValueError("owner or quantity")
+            c = db.connect(owner)
+            try:
+                for e in c.execute("SELECT payload_json FROM biz_event WHERE kind = 'order_new'"):
+                    p = json.loads(e[0])
+                    if p.get("key") == key:
+                        return self._send(200, dict(order_id=p["order_id"], repeated=True))
+                sp = c.execute("SELECT s.unit_price_yen FROM sales_price s JOIN customer cu ON cu.id = s.customer_id JOIN item i ON i.id = s.item_id "
+                               "WHERE cu.name = ? AND i.code = ? ORDER BY s.valid_from DESC LIMIT 1", (customer, item)).fetchone()
+                if sp is None:
+                    raise ValueError(f"no sales price for {customer} / {item}")
+                oid, eid = events.order_received(c, customer, item, qty, sp[0], sc.DEMO_DATE, key=key)
+            finally:
+                c.close()
+            return self._send(200, dict(order_id=oid, event_id=eid, repeated=False))
+        except (KeyError, ValueError, json.JSONDecodeError, events.EventError) as e:
+            return self._send(400, dict(error=f"bad request: {e}"))
+
+    def _draft(self):
+        """売り先への連絡の下書きを、人が使う（approve）か使わない（discard）か決める。Agent Dock は売り先に送らない。"""
+        try:
+            b = self._body()
+            if b["owner"] not in db.OWNER_CODES:
+                raise ValueError("owner")
+            c = db.connect(b["owner"])
+            try:
+                return self._send(200, consult.decide_draft(c, int(b["draft_id"]), str(b["action"]), str(b.get("role") or "staff")))
+            finally:
+                c.close()
+        except consult.ConsultError as e:
+            return self._send(409, dict(error="rejected", detail=str(e)))
         except (KeyError, ValueError, json.JSONDecodeError) as e:
             return self._send(400, dict(error=f"bad request: {e}"))
 
