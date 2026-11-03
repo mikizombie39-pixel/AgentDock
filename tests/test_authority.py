@@ -28,13 +28,9 @@ class AuthorityTest(unittest.TestCase):
     def approved(self, counterparty, amount_qty, price, day=DAY):
         """確定済みの買い付けを1件入れる。"""
         with self.con:
-            q = self.con.execute(
-                "INSERT INTO quote_in (task_id, counterparty, lot_no, negotiation_id, quantity, unit_price_yen, message, status, received_at) "
-                "VALUES (1, ?, 'L', 1, ?, ?, '', 'accepted', ?)", (counterparty, amount_qty, price, db.now_iso())).lastrowid
             self.con.execute(
-                "INSERT INTO proposal (task_id, task_version, quote_id, item_id, counterparty, trade_date, quantity, unit_price_yen, "
-                "allocated_qty, extra_qty, rationale, status, created_at) VALUES (1, 1, ?, 1, ?, ?, ?, ?, ?, 0, 'r', 'approved', ?)",
-                (q, counterparty, day, amount_qty, price, amount_qty, db.now_iso()))
+                "INSERT INTO proposal (side, item_id, counterparty, trade_date, quantity, unit_price_yen, status, decided_by, decided_at) "
+                "VALUES ('buy', 1, ?, ?, ?, ?, 'registered', 'staff', ?)", (counterparty, day, amount_qty, price, db.now_iso()))
 
     def test_demo_case_is_within_staff_limit(self):
         r = authority.check(self.con, "staff", "iwase", 1, DAY, 15 * 1500)

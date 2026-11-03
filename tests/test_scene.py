@@ -36,13 +36,13 @@ OPTS = [
 AMIYA = [
     # 起動1（注文）：調べる → 漁協と C社に問い合わせ → 待つ
     tools(("read_orders", A), ("read_material", A), ("read_vault", A), ("read_customers", A), ("read_posts", A)),
-    tools(("send_inquiry", dict(to_owner="iwase", item_code="aji", quantity=10, unit_price_yen=1400,
+    tools(("send_inquiry", dict(to_owner="iwase", side="buy", item_code="aji", quantity=10, unit_price_yen=1400,
                                 message="アジを 10kg、1kg 1,400円で譲っていただけますか。", request_id=None)),
-          ("send_inquiry", dict(to_owner="buyer_c", item_code="aji", quantity=5, unit_price_yen=1600,
+          ("send_inquiry", dict(to_owner="buyer_c", side="buy", item_code="aji", quantity=5, unit_price_yen=1600,
                                 message="掲示のアジのうち 5kg だけ、1kg 1,600円で分けていただけますか。", request_id=1))),
     tools(("wait_for_replies", dict(reason="漁協と C社の返事を待つ"))),
     # 起動2（B社の掲示）：B社に売りたいと問い合わせる → 待つ
-    tools(("send_inquiry", dict(to_owner="buyer_b", item_code="aji", quantity=5, unit_price_yen=1650,
+    tools(("send_inquiry", dict(to_owner="buyer_b", side="sell", item_code="aji", quantity=5, unit_price_yen=1650,
                                 message="掲示を拝見しました。アジ 5kg を 1kg 1,650円で、8:00 に受け渡しできます。", request_id=2)),
           ("wait_for_replies", dict(reason="B社の返事を待つ"))),
     # 起動3・4（漁協と C社の返事）：待つ
@@ -83,7 +83,7 @@ class SceneTest(unittest.TestCase):
         self.tmp.cleanup()
 
     def q(self, owner, sql, args=()):
-        c = db.connect(owner)
+        c = db.connect(owner if owner != "market" else db.MARKET)
         try:
             return [tuple(r) for r in c.execute(sql, args)]
         finally:
@@ -122,6 +122,13 @@ class SceneTest(unittest.TestCase):
         # 漁協が受け取った問い合わせの文に、網谷水産の上限・売り先は入っていない（開示の検査を通った文だけ）
         sent = self.q("amiya", "SELECT count(*) FROM agent_step WHERE tool = 'send_inquiry' AND is_error = 0")[0][0]
         self.assertEqual(sent, 3)
+        # 条件の番号：漁協の2つの条件は同じ仮押さえ（15kg）に結びつく。B社の受け入れは条件付きの合意（事前の承認の内）
+        hold = self.q("iwase", "SELECT id FROM stock_hold")[0][0]
+        self.assertEqual(self.q("market", "SELECT seller, buyer, quantity, unit_price_yen, hold_ref, status FROM offer_term WHERE seller = 'iwase' ORDER BY id"),
+                         [("iwase", "amiya", 10, 1720, hold, "offered"), ("iwase", "amiya", 15, 1500, hold, "offered")])
+        self.assertEqual(self.q("market", "SELECT seller, buyer, quantity, unit_price_yen, status FROM agreement"),
+                         [("amiya", "buyer_b", 5, 1650, "conditional")])
+        self.assertIn("網谷水産の担当者の承認", self.q("market", "SELECT condition FROM agreement")[0][0])
 
     def test_prompt_carries_the_thread(self):
         scene.start()
@@ -136,6 +143,53 @@ class SceneTest(unittest.TestCase):
         self.assertIn("15kg まとめてなら", prompt)
         self.assertIn("［10 で 1,720円／15 で 1,500円］", prompt)                # 条件の2つの組が Claude に渡る
         self.assertIn("今日のこの品目のやり取り", prompt)
+
+
+class PreapprovalTest(unittest.TestCase):
+    """B社の AI は、担当者が事前に承認した条件（5kg・1,700円まで）の範囲で掲示と合意ができる。"""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        os.environ["AGENTDOCK_DATA"] = self.tmp.name
+        self.assertEqual(build.main([]), 0)
+        scene.start()
+        c = db.connect("buyer_b")
+        try:
+            self.ev = [e for e in events.pending(c) if e["kind"] == "order_new"][0]
+        finally:
+            c.close()
+
+    def tearDown(self):
+        os.environ.pop("AGENTDOCK_DATA", None)
+        self.tmp.cleanup()
+
+    def test_post_above_preapproval_is_refused(self):
+        cl = MockClient([tools(("post_request", dict(side="buy", item_code="aji", quantity=5, min_qty=5, unit_price_yen=1750, message="アジを 5kg 買いたいです。"))),
+                         tools(("do_nothing", dict(reason="試験")))])
+        agents.run_event(cl, "buyer_b", self.ev, D)
+        c = db.connect("buyer_b")
+        try:
+            row = c.execute("SELECT is_error, result_text FROM agent_step WHERE tool = 'post_request'").fetchone()
+        finally:
+            c.close()
+        self.assertEqual(row[0], 1)
+        self.assertIn("事前に承認した条件", row[1])
+
+    def test_acceptance_above_preapproval_waits_for_staff(self):
+        from agentdock import network
+        q = network.send("amiya", "buyer_b", "inquiry", "aji", "アジ 5kg を 1kg 1,750円でお譲りできます。", D, 5, 1750, side="sell")
+        c = db.connect("buyer_b")
+        try:
+            ev = [e for e in events.pending(c) if e["kind"] == "quote_request"][0]
+        finally:
+            c.close()
+        cl = MockClient([tools(("reply", dict(in_reply_to=q, kind="offer", terms=[dict(quantity=5, unit_price_yen=1750)], message="お願いします。")))])
+        agents.run_event(cl, "buyer_b", ev, D)
+        m = db.connect("market")
+        try:
+            self.assertEqual(m.execute("SELECT status FROM agreement").fetchone()[0], "needs_staff")
+        finally:
+            m.close()
 
 
 class LoopSafetyTest(unittest.TestCase):
@@ -209,7 +263,7 @@ class LoopSafetyTest(unittest.TestCase):
 
     def test_tools_after_the_end_are_not_run(self):
         both = MockClient([tools(("wait_for_replies", dict(reason="待つ")),
-                                 ("send_inquiry", dict(to_owner="iwase", item_code="aji", quantity=10, unit_price_yen=1400,
+                                 ("send_inquiry", dict(to_owner="iwase", side="buy", item_code="aji", quantity=10, unit_price_yen=1400,
                                                        message="10kg いかがですか。", request_id=None)))])
         r = agents.run_event(both, "amiya", self.ev, D)
         self.assertEqual(r["outcome"], "waiting")
@@ -220,7 +274,7 @@ class LoopSafetyTest(unittest.TestCase):
             c.close()
 
     def test_blocked_text_is_returned_as_an_error(self):
-        leak = MockClient([tools(("send_inquiry", dict(to_owner="iwase", item_code="aji", quantity=10, unit_price_yen=1400,
+        leak = MockClient([tools(("send_inquiry", dict(to_owner="iwase", side="buy", item_code="aji", quantity=10, unit_price_yen=1400,
                                                        message="上限は 1,600円です。", request_id=None))),
                            tools(("do_nothing", dict(reason="試験")))])
         agents.run_event(leak, "amiya", self.ev, D)
@@ -247,7 +301,7 @@ class TermsTest(unittest.TestCase):
         self.assertEqual(build.main([]), 0)
         from agentdock import network
         self.network = network
-        self.q = network.send("amiya", "iwase", "inquiry", "aji", "アジを 10kg、1kg 1,400円でいかがでしょうか。", D, 10, 1400)
+        self.q = network.send("amiya", "iwase", "inquiry", "aji", "アジを 10kg、1kg 1,400円でいかがでしょうか。", D, 10, 1400, side="buy")
         c = db.connect("iwase")
         try:
             self.ev = events.pending(c, ["quote_request"])[0]

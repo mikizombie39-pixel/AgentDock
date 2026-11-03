@@ -92,6 +92,15 @@ def _fill_autonomy(con, code: str, item: dict, cust: dict, now: str) -> None:
     con.executemany("INSERT INTO stock (item_id, quantity, status, lot_no, stock_date, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
                     [(item[i], q, s, n, sc.DEMO_DATE, now) for i, q, s, n in sc.STOCK.get(code, [])])
     con.executemany("UPDATE customer SET allow_contact = 1 WHERE name = ?", [(c,) for c in sc.CONTACT_OK.get(code, [])])
+    con.executemany("INSERT INTO process_step (item_id, name, cost_yen_per_unit, valid_from) VALUES (?, ?, ?, ?)",
+                    [(item[i], n, c, sc.HISTORY_FROM) for i, n, c in sc.PROCESS_STEPS.get(code, [])])
+    steps = {(r[0], r[1]): r[2] for r in con.execute("SELECT item_id, name, id FROM process_step")}
+    con.executemany("INSERT INTO route_process (item_id, destination, destination_kind, process_step_id, status, note) VALUES (?, ?, ?, ?, ?, ?)",
+                    [(item[i], d, k, steps[(item[i], s)] if s else None, st, nt) for i, d, k, s, st, nt in sc.ROUTE_PROCESS.get(code, [])])
+    con.executemany(
+        "INSERT INTO preapproval (item_id, side, quantity, max_unit_price_yen, min_unit_price_yen, spec, deliver_by, approved_by, approved_at, valid_until, status) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active')",
+        [(item[i], sd, q, mx, mn, sp, dl, by, now, sc.PREAPPROVAL_VALID_UNTIL) for i, sd, q, mx, mn, sp, dl, by in sc.PREAPPROVALS.get(code, [])])
     con.executemany(
         "INSERT INTO sales_history (customer_id, item_id, sale_date, ordered_qty, sold_qty, unit_price_yen) VALUES (?, ?, ?, ?, ?, ?)",
         [(cust[c], item[i], d, o, s_, p) for c, i, d, o, s_, p in sc.AJI_SALES_HISTORY.get(code, [])])

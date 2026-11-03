@@ -27,7 +27,8 @@ def case_total(con, counterparty: str, item_id: int, trade_date: str, exclude_pr
     """同じ相手・品目・取引日で、すでに確定した買い付けの合計（円）。"""
     row = con.execute(
         "SELECT COALESCE(SUM(quantity * unit_price_yen), 0) FROM proposal "
-        "WHERE counterparty = ? AND item_id = ? AND trade_date = ? AND status IN ('approved') AND id IS NOT ?",
+        "WHERE side = 'buy' AND counterparty = ? AND item_id = ? AND trade_date = ? "
+        "AND status IN ('approved', 'registered', 'incomplete') AND id IS NOT ?",
         (counterparty, item_id, trade_date, exclude_proposal_id)).fetchone()
     return int(row[0])
 

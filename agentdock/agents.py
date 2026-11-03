@@ -52,7 +52,19 @@ def read_orders(ctx, inp):
             ceiling = None
         out.append(dict(order_id=r[0], customer=r[1], quantity=r[2], unit=it["unit"], sell_price_yen=r[3],
                         buy_ceiling_yen=ceiling, status=r[4]))
-    return _j(dict(item=it["name"], orders=out, note="buy_ceiling_yen は自社の仕入れの上限（売値 − 費用 − 欲しい利益）。相手に書かない"))
+    pre = [dict(r) for r in ctx.con.execute(
+        "SELECT id, side, quantity, max_unit_price_yen, min_unit_price_yen, spec, deliver_by, approved_by, valid_until FROM preapproval "
+        "WHERE item_id = ? AND status = 'active'", (it["id"],))]
+    res = dict(item=it["name"], orders=out, note="buy_ceiling_yen は自社の仕入れの上限（売値 − 費用 − 欲しい利益）。相手に書かない")
+    if pre:
+        res["preapproved"] = pre
+        res["preapproved_note"] = "担当者が事前に承認した条件。この範囲なら条件付きの合意ができる。超えれば担当者の承認待ちになる"
+    return _j(res)
+
+
+def _preapproval(con, item_id: int, side: str):
+    return con.execute("SELECT * FROM preapproval WHERE item_id = ? AND side = ? AND status = 'active' ORDER BY id LIMIT 1",
+                       (item_id, side)).fetchone()
 
 
 def read_market(ctx, inp):
@@ -92,6 +104,15 @@ def read_customers(ctx, inp):
                         may_contact=bool(c[2]),
                         sales_history=dict(times=h[0], avg_sold=round(h[1], 1) if h[1] else None, last=h[2], min=h[3], max=h[4])))
     return _j(dict(item=it["name"], unit=it["unit"], customers=out))
+
+
+def read_my_material(ctx, inp):
+    r = ctx.con.execute("SELECT id, created_at, body_json FROM broadcast ORDER BY id DESC LIMIT 1").fetchone()
+    if r is None:
+        return "自社が配った資料はありません。"
+    body = json.loads(r[2])
+    return _j(dict(broadcast_id=r[0], title=body["title"], items=[i for i in body["items"] if i["item"] == inp["item_code"]],
+                   note="仲買の全員に配った資料。ここに書いた見込みの値は、仲買が知っている"))
 
 
 def read_posts(ctx, inp):
@@ -165,7 +186,8 @@ def send_inquiry(ctx, inp):
     if inp["to_owner"] == ctx.owner or inp["to_owner"] not in OWNER_NAMES:
         raise ToolError(f"宛先が正しくありません：{inp['to_owner']}")
     mid = _send(ctx, from_owner=ctx.owner, to_owner=inp["to_owner"], kind="inquiry", item_code=inp["item_code"], body=inp["message"],
-                on_date=ctx.on_date, quantity=inp["quantity"], unit_price_yen=inp["unit_price_yen"], request_id=inp["request_id"])
+                on_date=ctx.on_date, quantity=inp["quantity"], unit_price_yen=inp["unit_price_yen"], request_id=inp["request_id"],
+                side=inp["side"])
     return f"{OWNER_NAMES[inp['to_owner']]}に問い合わせを送りました（番号 {mid}）。返事は出来事として届きます。"
 
 
@@ -190,8 +212,8 @@ def _check_reply_rules(ctx, q: dict, inp: dict):
     it = _item(ctx.con, q["item_code"])
     role = ctx.con.execute("SELECT role FROM owner").fetchone()[0]
     now = demo_now(ctx.on_date)
-    if role == "seller" or ctx.con.execute("SELECT 1 FROM stock WHERE item_id = ? AND status IN ('for_sale', 'unallocated')", (it["id"],)).fetchone():
-        # 売る側：在庫の内・最低の値以上・掲示のまとめての条件（条件ごとに確かめる）
+    if q.get("side") == "buy":
+        # 売る側（相手は買いたい）：在庫の内・最低の値以上・掲示のまとめての条件（条件ごとに確かめる）
         avail, stock_id = _available(ctx.con, it["id"], now)
         mine = [p for p in market.open_requests(it["code"], now) if p["owner"] == ctx.owner and p["side"] == "sell"]
         for t in terms:
@@ -205,8 +227,8 @@ def _check_reply_rules(ctx, q: dict, inp: dict):
                 if qty < p["min_qty"]:
                     raise ToolError(f"自社の掲示は {p['min_qty']}{it['unit']} まとめての条件です。それより少ない数量は出せません")
         big = max(terms, key=lambda t: t["quantity"])
-        return stock_id, big["quantity"], big["unit_price_yen"]
-    # 買う側：注文の内・仕入れの上限以下（条件ごとに確かめる）
+        return dict(kind="seller", stock_id=stock_id, quantity=big["quantity"], unit_price_yen=big["unit_price_yen"])
+    # 買う側（相手は売りたい）：注文の内・仕入れの上限以下（条件ごとに確かめる）。事前の承認の内なら条件付きの合意
     orders = json.loads(read_orders(ctx, {"item_code": it["code"]}))["orders"]
     if not orders:
         raise ToolError("この品目の注文がありません。買う条件は出せません")
@@ -215,7 +237,10 @@ def _check_reply_rules(ctx, q: dict, inp: dict):
             raise ToolError("注文の数量を超えています")
         if all(o["buy_ceiling_yen"] is None or t["unit_price_yen"] > o["buy_ceiling_yen"] for o in orders):
             raise ToolError(f"{t['unit_price_yen']}円は自社の仕入れの上限を超えています")
-    return None
+    pre = _preapproval(ctx.con, it["id"], "buy")
+    within = pre is not None and all(t["quantity"] <= pre["quantity"] and (pre["max_unit_price_yen"] is None or t["unit_price_yen"] <= pre["max_unit_price_yen"])
+                                     and pre["valid_until"] > now for t in terms)
+    return dict(kind="buyer", status="conditional" if within else "needs_staff")
 
 
 def reply(ctx, inp):
@@ -227,18 +252,26 @@ def reply(ctx, inp):
         raise ToolError("自社宛ての問い合わせにだけ返事できます")
     plan = _check_reply_rules(ctx, q, inp)
     terms = [(t["quantity"], t["unit_price_yen"]) for t in inp["terms"]]
+    now = demo_now(ctx.on_date)
+    expires = (datetime.datetime.fromisoformat(now) + datetime.timedelta(minutes=HOLD_MINUTES)).isoformat()
     mid = _send(ctx, from_owner=ctx.owner, to_owner=q["from_owner"], kind=inp["kind"], item_code=q["item_code"], body=inp["message"],
-                on_date=ctx.on_date, terms=terms or None, in_reply_to=q["id"])
+                on_date=ctx.on_date, terms=terms or None, in_reply_to=q["id"], valid_until=expires if terms else None)
     tail = ""
-    if plan:
-        stock_id, qty, price = plan
-        now = demo_now(ctx.on_date)
-        expires = (datetime.datetime.fromisoformat(now) + datetime.timedelta(minutes=HOLD_MINUTES)).isoformat()
+    if plan and plan["kind"] == "seller":
+        # 仮押さえは最も多い数量の1件。示した条件の全てに結びつける（示しただけでは確保ではない。承認の時に確かめ直す）
         with ctx.con:
             hold = ctx.con.execute(
                 "INSERT INTO stock_hold (stock_id, buyer, quantity, unit_price_yen, negotiation_id, status, expires_at, created_at, updated_at) "
-                "VALUES (?, ?, ?, ?, ?, 'held', ?, ?, ?)", (stock_id, q["from_owner"], qty, price, mid, expires, now, now)).lastrowid
-        tail = f"・仮押さえ {hold} 番（{qty}{_item(ctx.con, q['item_code'])['unit']}・{HOLD_MINUTES}分）"
+                "VALUES (?, ?, ?, ?, ?, 'held', ?, ?, ?)",
+                (plan["stock_id"], q["from_owner"], plan["quantity"], plan["unit_price_yen"], mid, expires, now, now)).lastrowid
+        network.attach_hold(mid, hold)
+        tail = f"・仮押さえ {hold} 番（{plan['quantity']}{_item(ctx.con, q['item_code'])['unit']}・{HOLD_MINUTES}分）"
+    elif plan and plan["kind"] == "buyer":
+        # 買い手の受け入れは条件付きの合意。相手の担当者の承認と仕入れの確定の後にだけ正式な売買になる
+        seller_name = OWNER_NAMES[q["from_owner"]]
+        for t in network.terms_for_message(mid):
+            network.make_agreement(t["id"], f"{seller_name}の担当者の承認と、{seller_name}の仕入れの確定を条件とする", plan["status"], expires)
+        tail = "・条件付きの合意" + ("（事前の承認の内）" if plan["status"] == "conditional" else "（事前の承認を超えるので、自社の担当者の承認待ち）")
     return f"{OWNER_NAMES[q['from_owner']]}に返事を送りました（番号 {mid}{tail}）。"
 
 
@@ -250,6 +283,10 @@ def post_request(ctx, inp):
             raise ToolError("この品目の注文がありません")
         if inp["unit_price_yen"] > max(o["buy_ceiling_yen"] or 0 for o in orders):
             raise ToolError("その値は自社の仕入れの上限を超えています")
+        pre = _preapproval(ctx.con, it["id"], "buy")
+        if pre is not None and (inp["quantity"] > pre["quantity"] or
+                                (pre["max_unit_price_yen"] is not None and inp["unit_price_yen"] > pre["max_unit_price_yen"])):
+            raise ToolError("担当者が事前に承認した条件（数量・値の上限）を超えています")
     from agentdock import disclosure
     valid_until = f"{ctx.on_date}T10:00:00+09:00"
     try:
@@ -291,10 +328,12 @@ READ_VAULT = _read("read_vault", "Vault（社長の経験・方針・売り先�
 READ_CUSTOMERS = _read("read_customers", "自社の売り先（売値・上限・案内してよいか・売れ方の記録）を読む。", read_customers)
 READ_POSTS = _read("read_posts", "他の組織の掲示（買いたい・譲りたい）を読む。", read_posts)
 READ_THREAD = _read("read_thread", "今日のこの品目の、自社の問い合わせと返事を読む。", read_thread)
+READ_MY_MATERIAL = _read("read_my_material", "自社が仲買の全員に配った今日の資料（見込みの値・一言）を読む。", read_my_material)
 READ_STOCK = _read("read_stock", "自社の在庫（出せる数）・数量ごとの最低の値・自社の掲示を読む。", read_stock)
 SEND_INQUIRY = Tool(
     "send_inquiry", "他の組織に問い合わせる（買いたい・売りたい・条件を聞く）。message は相手に届く文。自社の上限・原価・売り先の名前は書かない。",
-    {"to_owner": {"type": "string", "enum": list(OWNER_NAMES)}, "item_code": ITEM, "quantity": NULL_INT,
+    {"to_owner": {"type": "string", "enum": list(OWNER_NAMES)}, "side": {"type": "string", "enum": ["buy", "sell"], "description": "自社が買いたいか売りたいか"},
+     "item_code": ITEM, "quantity": NULL_INT,
      "unit_price_yen": NULL_INT, "message": STR, "request_id": {"type": ["integer", "null"], "description": "掲示への問い合わせならその番号"}},
     send_inquiry)
 _TERM = {"type": "object", "additionalProperties": False, "required": ["quantity", "unit_price_yen"],
@@ -325,7 +364,7 @@ NOTHING = Tool("do_nothing", "何もしない（この出来事は自社に関�
 TOOLSETS = {
     "amiya": [READ_ORDERS, READ_MARKET, READ_MATERIAL, READ_VAULT, READ_CUSTOMERS, READ_POSTS, READ_THREAD,
               SEND_INQUIRY, REPLY, WAIT, PRESENT, NOTHING],
-    "iwase": [READ_STOCK, READ_MARKET, READ_THREAD, REPLY, NOTHING],
+    "iwase": [READ_STOCK, READ_MY_MATERIAL, READ_MARKET, READ_THREAD, REPLY, NOTHING],
     "buyer_b": [READ_ORDERS, READ_MARKET, READ_MATERIAL, READ_VAULT, READ_POSTS, READ_THREAD, POST_REQUEST, REPLY, NOTHING],
     "buyer_c": [READ_STOCK, READ_MARKET, READ_THREAD, REPLY, NOTHING],
 }
@@ -352,7 +391,8 @@ SYSTEMS = {
              "漁協や他の仲買に問い合わせ、取引の候補を磁石ボードに出します。取引を確定する権限はあなたにありません。"
              "最後は担当者が選び、承認します。返事を待つ時は wait_for_replies、候補が出そろったら present_options を使います。"
              "注文より多く仕入れる案は、追加の分の売れる見込み・売れ残りの損も比べて示します。"
-             "問い合わせには希望の値を添えます。" + _COMMON,
+             "問い合わせには希望の値を添えます。"
+             "他の組織に売ると申し出る時は、自社の仕入れの確定と担当者の承認が条件だと書きます。" + _COMMON,
     "iwase": "あなたは岩瀬漁協（売り手）の Claude AI パートナーです（Agent Dock）。仲買からの問い合わせに、自社の在庫と数量ごとの最低の値を見て答えます。"
              "最低の値より安い条件は出せません。まとめて買えば値を下げられる場合は、その条件を示してかまいません。" + _COMMON,
     "buyer_b": "あなたは B社（仲買）の Claude AI パートナーです（Agent Dock）。注文を満たす仕入れ先を探します。"

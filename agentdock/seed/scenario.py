@@ -29,6 +29,7 @@ OWNERS = {
 # 実証用の架空の設定で、実在の仲買会社の権限の規程ではない。仲買は多くの得意先の注文をまとめて仕入れるので、
 # 担当者の上限は個別の注文ではなく、まとめた仕入れの額を基準にしている
 AUTHORITY = {
+    "iwase": [("staff", "販売の担当者", 1000000), ("president", "組合長", None)],   # 漁協の AI は担当者の権限の内で条件を出す
     "amiya": [("staff", "若い担当者", 500000), ("president", "網谷さん", None)],
     "buyer_b": [("staff", "B社の担当者", 500000), ("president", "B社の社長", None)],
     "buyer_c": [("staff", "C社の担当者", 500000), ("president", "C社の社長", None)],
@@ -130,6 +131,29 @@ DEAL_REQUESTS = [
 ]
 B_POST_PRICE_GUIDE = 1650   # 模擬の B社の AI が使う値・試験で漁協の最低の値との関係を確かめる
 DEAL_REQUEST_VALID_UNTIL = "2026-11-02T10:00:00+09:00"
+
+# 加工の工程と費用（販売先ではなく工程に結びつける・2026-11-03 デイブ / SAL）：(item, 工程, 1単位の費用)
+PROCESS_STEPS = {
+    "amiya": [("aji", "下処理と箱詰め", 200)],
+    "buyer_b": [("aji", "下処理と箱詰め", 200)],
+}
+# 売り先ごとに通る工程：(item, 売り先, 種類, 工程の名前 または None, 状態, 注記)
+# B社向けの 5kg にも下処理と箱詰めの工程がある（デモの前提として明示・2026-11-03 デイブ）。運賃は未計上
+ROUTE_PROCESS = {
+    "amiya": [
+        ("aji", "スーパー", "customer", "下処理と箱詰め", "confirmed", None),
+        ("aji", "料亭", "customer", "下処理と箱詰め", "confirmed", None),
+        ("aji", "buyer_b", "broker", "下処理と箱詰め", "confirmed", "デモの前提：B社向けにも下処理と箱詰めの工程がある"),
+    ],
+}
+UNCOUNTED_COSTS = ["運賃（受け渡しの方法が未定）"]   # 磁石ボードに「未計上」と出す費用
+
+# 担当者が事前に承認した売買の条件：(item, side, quantity, max_price, min_price, spec, deliver_by, approved_by)
+# B社の AI はこの範囲で交渉し、条件付きの合意ができる。超えれば B社の担当者の承認待ち（2026-11-03 デイブ / SAL）
+PREAPPROVALS = {
+    "buyer_b": [("aji", "buy", 5, 1700, None, "中・刺身向き", "本日 9:00 まで", "B社の担当者")],
+}
+PREAPPROVAL_VALID_UNTIL = "2026-11-02T10:00:00+09:00"
 
 # 営業の案内を送ってよい売り先（模擬の売り先だけ）
 CONTACT_OK = {

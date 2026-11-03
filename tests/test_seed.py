@@ -33,7 +33,7 @@ class SeedTest(unittest.TestCase):
     def test_authority_comes_from_the_seed(self):
         rows = {r["role"]: r["max_trade_yen"] for r in self.con("amiya").execute("SELECT role, max_trade_yen FROM authority")}
         self.assertEqual(rows, {"staff": 500000, "president": None})
-        self.assertEqual(self.con("iwase").execute("SELECT COUNT(*) FROM authority").fetchone()[0], 0)
+        self.assertEqual(self.con("iwase").execute("SELECT max_trade_yen FROM authority WHERE role = 'staff'").fetchone()[0], 1000000)
 
     def test_files(self):
         for code in (*db.OWNER_CODES, db.MARKET):
