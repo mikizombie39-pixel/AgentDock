@@ -66,6 +66,23 @@ def public_results(start: str, end: str):
     return rows
 
 
+# アジ（kg・本編の品目）：公開の相場は別の乱数で作る（他の品目の値を動かさないため）。直近30日の中央値は 1kg 1,680円前後
+AJI_KG_CENTER = {1: 1900, 2: 1950, 3: 1850, 4: 1750, 5: 1600, 6: 1550, 7: 1500,
+                 8: 1550, 9: 1650, 10: 1680, 11: 1700, 12: 1850}
+
+
+def public_results_aji_kg(start: str, end: str):
+    """本編のアジ（kg）の公開の結果。形は public_results と同じ。"""
+    rng = random.Random(f"{SEED}-aji-kg")
+    rows = []
+    for d in market_days(start, end):
+        center = AJI_KG_CENTER[d.month]
+        for n in range(rng.randint(1, 2)):
+            price = _round(center * (1 + rng.uniform(-0.06, 0.06)), 10)
+            rows.append(("aji", d.isoformat(), "auction", price, rng.randint(10, 40), f"{d:%Y%m%d}-aji-{n + 1}"))
+    return rows
+
+
 def own_trades(owner_code: str, items, public_rows, every_n_days: int = 3):
     """自社の過去の取引：公開の結果のうち、自社が扱う品目から数日おきに1件を自社の取引とする。"""
     rng = random.Random(f"{SEED}-{owner_code}")

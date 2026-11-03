@@ -73,7 +73,7 @@ def _yen(v):
 
 def render(m: dict) -> str:
     """材料を仲間に渡す文にする。数字は材料の値だけを使う。"""
-    unit = "本" if m["item"]["unit"] == "fish" else "箱"
+    unit = {"fish": "本", "kg": "kg"}.get(m["item"]["unit"], "箱")
     lines = [f"# 今日の材料（{m['date']}・{m['owner']['name']}・{m['item']['name']}）", ""]
     r = m["market_recent"]
     if r:

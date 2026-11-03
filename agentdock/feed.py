@@ -67,13 +67,13 @@ def bid_view(owner: str, item_code: str, kind: str, on_date: str) -> dict:
                          "WHERE i.code = ? ORDER BY valid_from DESC LIMIT 1", (item_code,)).fetchone()
     finally:
         c.close()
-    unit = "1本" if m["item"]["unit"] == "fish" else f"1箱（{m['item']['unit_weight_g'] // 1000}kg）"
+    unit = {"fish": "1本", "kg": "1kg"}.get(m["item"]["unit"], f"1箱（{m['item']['unit_weight_g'] // 1000}kg）")
     r, ly, p = m["market_recent"], m["market_last_year"], m["approved_plan"]
     first = (m.get("orders") or [None])[0]
     values = [v for v in (r and r["low"], r and r["high"], ly and ly["low"], ly and ly["high"],
                           first and first["ceiling_yen"], p and p.get("max_unit_price_yen"), p and p.get("min_unit_price_yen")) if v]
     scale = dict(min=int(min(values) * 0.9) // 100 * 100, max=-(-int(max(values) * 1.1) // 100) * 100) if values else None
-    u = "本" if m["item"]["unit"] == "fish" else "箱"
+    u = {"fish": "本", "kg": "kg"}.get(m["item"]["unit"], "箱")
     yen = lambda v: f"{v:,}円"   # noqa: E731
     own = []
     if first and cost:

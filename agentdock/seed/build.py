@@ -14,7 +14,7 @@ import argparse
 import datetime
 import sys
 
-from agentdock import db
+from agentdock import db, market
 from agentdock.seed import prices, sales, scenario as sc
 
 
@@ -22,15 +22,16 @@ def _ids(con, table, key="code"):
     return {r[key]: r["id"] for r in con.execute(f"SELECT id, {key} FROM {table}")}
 
 
-def build_owner(code: str, public_rows, scene_c: bool = False, with_aji_s: bool = False) -> None:
+def build_owner(code: str, public_rows, scene_c: bool = False, with_aji_s: bool = False, extra_public=()) -> None:
     con = db.connect(code)
     try:
-        _fill_owner(con, code, public_rows, scene_c, with_aji_s)
+        _fill_owner(con, code, public_rows, scene_c, with_aji_s, extra_public)
     finally:
         con.close()
 
 
-def _fill_owner(con, code: str, public_rows, scene_c: bool, with_aji_s: bool = False) -> None:
+def _fill_owner(con, code: str, public_rows, scene_c: bool, with_aji_s: bool = False, extra_public=()) -> None:
+    """extra_public は本編のアジ（kg）の公開の相場。自社の取引と売れ方の乱数には混ぜない（他の品目の値を動かさない）。"""
     db.migrate(con, "owner")
     o = sc.OWNERS[code]
     now = db.now_iso()
@@ -50,11 +51,11 @@ def _fill_owner(con, code: str, public_rows, scene_c: bool, with_aji_s: bool = F
         if o["role"] == "buyer":
             con.executemany(
                 "INSERT INTO price_history (item_id, trade_date, kind, unit_price_yen, quantity, source, lot_no) VALUES (?, ?, ?, ?, ?, 'public_result', ?)",
-                [(item[c], d, k, p, q, n) for c, d, k, p, q, n in keep(public_rows, 0)])
+                [(item[c], d, k, p, q, n) for c, d, k, p, q, n in [*keep(public_rows, 0), *extra_public]])
             handled = {i for _, i, *_ in sc.ORDERS.get(code, [])}
             mine = prices.own_trades(code, handled, public_rows)
         else:
-            mine = public_rows   # 漁協の販売の記録＝自分の売った結果
+            mine = [*public_rows, *extra_public]   # 漁協の販売の記録＝自分の売った結果
         con.executemany(
             "INSERT INTO price_history (item_id, trade_date, kind, unit_price_yen, quantity, source, lot_no) VALUES (?, ?, ?, ?, ?, 'own_trade', ?)",
             [(item[c], d, k, p, q, n) for c, d, k, p, q, n in keep(mine, 0)])
@@ -120,6 +121,12 @@ def build_market() -> None:
     con = db.connect(db.MARKET)
     db.migrate(con, "market")
     con.close()
+    for owner, side, item, qty, min_qty, price, msg in sc.DEAL_REQUESTS:
+        oc = db.connect(owner)
+        try:
+            market.post_request(oc, owner, side, item, qty, min_qty, price, msg, sc.DEMO_DATE, sc.DEAL_REQUEST_VALID_UNTIL)
+        finally:
+            oc.close()
 
 
 def main(argv=None) -> int:
@@ -144,8 +151,9 @@ def main(argv=None) -> int:
         print(f"moved old vault to {archived}")
 
     rows = prices.public_results(sc.HISTORY_FROM, sc.HISTORY_TO)
+    aji_kg = prices.public_results_aji_kg(sc.HISTORY_FROM, sc.HISTORY_TO)
     for code in db.OWNER_CODES:
-        build_owner(code, rows, scene_c=a.scene_c, with_aji_s=a.with_aji_s)
+        build_owner(code, rows, scene_c=a.scene_c, with_aji_s=a.with_aji_s, extra_public=aji_kg)
     build_market()
     print(f"built {len(db.OWNER_CODES) + 1} dbs in {folder} ({len(rows)} public results)")
     return 0

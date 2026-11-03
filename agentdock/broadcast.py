@@ -49,6 +49,9 @@ def compose(con, on_date: str) -> dict:
         expected = sc.TODAY_EXPECTED_YEN.get(r["code"])
         if expected is not None:
             entry["today_expected_yen"] = expected
+            cond = sc.TODAY_EXPECTED_CONDITION.get(r["code"])
+            if cond:
+                entry["today_expected_condition"] = cond
             if recent:
                 entry["vs_recent_pct"] = round((expected - recent["median"]) * 100 / recent["median"])
         note = sc.SELLER_NOTES.get(r["code"])

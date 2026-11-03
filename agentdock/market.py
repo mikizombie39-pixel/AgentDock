@@ -363,3 +363,40 @@ def awards_as_results(lot_no: str) -> list[dict]:
     for n, r in enumerate(rows, 1):
         r["result_id"] = f"{r['trade_date']}-{r['lot_no']}-{n}"
     return rows
+
+
+# ── 相対の申し込み（Agent Network の掲示）──
+# 仲買が「買いたい・譲りたい」の条件を掲げ、ほかの組織が読む。文は出す前に、出した組織の DB で開示の検査を通す
+
+
+def post_request(owner_con, owner: str, side: str, item_code: str, quantity: int, min_qty: int,
+                 unit_price_yen: int, message: str, trade_date: str, valid_until: str) -> int:
+    """申し込みを掲げる。開示の検査に通らなければ disclosure.DisclosureError（掲げない）。"""
+    from agentdock import disclosure
+    reasons = disclosure.check(owner_con, item_code, unit_price_yen, quantity, message, trade_date)
+    if reasons:
+        raise disclosure.DisclosureError(reasons)
+    m = _con()
+    try:
+        with m:
+            return m.execute(
+                "INSERT INTO deal_request (owner, side, item_code, quantity, min_qty, unit_price_yen, message, trade_date, valid_until, created_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (owner, side, item_code, quantity, min_qty, unit_price_yen, message, trade_date, valid_until, db.now_iso())).lastrowid
+    finally:
+        m.close()
+
+
+def requests_visible_to(viewer: str, item_code: str | None = None, now: str | None = None) -> list[dict]:
+    """viewer が読める申し込み：ほかの組織が出した、受付中で期限の内のもの。自社の申し込みは含めない。"""
+    now = now or db.now_iso()
+    q = "SELECT * FROM deal_request WHERE status = 'open' AND owner != ? AND valid_until > ?"
+    args = [viewer, now]
+    if item_code:
+        q += " AND item_code = ?"
+        args.append(item_code)
+    m = _con()
+    try:
+        return [dict(r) for r in m.execute(q + " ORDER BY id", args)]
+    finally:
+        m.close()

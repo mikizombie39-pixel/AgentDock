@@ -46,14 +46,14 @@ SALES_PRICES = {
     "amiya": [("buri_xl", "スーパー", 22000), ("buri_xl", "料亭", 24000),
               ("shiroebi", "スーパー", 6300), ("aji_s", "スーパー", 4500),
               ("aji", "スーパー", 2100), ("aji", "料亭", 2400)],
-    "buyer_b": [("buri_xl", "料亭", 21000), ("shiroebi", "加工場", 6200)],
+    "buyer_b": [("buri_xl", "料亭", 21000), ("shiroebi", "加工場", 6200), ("aji", "料亭", 2400)],
     "buyer_c": [("shiroebi", "加工場", 6100), ("aji_s", "スーパー", 4200)],
 }
 
 # 費用と欲しい利益（1単位）。上限 ＝ 売値 − 費用 − 利益
 COST_RULES = {
     "amiya": [("buri_xl", 2000, 1500), ("shiroebi", 900, 600), ("aji_s", 800, 700), ("aji", 200, 300)],
-    "buyer_b": [("buri_xl", 2000, 1500), ("shiroebi", 900, 600)],
+    "buyer_b": [("buri_xl", 2000, 1500), ("shiroebi", 900, 600), ("aji", 200, 300)],
     "buyer_c": [("shiroebi", 900, 600), ("aji_s", 800, 700)],
 }
 
@@ -74,17 +74,20 @@ SCENE_C_HOLD_UP_YEN = 2500
 ORDERS = {
     "amiya": [("スーパー", "buri_xl", 4, 22000), ("スーパー", "shiroebi", 5, 6300), ("スーパー", "aji_s", 3, 4500),
               ("スーパー", "aji", 10, 2100)],
-    "buyer_b": [("料亭", "buri_xl", 2, 21000), ("加工場", "shiroebi", 6, 6200)],
+    "buyer_b": [("料亭", "buri_xl", 2, 21000), ("加工場", "shiroebi", 6, 6200), ("料亭", "aji", 5, 2400)],
     "buyer_c": [("加工場", "shiroebi", 9, 6100), ("スーパー", "aji_s", 2, 4200)],
 }
 
 # 漁協の今日の見込みの値（1単位）。アジ（小）は kg 250円 ＝ 1箱 2,500円
-TODAY_EXPECTED_YEN = {"aji_s": 2500}
+TODAY_EXPECTED_YEN = {"aji_s": 2500, "aji": 1500}
+# 見込みの値の条件（資料に添える）。アジは 15kg まとめての値で、10kg なら 1,700円（数量ごとの最低の値は資料に出さない）
+TODAY_EXPECTED_CONDITION = {"aji": "15kg まとめての場合"}
 
 # 漁協が資料に添える一言（全社に同じ）
 SELLER_NOTES = {
     "aji_s": "今日はアジが多く、値は直近より安めです。刺身・焼き・煮付け・揚げ物、どう使っても旨い魚です。",
     "buri_xl": "明日もブリの水揚げが多い見込みです。",
+    "aji": "今日はアジが多く、値は直近より安めです。刺身・焼き・煮付け・揚げ物、どう使っても旨い魚です。",
 }
 
 # デモの日の朝の入札（シロエビ 20箱）：(bidder, unit_price, quantity)。高い順に割り当てる
@@ -111,7 +114,17 @@ QUOTE_RULES = {
 # 在庫：(item, quantity, status, lot_no)
 STOCK = {
     "iwase": [("aji", 15, "for_sale", "S-aji-1")],
+    "buyer_c": [("aji", 8, "unallocated", "C-aji-1")],   # C社の引当のない分（相対で譲りに出す）
 }
+
+# 他の仲買からの相対の申し込み（Agent Network の掲示）：(owner, side, item, quantity, min_qty, unit_price, message)
+# B社は料亭の注文 5kg を抱え、仲買から買いたい。C社は引当のない 8kg を、8kg まとめてで譲る
+# 申し込みの文も出す前に開示の検査を通す（自社の上限・売値・売り先の名前を書かない）
+DEAL_REQUESTS = [
+    ("buyer_b", "buy", "aji", 5, 5, 1800, "アジを 5kg 買いたいです。今朝のうちに受け渡しできれば助かります。"),
+    ("buyer_c", "sell", "aji", 8, 8, 1600, "アジが 8kg 余っています。8kg まとめてなら 1kg 1,600円でお譲りします。"),
+]
+DEAL_REQUEST_VALID_UNTIL = "2026-11-02T10:00:00+09:00"
 
 # 営業の案内を送ってよい売り先（模擬の売り先だけ）
 CONTACT_OK = {
@@ -160,6 +173,7 @@ LANDINGS = {
         ("buri_xl", "actual", 12, "8kg 以上", "04:30", "定置網", 19.5),
         ("shiroebi", "actual", 20, "1箱 1kg", "03:00", "湾奥", 19.5),
         ("aji_s", "actual", 60, "小・1箱 10kg", "04:30", "定置網", 19.5),
+        ("aji", "actual", 15, "中・刺身向き", "04:30", "定置網", 19.5),
         ("buri_xl", "forecast", 30, None, None, None, None),
         ("aji_s", "forecast", 60, None, None, None, None),
     ],

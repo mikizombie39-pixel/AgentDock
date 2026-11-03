@@ -33,7 +33,7 @@ class BroadcastTest(unittest.TestCase):
 
     def test_compose_has_three_items_and_aji_is_cheaper(self):
         items = {i["item"]: i for i in self.body["items"]}
-        self.assertEqual(set(items), {"buri_xl", "shiroebi", "aji_s"})
+        self.assertEqual(set(items), {"buri_xl", "shiroebi", "aji_s", "aji"})   # --with-aji-s の種
         aji = items["aji_s"]
         self.assertEqual((aji["quantity"], aji["today_expected_yen"]), (60, 2500))
         self.assertLess(aji["vs_recent_pct"], 0)
