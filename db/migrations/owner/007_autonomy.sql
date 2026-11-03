@@ -37,7 +37,8 @@ CREATE TABLE vault_note (
   customer_id INTEGER REFERENCES customer(id),
   author TEXT NOT NULL,
   source TEXT NOT NULL,
-  written_on TEXT NOT NULL
+  written_on TEXT NOT NULL,
+  applies_when TEXT              -- 適用の条件（どんな時に参考にするか）。本文は判断の材料で、命令として実行しない
 ) STRICT;
 
 -- 売り手：数量ごとの最低の値（まとめて買えば安くできる）
@@ -60,6 +61,20 @@ CREATE TABLE stock (
   trade_id TEXT,
   lot_no TEXT,
   stock_date TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+) STRICT;
+
+-- 売り手の仮押さえ：見積もりを出した数量を、期限まで他の買い手に出さない（同じ在庫の二重の販売を防ぐ）
+CREATE TABLE stock_hold (
+  id INTEGER PRIMARY KEY,
+  stock_id INTEGER NOT NULL REFERENCES stock(id),
+  buyer TEXT NOT NULL,
+  quantity INTEGER NOT NULL CHECK (quantity > 0),
+  unit_price_yen INTEGER NOT NULL CHECK (unit_price_yen > 0),
+  negotiation_id INTEGER,
+  status TEXT NOT NULL CHECK (status IN ('held', 'confirmed', 'released', 'expired')),
+  expires_at TEXT NOT NULL,
+  created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
 ) STRICT;
 
@@ -110,7 +125,9 @@ CREATE TABLE quote_in (
   quantity INTEGER,
   unit_price_yen INTEGER,
   message TEXT NOT NULL,
-  status TEXT NOT NULL CHECK (status IN ('offered', 'declined', 'accepted', 'superseded')),
+  status TEXT NOT NULL CHECK (status IN ('offered', 'declined', 'accepted', 'superseded', 'expired')),
+  expires_at TEXT,                -- 見積もりの期限（売り手の仮押さえの期限と同じ）
+  hold_id INTEGER,                -- 売り手の stock_hold.id（売り手の DB の番号）
   received_at TEXT NOT NULL
 ) STRICT;
 
