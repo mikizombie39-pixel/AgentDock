@@ -100,7 +100,7 @@ def read_customers(ctx, inp):
             "JOIN sales_price s ON s.customer_id = c.id AND s.item_id = ? ORDER BY c.id", (it["id"],)):
         h = ctx.con.execute("SELECT count(*), avg(sold_qty), max(sale_date), min(sold_qty), max(sold_qty) FROM sales_history "
                             "WHERE customer_id = ? AND item_id = ?", (c[0], it["id"])).fetchone()
-        out.append(dict(customer=c[1], sell_price_yen=c[3], buy_ceiling_yen=criteria.ceiling_yen(ctx.con, it["code"], c[1]),
+        out.append(dict(customer_id=c[0], customer=c[1], sell_price_yen=c[3], buy_ceiling_yen=criteria.ceiling_yen(ctx.con, it["code"], c[1]),
                         may_contact=bool(c[2]),
                         sales_history=dict(times=h[0], avg_sold=round(h[1], 1) if h[1] else None, last=h[2], min=h[3], max=h[4])))
     return _j(dict(item=it["name"], unit=it["unit"], customers=out))

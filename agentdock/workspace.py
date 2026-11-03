@@ -232,7 +232,7 @@ def _card_data(con, owner: str, card: dict) -> dict:
     if t == "customer":
         r = con.execute("SELECT id, name, allow_contact FROM customer WHERE id = ?", (rid,)).fetchone()
         if r is None:
-            raise BoardError([f"売り先 {rid} がありません"])
+            raise BoardError(["売り先のカードの ref_id には、read_customers の customer_id を入れてください" if rid is None else f"売り先 {rid} がありません"])
         h = con.execute("SELECT count(*), max(sale_date), min(sold_qty), max(sold_qty) FROM sales_history WHERE customer_id = ?", (rid,)).fetchone()
         return dict(id=r[0], name=r[1], may_contact=bool(r[2]), times=h[0], last=h[1], min_sold=h[2], max_sold=h[3])
     if t == "post":
