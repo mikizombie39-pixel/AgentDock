@@ -10,7 +10,7 @@ import json
 from agentdock import db
 
 KINDS = ('order_new', 'order_changed', 'quote_request', 'quote_received',
-         'human_choice', 'trade_registered', 'handoff')
+         'human_choice', 'trade_registered', 'handoff', 'info_received')   # info_received は移行 008 で追加
 
 
 class EventError(Exception):

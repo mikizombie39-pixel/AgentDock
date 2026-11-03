@@ -46,14 +46,21 @@ class NetworkTest(unittest.TestCase):
         r = criteria.market_stats(self.con("amiya"), "aji", sc.DEMO_DATE)
         self.assertTrue(1640 <= r["median"] <= 1720, r)
 
-    def test_amiya_sees_both_requests(self):
+    def test_amiya_sees_the_seeded_request(self):
+        # B社の「買いたい」はデモの中で B社の AI が出すので、種には C社の「譲りたい」だけ
         got = market.requests_visible_to("amiya", "aji", now=EARLY)
         self.assertEqual([(r["owner"], r["side"], r["quantity"], r["min_qty"], r["unit_price_yen"]) for r in got],
-                         [("buyer_b", "buy", 5, 5, 1650), ("buyer_c", "sell", 8, 8, 1600)])
+                         [("buyer_c", "sell", 8, 8, 1600)])
 
     def test_own_request_is_not_shown_and_expired_is_gone(self):
-        self.assertEqual([r["owner"] for r in market.requests_visible_to("buyer_b", "aji", now=EARLY)], ["buyer_c"])
+        self.assertEqual(market.requests_visible_to("buyer_c", "aji", now=EARLY), [])
         self.assertEqual(market.requests_visible_to("amiya", "aji", now=LATE), [])
+
+    def test_b_has_no_seeded_order_but_a_vault_policy(self):
+        b = self.con("buyer_b")
+        self.assertEqual(b.execute("SELECT count(*) FROM order_book o JOIN item i ON i.id = o.item_id WHERE i.code = 'aji'").fetchone()[0], 0)
+        self.assertEqual(b.execute("SELECT kind FROM vault_note").fetchall()[0][0], "policy")
+        self.assertEqual(criteria.ceiling_yen(b, "aji", "料亭"), 1900)
 
     def test_options_by_the_numbers(self):
         # 注文 10kg を満たす道（模擬の値）：A 漁協 10kg は上限超え・D C社 8kg＋漁協 2kg も上限超え
@@ -62,7 +69,7 @@ class NetworkTest(unittest.TestCase):
         self.assertGreater(1700, ceiling)                                  # A
         self.assertGreater((8 * 1600 + 2 * 1700) / 10, ceiling)            # D 平均 1,620円
         self.assertEqual(15 * 1500, 22500)                                 # B・C の仕入れの額
-        b_price = next(r[5] for r in sc.DEAL_REQUESTS if r[0] == "buyer_b")
+        b_price = sc.B_POST_PRICE_GUIDE
         floor_5kg = self.con("iwase").execute(
             "SELECT q.floor_yen FROM quote_rule q JOIN item i ON i.id = q.item_id "
             "WHERE i.code = 'aji' AND q.min_qty <= 5 ORDER BY q.min_qty DESC LIMIT 1").fetchone()[0]
@@ -74,7 +81,7 @@ class NetworkTest(unittest.TestCase):
         for text in ("上限 1,900円まで出せます", "料亭の注文があります", "原価がかさみます"):
             with self.assertRaises(disclosure.DisclosureError, msg=text):
                 market.post_request(b, "buyer_b", "buy", "aji", 5, 5, 1650, text, sc.DEMO_DATE, sc.DEAL_REQUEST_VALID_UNTIL)
-        self.assertEqual(len(market.requests_visible_to("amiya", "aji", now=EARLY)), 2)   # 止めた文は掲げていない
+        self.assertEqual(len(market.requests_visible_to("amiya", "aji", now=EARLY)), 1)   # 止めた文は掲げていない
 
     def test_c_has_the_stock_it_offers(self):
         row = self.con("buyer_c").execute(
