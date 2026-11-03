@@ -15,6 +15,14 @@ ITEMS = [
     ("aji", "アジ", "kg", 1000),   # 本編（自律の場面）の品目。kg で扱う
 ]
 
+# 単位のコードの画面と文の上の書き方（fish は1本ずつ数える）
+UNIT_LABELS = {"fish": "本", "kg": "kg", "box": "箱"}
+
+
+def unit_label(code: str) -> str:
+    return UNIT_LABELS.get(code, code)
+
+
 # 会期の前半の部品の試験だけで使う品目（本編の DB には入れない・build の --with-aji-s で入る）
 LEGACY_ITEMS = ("aji_s",)
 
@@ -110,6 +118,16 @@ AMIYA_TENDER_RATIONALE = "今朝の水揚げは少なめ。スーパーの注文
 AJI_ORDER = dict(owner="amiya", customer="スーパー", item="aji", quantity=10, sell_price_yen=2100)
 # B社の料亭の注文 5kg もデモの中で入る。B社の AI が自分で判断して、仲買への掲示（買いたい）を出す（2026-11-03 デイブ）
 B_AJI_ORDER = dict(owner="buyer_b", customer="料亭", item="aji", quantity=5, sell_price_yen=2400)
+
+# ── ブリ（本）の通し：スーパーの 4本（22,000円）は朝の注文として種にある。料亭の追加の注文 6本（24,000円）がデモの中で入り、
+#    出来事から網谷水産の仲間が起きる。漁協の相対の残りは 6本（せりで 12本のうち 6本が売れた）、最低の値は 17,000円（SELLER_RULES）
+BURI_ORDER = dict(owner="amiya", customer="料亭", item="buri_xl", quantity=6, sell_price_yen=24000)
+
+# 品目ごとに、デモの中で入る注文（scene.start が品目で選ぶ）
+SCENE_ORDERS = {
+    "aji": (("amiya_order", AJI_ORDER), ("b_order", B_AJI_ORDER)),
+    "buri_xl": (("amiya_order", BURI_ORDER),),
+}
 # 漁協は 15kg を売りに出す。1kg 当たりの最低の値は数量で下がる（15kg 以上なら 1,500円）。最低の値は仲買に見せない
 # 網谷水産の上限（スーパー）＝ 2,100 − 200 − 300 ＝ 1,600円/kg。10kg だけなら最低の値 1,700円を超え、採算に合わない
 # 15kg × 1,500円 ＝ 22,500円（担当者の権限 500,000円の内）。追加の 5kg は料亭へ回す当てがあるかが判断の分かれ目
@@ -119,7 +137,8 @@ QUOTE_RULES = {
 
 # 在庫：(item, quantity, status, lot_no)
 STOCK = {
-    "iwase": [("aji", 15, "for_sale", "S-aji-1")],
+    # ブリはせりの残り：水揚げ 12本 − せりで売れた 6本（TODAY_AUCTION）＝ 6本を相対で売りに出す
+    "iwase": [("aji", 15, "for_sale", "S-aji-1"), ("buri_xl", 6, "for_sale", "S-buri_xl-1")],
     "buyer_c": [("aji", 8, "unallocated", "C-aji-1")],   # C社の引当のない分（相対で譲りに出す）
 }
 
@@ -136,7 +155,8 @@ DEAL_REQUEST_VALID_UNTIL = "2026-11-02T10:00:00+09:00"
 
 # 加工の工程と費用（販売先ではなく工程に結びつける・2026-11-03 デイブ / SAL）：(item, 工程, 1単位の費用)
 PROCESS_STEPS = {
-    "amiya": [("aji", "下処理と箱詰め", 200)],
+    # ブリの 1本 2,000円は費用の決まり（COST_RULES の buri_xl）と同じ値。工程の名前はアジと同じにした（模擬・持ち主の確認は未了）
+    "amiya": [("aji", "下処理と箱詰め", 200), ("buri_xl", "下処理と箱詰め", 2000)],
     "buyer_b": [("aji", "下処理と箱詰め", 200)],
 }
 # 売り先ごとに通る工程：(item, 売り先, 種類, 工程の名前 または None, 状態, 注記)
@@ -146,6 +166,8 @@ ROUTE_PROCESS = {
         ("aji", "スーパー", "customer", "下処理と箱詰め", "confirmed", None),
         ("aji", "料亭", "customer", "下処理と箱詰め", "confirmed", None),
         ("aji", "buyer_b", "broker", "下処理と箱詰め", "confirmed", "デモの前提：B社向けにも下処理と箱詰めの工程がある"),
+        ("buri_xl", "スーパー", "customer", "下処理と箱詰め", "confirmed", None),
+        ("buri_xl", "料亭", "customer", "下処理と箱詰め", "confirmed", None),
     ],
 }
 UNCOUNTED_COSTS = ["運賃（受け渡しの方法が未定）"]   # 磁石ボードに「未計上」と出す費用

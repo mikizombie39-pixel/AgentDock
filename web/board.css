@@ -126,6 +126,16 @@ button:disabled { cursor: default; opacity: .45; }
 #drawer { position: absolute; right: 24px; top: 246px; width: 640px; max-height: 620px; overflow: auto; z-index: 30; background: #fff;
   border: 1px solid var(--line); border-radius: 12px; box-shadow: 0 10px 30px rgba(0,0,0,.18); padding: 14px 18px; transition: opacity .25s, transform .25s; }
 #drawer.off { opacity: 0; transform: translateX(30px); pointer-events: none; }
+#drawer.wide { width: 1000px; }
+#drawer .n { font-size: 12px; color: var(--mute); margin: 6px 0 10px; }
+.tbl { width: 100%; border-collapse: collapse; font-size: 13px; margin-bottom: 10px; }
+.tbl th, .tbl td { border-bottom: 1px solid #EEE7DA; padding: 6px 8px; text-align: left; vertical-align: top; }
+.tbl th { font-weight: normal; color: var(--mute); font-size: 12px; }
+.tbl .num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.tbl input { width: 64px; font: inherit; text-align: right; padding: 3px 6px; margin-right: 4px; border: 1px solid var(--line); border-radius: 6px; }
+.grounds > div { margin-top: 6px; font-size: 13px; }
+.grounds b { display: block; font-size: 12px; color: var(--mute); font-weight: normal; }
+.grounds .a { font-size: 15px; }
 .dhead { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
 .drow { padding: 10px 0; border-bottom: 1px solid #EEE7DA; font-size: 14px; }
 .drow .t { color: var(--mute); font-size: 12px; }

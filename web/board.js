@@ -8,6 +8,8 @@
   const $ = (id) => document.getElementById(id);
   const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
   const yen = (v) => (v === null || v === undefined) ? "—" : `${Number(v).toLocaleString("ja-JP")}円`;
+  const NOREC = "記録なし";
+  const unit = () => esc(board?.item?.unit || "");   // the item's unit from the business DB (本・kg・箱)
   const STAGES = ["idle", "order", "gathering", "organizing", "decision", "processing", "done", "exception"];
   const STAGE_LABEL = { idle: "待機", order: "注文", gathering: "情報収集", organizing: "条件整理", decision: "判断", processing: "正式処理", done: "完了", exception: "例外" };
   const STEP_LABEL = { buy_trade: "仕入れの取引を市場の取引帳簿に登録", seller_stock: "漁協の在庫と仮押さえを確定", terms: "選ばなかった条件と仮押さえを取り消し",
@@ -219,15 +221,15 @@
     const d = c.data || {};
     const note = c.note ? `<div class="n">${esc(c.note)}</div>` : "";
     switch (c.card_type) {
-      case "agreement": return `<div class="k">条件付きの合意</div><div class="mid">${esc(d.buyer)}が ${d.quantity}kg を ${yen(d.unit_price_yen)}／kg で</div>
+      case "agreement": return `<div class="k">条件付きの合意</div><div class="mid">${esc(d.buyer)}が ${d.quantity}${unit()} を ${yen(d.unit_price_yen)}／${unit()} で</div>
         <div class="n">${esc(d.status_label)}・期限 ${esc((d.valid_until || "").slice(11, 16))}</div>${big ? `<div class="n">条件：${esc(d.condition)}</div>` : ""}${note}`;
-      case "quote": return `<div class="k">届いた条件</div><div class="mid">${esc(d.seller)}：${d.quantity}kg・${yen(d.unit_price_yen)}／kg</div>
+      case "quote": return `<div class="k">届いた条件</div><div class="mid">${esc(d.seller)}：${d.quantity}${unit()}・${yen(d.unit_price_yen)}／${unit()}</div>
         <div class="n">期限 ${esc((d.valid_until || "").slice(11, 16))}</div>${note}`;
       case "vault": return `<div class="k">社長の経験（Vault）</div><div class="mid">${esc(d.title)}</div>${big ? `<div class="n">${esc(d.body)}</div>` : ""}
         <div class="n">${esc(d.author)}・${esc(d.written_on)}　適用：${esc(d.applies_when)}</div>${note}`;
       case "order": return `<div class="k">注文</div><div class="mid">${esc(d.customer)}から ${esc(d.item)} ${d.quantity}${esc(d.unit)}</div>${note}`;
-      case "customer": return `<div class="k">売り先</div><div class="mid">${esc(d.name)}</div><div class="n">これまで ${d.times}回・${d.min_sold}〜${d.max_sold}kg</div>${note}`;
-      case "post": return `<div class="k">仲買の掲示</div><div class="mid">${esc(d.owner)}：${d.quantity}kg・${yen(d.unit_price_yen)}／kg</div>${note}`;
+      case "customer": return `<div class="k">売り先</div><div class="mid">${esc(d.name)}</div><div class="n">これまで ${d.times}回・${d.min_sold}〜${d.max_sold}${unit()}</div>${note}`;
+      case "post": return `<div class="k">仲買の掲示</div><div class="mid">${esc(d.owner)}：${d.quantity}${unit()}・${yen(d.unit_price_yen)}／${unit()}</div>${note}`;
       default: return `<div class="k">メモ</div>${note}`;
     }
   }
@@ -244,18 +246,30 @@
     const n = o.numbers;
     const gp = n.gross_profit_yen ?? n.gross_profit_without_unconfirmed_yen;
     const rows = [];
-    if (n.purchase) rows.push(`<div>仕入れ：${esc(n.purchase.seller_name)} ${n.purchase.quantity}kg × ${yen(n.purchase.unit_price_yen)}</div><div class="v">−${yen(n.purchase_yen)}</div>`);
+    if (n.purchase) rows.push(`<div>仕入れ：${esc(n.purchase.seller_name)} ${n.purchase.quantity}${unit()} × ${yen(n.purchase.unit_price_yen)}</div><div class="v">−${yen(n.purchase_yen)}</div>`);
     if (full) {
-      for (const l of n.lines) rows.push(`<div>売り：${esc(l.to)} ${l.quantity}kg × ${yen(l.unit_price_yen)}<span class="cert ${l.certainty}">${CERT[l.certainty] || ""}</span></div><div class="v">${yen(l.revenue_yen)}</div>`);
-      rows.push(`<div>加工（下処理と箱詰め）</div><div class="v">−${yen(n.process_cost_yen)}</div>`);
+      for (const l of n.lines) rows.push(`<div>売り：${esc(l.to)} ${l.quantity}${unit()} × ${yen(l.unit_price_yen)}<span class="cert ${l.certainty}">${CERT[l.certainty] || ""}</span></div><div class="v">${yen(l.revenue_yen)}</div>`);
+      const steps = [...new Set(n.lines.map((l) => l.process && l.process.step).filter(Boolean))];
+      rows.push(`<div>加工${steps.length ? `（${steps.map(esc).join("・")}）` : ""}</div><div class="v">−${yen(n.process_cost_yen)}</div>`);
     } else {
-      rows.push(`<div>売り先：${n.lines.map((l) => `${esc(l.to)} ${l.quantity}kg<span class="cert ${l.certainty}">${CERT[l.certainty] || ""}</span>`).join("　") || "なし"}</div><div class="v"></div>`);
+      rows.push(`<div>売り先：${n.lines.map((l) => `${esc(l.to)} ${l.quantity}${unit()}<span class="cert ${l.certainty}">${CERT[l.certainty] || ""}</span>`).join("　") || "なし"}</div><div class="v"></div>`);
     }
     rows.push(`<div class="t">粗利（${esc(n.profit_kind || "見込み")}）</div><div class="v t">${yen(gp)}</div>`);
     let extra = "";
-    if (n.unsold_quantity) extra += `<div class="n">売り先のない ${n.unsold_quantity}kg・売れ残れば −${yen(n.unsold_loss_yen)}</div>`;
+    if (n.unsold_quantity) extra += `<div class="n">売り先のない ${n.unsold_quantity}${unit()}・売れ残れば −${yen(n.unsold_loss_yen)}</div>`;
     if (full && n.uncounted_costs?.length) extra += `<div class="n">未計上：${n.uncounted_costs.map(esc).join("・")}</div>`;
     return `<div class="kv">${rows.join("")}</div>${extra}`;
+  }
+  // the grounds, kept apart: numbers computed by code / past experience referenced from the Vault / Claude's proposal
+  function groundsHtml(answer, prim, L) {
+    const n = prim && prim.numbers;
+    const gp = n ? (n.gross_profit_yen ?? n.gross_profit_without_unconfirmed_yen) : null;
+    const code = n ? `${n.purchase ? `仕入れ ${n.purchase.quantity}${unit()} × ${yen(n.purchase.unit_price_yen)}・` : ""}粗利（${esc(n.profit_kind || "見込み")}）${yen(gp)}`
+      + (n.errors && n.errors.length ? `・実行できない理由：${n.errors.map(esc).join("・")}` : "") : NOREC;
+    const vault = (L.cards || []).filter((c) => c.card_type === "vault").map((c) => `${esc(c.data?.title)}（${esc(c.data?.author)}・${esc(c.data?.written_on)}）`);
+    return `<div class="grounds"><div><b>コードの計算（業務 DB から）</b>${code}</div>
+      <div><b>参照した経験（Vault）</b>${vault.length ? vault.join("／") : NOREC}</div>
+      <div class="a"><b>Claude の提案</b>${esc(answer)}</div></div>`;
   }
   function optHtml(o, role, L, full) {
     const tag = role === "rec" ? `<span class="tag">Claude の勧め</span>` : `<span class="tag ${o.executable ? "own" : "off"}">別の選択肢</span>`;
@@ -328,7 +342,7 @@
     let chipX = 40;
     if (asked) {
       specs.push({ key: asked.a ? `ans:${turn.id}` : "ans:pending", cls: "ans", x: 40, y: H + 12, w: 1000, h: 500 - H - 12,
-        html: `<div class="qa"><div class="q">あなた：${esc(asked.q)}</div><div class="a">${asked.a ? "Claude：" + esc(asked.a) : "Claude が業務の状態を確かめ直しています…"}</div></div>` });
+        html: `<div class="qa"><div class="q">あなた：${esc(asked.q)}</div>${asked.a ? groundsHtml(asked.a, prim, L) : `<div class="a">Claude が業務の状態を確かめ直しています…</div>`}</div>` });
       chipX = 1060;
     }
     // what was gathered, folded into small magnets
@@ -369,11 +383,11 @@
     const recs = (board?.records || []).map((r) => {
       if (r.kind === "market_trade") {
         const both = r.seller_booked && r.buyer_booked;
-        return `<div>${r.side === "buy" ? `${esc(r.counterparty)}から ${r.quantity}kg を仕入れ` : `${esc(r.counterparty)}へ ${r.quantity}kg を売り`}（${yen(r.unit_price_yen)}／kg）
+        return `<div>${r.side === "buy" ? `${esc(r.counterparty)}から ${r.quantity}${unit()} を仕入れ` : `${esc(r.counterparty)}へ ${r.quantity}${unit()} を売り`}（${yen(r.unit_price_yen)}／${unit()}）
           <div class="s ${both ? "" : "bad"}">市場の取引帳簿に登録・${both ? "売り手と買い手の両方の帳簿" : "帳簿は片側だけ（照合が要ります）"}・${esc(r.trade_id)}</div></div>`;
       }
-      if (r.kind === "order_fill") return `<div>${esc(r.counterparty)}の注文に ${r.quantity}kg<div class="s">自社の帳簿で注文に引き当て済み（注文の状態：${r.order_status === "filled" ? "充足" : esc(r.order_status)}）</div></div>`;
-      return `<div>引き当てのない在庫 ${r.quantity}kg<div class="s bad">売れたことにはしていません</div></div>`;
+      if (r.kind === "order_fill") return `<div>${esc(r.counterparty)}の注文に ${r.quantity}${unit()}<div class="s">自社の帳簿で注文に引き当て済み（注文の状態：${{ filled: "充足", partly_filled: "一部充足" }[r.order_status] || esc(r.order_status)}）</div></div>`;
+      return `<div>引き当てのない在庫 ${r.quantity}${unit()}<div class="s bad">売れたことにはしていません</div></div>`;
     }).join("");
     const chosen = board?.options.find((o) => o.chosen);
     const gp = chosen ? (chosen.numbers.gross_profit_yen ?? chosen.numbers.gross_profit_without_unconfirmed_yen) : null;
@@ -404,7 +418,16 @@
     const el = $("actions");
     const L = board?.layout;
     const thinking = flow?.busy && (flow.busy.event === "staff_question");
-    $("dock").classList.toggle("hidden", stage !== "decision");
+    const cons = board?.consultation;
+    const waitApprove = board?.case?.status === "needs_president" && (board.decisions || []).slice(-1)[0]?.result === "needs_president";
+    $("dock").classList.toggle("hidden", stage !== "decision" && !waitApprove);
+    if (stage !== "decision" && waitApprove) {   // the staff's approval stopped at the president (amount or priority between customers)
+      const html = `<button class="act main" data-a="pres-approve">網谷さん（社長）として承認する</button>`;
+      if (el._html !== html) { el.innerHTML = html; el._html = html; }
+      $("lead").textContent = "担当者の承認は社長の承認待ちです（権限の表の決まり）";
+      $("ask").disabled = $("askbtn").disabled = true;
+      return;
+    }
     if (stage !== "decision" || !L) { el.innerHTML = ""; el._html = ""; $("lead").textContent = ""; $("ask").disabled = true; $("askbtn").disabled = true; return; }
     const prim = board.options.find((o) => o.code === L.primary);
     const alt = board.options.find((o) => o.code === L.alternative);
@@ -420,8 +443,11 @@
       if (a === "hold") b.push(`<button class="act" data-a="hold">保留</button>`);
       if (a === "reject") b.push(`<button class="act" data-a="reject">見送る</button>`);
     }
+    b.push(`<button class="act" data-q="${esc(GROUNDS_Q)}">根拠を聞く</button>`);
+    if (cons?.status === "open") b.push(`<button class="act" data-a="change">数量・配分を変えて交渉し直す</button>`);
+    if (cons?.status === "needs_president") b.push(`<button class="act main" data-a="pres-change">網谷さん（社長）として、この変更で確定する</button>`);
     for (const q of L.suggested_questions || []) b.push(`<button class="act q" data-q="${esc(q)}">${esc(q)}</button>`);
-    $("lead").textContent = L.ask_human || "";
+    $("lead").textContent = cons?.status === "needs_president" ? `社長の答え待ち：${changeText(cons.change)}（顧客の間の優先を変える答えは社長が確定します）` : (L.ask_human || "");
     const html = b.join("");
     if (el._html !== html) { el.innerHTML = html; el._html = html; }
     el.querySelectorAll("button").forEach((x) => { x.disabled = !!(thinking || busyAsk); });
@@ -458,7 +484,10 @@
   }
 
   // ── drawers ──
-  function openDrawer(title, html) { $("dtitle").textContent = title; $("dbody").innerHTML = html; $("drawer").classList.remove("off"); }
+  function openDrawer(title, html, wide) {
+    if (!wide) threadOpen = false;
+    $("dtitle").textContent = title; $("dbody").innerHTML = html; $("drawer").classList.toggle("wide", !!wide); $("drawer").classList.remove("off");
+  }
   $("dclose").addEventListener("click", () => $("drawer").classList.add("off"));
   function openHistory() {
     openDrawer("これまでの経過（記録された事実）", [...model.ticker].reverse().map((t) => `<div class="drow"><div class="t">${esc((t.at || "").slice(11, 19))}</div>${esc(t.text)}</div>`).join(""));
@@ -483,11 +512,11 @@
     $("ask").value = "";
     poll();
   }
-  async function decide(action, code) {
+  async function decide(action, code, actor) {
     const L = board.layout;
     const prim = board.options.find((o) => o.code === (code || L.primary));
     const body = { owner: OWNER, case_id: board.case.id, option_id: action === "approve" ? prim.id : null, action,
-      fingerprint: action === "approve" ? prim.fingerprint : null, idempotency_key: key() };
+      fingerprint: action === "approve" ? prim.fingerprint : null, idempotency_key: key(), actor: actor || "staff" };
     document.querySelectorAll("#actions button").forEach((x) => (x.disabled = true));
     const r = await fetch("/api/decide", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
     const j = await r.json().catch(() => ({}));
@@ -507,8 +536,94 @@
     if (a === "approve-alt") return decide("approve", board.layout.alternative);
     if (a === "detail") { detailOpen = !detailOpen; render(); }
     if (a === "others") openOthers();
+    if (a === "change") openChange();
+    if (a === "pres-change") sendAnswer(board.consultation.change, "president");
+    if (a === "pres-approve") {
+      const last = (board.decisions || []).slice(-1)[0];
+      const o = board.options.find((x) => x.id === last?.option_id);
+      if (o) decide("approve", o.code, "president");
+    }
   });
   $("askbar").addEventListener("submit", (e) => { e.preventDefault(); ask($("ask").value); });
+
+  // ── changing quantity / allocation (the board's consultation) and the president's answer ──
+  const GROUNDS_Q = "勧める案の根拠を、コードの計算・社長の経験・Claude の提案に分けて教えてください";
+  function changeText(ch) {
+    if (!ch) return NOREC;
+    const parts = (ch.allocations || []).map((x) => `${esc(x.customer)} ${x.quantity}${unit()}`);
+    return `仕入れ ${ch.quantity}${unit()}` + (parts.length ? `（${parts.join("・")}）` : "");
+  }
+  function openChange() {
+    const prim = board.options.find((o) => o.code === board.layout?.primary);
+    const now = {};
+    for (const x of (prim?.plan?.allocations || [])) if (x.kind === "order") now[x.ref_id] = (now[x.ref_id] || 0) + x.quantity;
+    const rows = (board.orders || []).map((o) => `<tr><td>${esc(o.customer)}</td><td class="num">注文 ${o.quantity}${unit()}</td>
+      <td class="num"><input type="number" min="0" step="1" data-order="${o.order_id}" value="${now[o.order_id] || 0}">${unit()}</td></tr>`)
+      .concat((board.leads || []).map((c) => `<tr><td>${esc(c)}</td><td class="num">注文なし</td>
+      <td class="num"><input type="number" min="0" step="1" data-customer="${esc(c)}" value="0">${unit()}</td></tr>`)).join("");
+    openDrawer("数量・配分を変えて交渉し直す", `<table class="tbl"><thead><tr><th>売り先</th><th class="num">今日の注文</th><th class="num">仕入れて回す数</th></tr></thead>
+      <tbody>${rows}</tbody></table><div class="n" id="chgsum"></div>
+      <div class="n">答えは記録され、Claude が漁協に条件を変えて問い合わせ直します。売り先の注文を欠いてほかへ回す答えは、社長の答えで確定します。</div>
+      <button class="act main" id="chgsend">この数量・配分で交渉し直す</button><div class="n" id="chgres"></div>`);
+    const sum = () => { let s = 0; $("dbody").querySelectorAll("input").forEach((i) => (s += Math.max(0, parseInt(i.value || "0", 10) || 0))); $("chgsum").textContent = `仕入れの数量：${s}${board?.item?.unit || ""}`; return s; };
+    $("dbody").querySelectorAll("input").forEach((i) => i.addEventListener("input", sum));
+    sum();
+    $("chgsend").addEventListener("click", () => {
+      const allocations = [];
+      $("dbody").querySelectorAll("input").forEach((i) => {
+        const q = Math.max(0, parseInt(i.value || "0", 10) || 0);
+        if (!q) return;
+        allocations.push(i.dataset.order ? { order_id: Number(i.dataset.order), quantity: q } : { customer: i.dataset.customer, quantity: q });
+      });
+      if (!allocations.length) { $("chgres").textContent = "数量を1以上にしてください"; return; }
+      sendAnswer({ quantity: sum(), allocations }, "staff");
+    });
+  }
+  async function sendAnswer(change, role) {
+    const c = board?.consultation;
+    if (!c || !change) return;
+    document.querySelectorAll("#actions button, #chgsend").forEach((x) => (x.disabled = true));
+    const r = await fetch("/api/answer", { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ owner: OWNER, consultation_id: c.consultation_id, option: "change", idempotency_key: key(), change, role }) });
+    const j = await r.json().catch(() => ({}));
+    const msg = j.result === "answered" ? "答えを記録しました。Claude が条件を変えて問い合わせ直します"
+      : j.result === "needs_president" ? "顧客の間の優先を変える答えなので、社長の答えを待ちます"
+      : (j.detail || j.error || "答えを記録できませんでした");
+    $("busy").textContent = msg;
+    if ($("chgres")) $("chgres").textContent = msg;
+    lastBoardKey = "";
+    poll();
+  }
+
+  // ── the negotiation thread (GET /api/thread only: what the market recorded) ──
+  const KIND = { inquiry: "問い合わせ", offer: "条件の返事", decline: "断りの返事" };
+  const HOLD = { held: "押さえ中", released: "下ろした", confirmed: "確定", expired: "期限切れ" };
+  let threadOpen = false;
+  const threadItem = () => board?.item?.code || model.order?.item || null;
+  async function showThread() {
+    const item = threadItem();
+    if (!item) { openDrawer("交渉のやり取り", `<div class="drow">${NOREC}</div>`); return; }
+    let t;
+    try { t = await (await fetch(`/api/thread?owner=${OWNER}&item=${encodeURIComponent(item)}`)).json(); } catch (e) { return; }
+    if (!threadOpen) return;
+    const u = esc(t.unit || "");
+    const cell = (v) => (v === null || v === undefined || v === "") ? NOREC : v;
+    const rows = (t.messages || []).map((m) => {
+      const ts = m.terms && m.terms.length ? m.terms : [{ quantity: m.quantity, unit_price_yen: m.unit_price_yen, valid_until: m.valid_until, hold_state: m.hold_state }];
+      const many = (f) => ts.map(f).join("<br>");
+      return `<tr><td>${esc(m.frm)} → ${esc(m.to)}</td><td>${esc(KIND[m.kind] || m.kind)}</td>
+        <td class="num">${many((x) => x.quantity == null ? NOREC : `${x.quantity}${u}`)}</td>
+        <td class="num">${many((x) => x.unit_price_yen == null ? NOREC : yen(x.unit_price_yen))}</td>
+        <td>${many((x) => x.valid_until ? esc(x.valid_until.slice(11, 16)) : NOREC)}</td>
+        <td>${esc(cell(m.reason))}</td>
+        <td>${many((x) => x.hold_state ? esc(HOLD[x.hold_state] || x.hold_state) : "なし")}</td></tr>`;
+    }).join("");
+    openDrawer(`交渉のやり取り（${esc(board?.item?.name || item)}）`, rows ? `<table class="tbl"><thead><tr><th>送り手 → 受け手</th><th>種類</th><th class="num">数量</th>
+      <th class="num">単価</th><th>期限</th><th>返事の理由</th><th>仮押さえ</th></tr></thead><tbody>${rows}</tbody></table>
+      <div class="n">市場の記録（/api/thread）から読んでいます。数量・単価は条件の行ごと</div>` : `<div class="drow">${NOREC}</div>`, true);
+  }
+  $("threadbtn").addEventListener("click", () => { threadOpen = true; showThread(); });
+  $("dclose").addEventListener("click", () => { threadOpen = false; });
 
   // ── polling ──
   async function loadBoard(force) {
@@ -535,6 +650,7 @@
     if (busyAsk && fresh.some((i) => i.kind === "question")) busyAsk = null;
     queue.push(...fresh);
     const changed = await loadBoard(false);
+    if (threadOpen) showThread();
     if (queue.length) pump(); else if (changed || fresh.length) render(); else render();
   }
   poll();

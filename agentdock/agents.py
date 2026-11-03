@@ -19,7 +19,7 @@ HOLD_MINUTES = 30
 NULL_INT = {"type": ["integer", "null"]}
 STR = {"type": "string"}
 INT = {"type": "integer"}
-ITEM = {"type": "string", "description": "品目のコード（例：aji）"}
+ITEM = {"type": "string", "description": "品目のコード（状況の報告にある品目のコード）"}
 MAX_REASON = 120
 REASON = {"type": ["string", "null"], "description": "相手に伝えてよい短い理由（60字ほど・無ければ null）。自社の上限・最低の値・原価・売り先の名前は書かない"}
 
@@ -40,6 +40,38 @@ def _item(con, code: str):
     return r
 
 
+def _u(it) -> str:
+    """数の後ろに付ける単位（fish → 本）。"""
+    return sc.unit_label(it["unit"])
+
+
+def _case_item(owner: str, case_id) -> str | None:
+    """案件の品目のコード。案件が無ければ None。"""
+    c = db.connect(owner)
+    try:
+        row = c.execute("SELECT i.code FROM deal_case d JOIN item i ON i.id = d.item_id WHERE d.id = ?", (case_id,)).fetchone()
+    finally:
+        c.close()
+    return row[0] if row else None
+
+
+def event_item(owner: str, event: dict) -> str | None:
+    """出来事の品目のコード（中身の品目・案件・文・掲示から）。分からなければ None（ほかの品目に決め打ちしない）。"""
+    p = event["payload"]
+    if p.get("item"):
+        return p["item"]
+    if p.get("case_id") is not None:
+        return _case_item(owner, p["case_id"])
+    try:
+        if p.get("message_id") is not None:
+            return network.message_for(owner, p["message_id"])["item_code"]
+        if p.get("request_id") is not None:
+            return network.request_for(owner, p["request_id"])["item_code"]
+    except network.NetworkError:
+        return None
+    return None
+
+
 # ── 調べる道具（読むだけ）──────────────────────────────────────────
 
 def read_orders(ctx, inp):
@@ -52,7 +84,7 @@ def read_orders(ctx, inp):
             ceiling = criteria.ceiling_yen(ctx.con, it["code"], r[1])
         except LookupError:
             ceiling = None
-        out.append(dict(order_id=r[0], customer=r[1], quantity=r[2], unit=it["unit"], sell_price_yen=r[3],
+        out.append(dict(order_id=r[0], customer=r[1], quantity=r[2], unit=_u(it), sell_price_yen=r[3],
                         buy_ceiling_yen=ceiling, status=r[4]))
     pre = [dict(r) for r in ctx.con.execute(
         "SELECT id, side, quantity, max_unit_price_yen, min_unit_price_yen, spec, deliver_by, approved_by, valid_until FROM preapproval "
@@ -71,7 +103,7 @@ def _preapproval(con, item_id: int, side: str):
 
 def read_market(ctx, inp):
     it = _item(ctx.con, inp["item_code"])
-    return _j(dict(item=it["name"], unit=it["unit"], recent_30_days=criteria.market_stats(ctx.con, it["code"], ctx.on_date),
+    return _j(dict(item=it["name"], unit=_u(it), recent_30_days=criteria.market_stats(ctx.con, it["code"], ctx.on_date),
                    last_year_same_period=criteria.last_year_stats(ctx.con, it["code"], ctx.on_date)))
 
 
@@ -105,7 +137,7 @@ def read_customers(ctx, inp):
         out.append(dict(customer_id=c[0], customer=c[1], sell_price_yen=c[3], buy_ceiling_yen=criteria.ceiling_yen(ctx.con, it["code"], c[1]),
                         may_contact=bool(c[2]),
                         sales_history=dict(times=h[0], avg_sold=round(h[1], 1) if h[1] else None, last=h[2], min=h[3], max=h[4])))
-    return _j(dict(item=it["name"], unit=it["unit"], customers=out))
+    return _j(dict(item=it["name"], unit=_u(it), customers=out))
 
 
 def read_my_material(ctx, inp):
@@ -186,11 +218,15 @@ def _available(con, item_id: int, now: str, except_buyer: str | None = None) -> 
 def read_stock(ctx, inp):
     it = _item(ctx.con, inp["item_code"])
     avail, _ = _available(ctx.con, it["id"], demo_now(ctx.on_date))
-    out = dict(item=it["name"], unit=it["unit"], available=avail)
+    out = dict(item=it["name"], unit=_u(it), available=avail)
     rules = ctx.con.execute("SELECT min_qty, floor_yen FROM quote_rule WHERE item_id = ? ORDER BY min_qty", (it["id"],)).fetchall()
     if rules:
         out["floor_by_quantity"] = [dict(from_qty=r[0], floor_yen=r[1]) for r in rules]
         out["note"] = "floor_by_quantity は自社の最低の値。相手に書かない。これより安い条件は出せない（コードが止める）"
+    rule_floor = _rule_floor(ctx.con, it["code"], ctx.on_date)
+    if rule_floor is not None:
+        out["floor_yen"] = rule_floor
+        out["floor_note"] = "floor_yen は自社の今日の最低の値（明日の見込みで上げた分を含む）。相手に書かない。これより安い条件は出せない（コードが止める）"
     holds = [dict(hold_id=r[0], buyer=r[1], buyer_name=OWNER_NAMES.get(r[1], r[1]), quantity=r[2], unit_price_yen=r[3], expires_at=r[4]) for r in ctx.con.execute(
         "SELECT h.id, h.buyer, h.quantity, h.unit_price_yen, h.expires_at FROM stock_hold h JOIN stock s ON s.id = h.stock_id "
         "WHERE s.item_id = ? AND h.status = 'held' AND h.expires_at > ? ORDER BY h.id", (it["id"], demo_now(ctx.on_date)))]
@@ -210,6 +246,14 @@ def _floor_for(con, item_id: int, qty: int):
     r = con.execute("SELECT floor_yen FROM quote_rule WHERE item_id = ? AND min_qty <= ? ORDER BY min_qty DESC LIMIT 1",
                     (item_id, qty)).fetchone()
     return r[0] if r else None
+
+
+def _rule_floor(con, item_code: str, on_date: str):
+    """売り手の決まり（seller_rule）の今日の最低の値。決まりの無い品目は None。計算は criteria.floor_yen と同じ。"""
+    try:
+        return criteria.floor_yen(con, item_code, on_date)[0]
+    except LookupError:
+        return None
 
 
 def _send(ctx, **kw):
@@ -264,18 +308,20 @@ def _check_reply_rules(ctx, q: dict, inp: dict):
         avail, stock_id = _available(ctx.con, it["id"], now, except_buyer=q["from_owner"])
         mine = [p for p in market.open_requests(it["code"], now) if p["owner"] == ctx.owner and p["side"] == "sell"]
         limit = authority.limit_for(ctx.con, "staff")   # 自社の担当者の権限（1件の上限・表から読む）
+        rule_floor = _rule_floor(ctx.con, it["code"], ctx.on_date)   # 売り手の決まりの最低の値（明日の見込みで上げる分を含む）
         for t in terms:
             qty, price = t["quantity"], t["unit_price_yen"]
             if qty > avail:
-                raise ToolError(f"在庫の内で出せる数を超えています（出せるのは {avail}{it['unit']}）")
+                raise ToolError(f"在庫の内で出せる数を超えています（出せるのは {avail}{_u(it)}）")
             if limit is not None and qty * price > limit:
                 raise ToolError("この条件の金額は、自社の担当者の権限（1件の上限）を超えます")
-            floor = _floor_for(ctx.con, it["id"], qty)
+            floors = [f for f in (_floor_for(ctx.con, it["id"], qty), rule_floor) if f is not None]
+            floor = max(floors) if floors else None
             if floor is not None and price < floor:
-                raise ToolError(f"この数量では、その値は自社の最低の値を下回ります（{qty}{it['unit']} の最低は {floor}円）")
+                raise ToolError(f"この数量では、その値は自社の最低の値を下回ります（{qty}{_u(it)} の最低は {floor}円）")
             for p in mine:
                 if qty < p["min_qty"]:
-                    raise ToolError(f"自社の掲示は {p['min_qty']}{it['unit']} まとめての条件です。それより少ない数量は出せません")
+                    raise ToolError(f"自社の掲示は {p['min_qty']}{_u(it)} まとめての条件です。それより少ない数量は出せません")
         big = max(terms, key=lambda t: t["quantity"])
         return dict(kind="seller", stock_id=stock_id, quantity=big["quantity"], unit_price_yen=big["unit_price_yen"])
     # 買う側（相手は売りたい）：注文の内・仕入れの上限以下（条件ごとに確かめる）。事前の承認の内なら条件付きの合意
@@ -316,7 +362,7 @@ def reply(ctx, inp):
                 "VALUES (?, ?, ?, ?, ?, 'held', ?, ?, ?)",
                 (plan["stock_id"], q["from_owner"], plan["quantity"], plan["unit_price_yen"], mid, expires, now, now)).lastrowid
         network.attach_hold(mid, hold)
-        tail = f"・仮押さえ {hold} 番（{plan['quantity']}{_item(ctx.con, q['item_code'])['unit']}・{HOLD_MINUTES}分）"
+        tail = f"・仮押さえ {hold} 番（{plan['quantity']}{_u(_item(ctx.con, q['item_code']))}・{HOLD_MINUTES}分）"
     elif plan and plan["kind"] == "buyer":
         # 買い手の受け入れは条件付きの合意。相手の担当者の承認と仕入れの確定の後にだけ正式な売買になる
         seller_name = OWNER_NAMES[q["from_owner"]]
@@ -417,7 +463,10 @@ def compare_options(ctx, inp):
             raise ToolError("options の各案に code・buy_term_id・allocations が要ります")
         if any(not isinstance(a, dict) or "kind" not in a or "quantity" not in a for a in o["allocations"]):
             raise ToolError("allocations の各行に kind・ref_id・customer・quantity が要ります")
-        n = workspace.compute(ctx.con, ctx.owner, inp.get("item_code", "aji"), dict(buy_term_id=o["buy_term_id"], allocations=o["allocations"]),
+        item_code = inp.get("item_code") or event_item(ctx.owner, ctx.event)
+        if item_code is None:
+            raise ToolError("item_code（品目のコード）が要ります")
+        n = workspace.compute(ctx.con, ctx.owner, item_code, dict(buy_term_id=o["buy_term_id"], allocations=o["allocations"]),
                               demo_now(ctx.on_date))
         out.append(dict(code=o["code"], executable=n["executable"], errors=n["errors"],
                         revenue_yen=n["revenue_yen"], purchase_yen=n["purchase_yen"], process_cost_yen=n["process_cost_yen"],
@@ -465,7 +514,7 @@ _TERM = {"type": "object", "additionalProperties": False, "required": ["quantity
          "properties": {"quantity": INT, "unit_price_yen": INT}}
 REPLY = Tool(
     "reply", "自社に届いた問い合わせに返事をする。kind は offer（条件を示す）か decline（断る）。"
-             "terms は数量と値の組で、1〜3件まで並べられる（例：10kg ならこの値・15kg まとめてならこの値）。断る時は空にする。"
+             "terms は数量と値の組で、1〜3件まで並べられる（例：少ない数量ならこの値・まとめてならこの値）。断る時は空にする。"
              "条件は自社の決まり（在庫・最低の値・上限・まとめての条件）をコードが条件ごとに確かめる。",
     {"in_reply_to": INT, "kind": {"type": "string", "enum": ["offer", "decline"]},
      "terms": {"type": "array", "items": _TERM}, "message": STR, "reason": REASON},
@@ -611,10 +660,9 @@ def _question_situation(owner: str, p: dict) -> tuple[str, str]:
     c = db.connect(owner)
     try:
         v = workspace.view(c, p["case_id"])
-        row = c.execute("SELECT i.code FROM deal_case d JOIN item i ON i.id = d.item_id WHERE d.id = ?", (p["case_id"],)).fetchone()
     finally:
         c.close()
-    item = row[0] if row else "aji"
+    item = _case_item(owner, p["case_id"])
     lines = []
     for o in v.get("options") or []:
         n = o["numbers"]
@@ -639,7 +687,7 @@ def _change_situation(owner: str, p: dict) -> tuple[str, str]:
         row = c.execute("SELECT i.code, i.unit FROM deal_case d JOIN item i ON i.id = d.item_id WHERE d.id = ?", (p["case_id"],)).fetchone()
     finally:
         c.close()
-    item, unit = (row[0], row[1]) if row else ("aji", "")
+    item, unit = (row[0], sc.unit_label(row[1])) if row else (None, "")
     ch = p["change"]
     parts = []
     for a in ch.get("allocations") or []:
@@ -659,7 +707,13 @@ def situation(owner: str, event: dict, on_date: str) -> tuple[str, str]:
     p = event["payload"]
     if event["kind"] == "order_new":
         item = p["item"]
-        head = f"出来事：注文が入りました。{p['customer']}から {item} を {p['quantity']}（注文の番号 {p['order_id']}）。"
+        c = db.connect(owner)
+        try:
+            it = c.execute("SELECT name, unit FROM item WHERE code = ?", (item,)).fetchone()
+        finally:
+            c.close()
+        what = f"{it['name']}（{item}）を {p['quantity']}{sc.unit_label(it['unit'])}" if it else f"{item} を {p['quantity']}"
+        head = f"出来事：注文が入りました。{p['customer']}から {what}（注文の番号 {p['order_id']}）。"
     elif event["kind"] == "info_received" and p.get("source") == "deal_request":
         r = network.request_for(owner, p["request_id"])
         item = r["item_code"]
@@ -676,22 +730,29 @@ def situation(owner: str, event: dict, on_date: str) -> tuple[str, str]:
     elif event["kind"] == "human_choice" and p.get("source") == "consultation":
         item, head = _change_situation(owner, p)
     elif event["kind"] == "human_choice":
-        c = db.connect(owner)
-        try:
-            row = c.execute("SELECT i.code FROM deal_case d JOIN item i ON i.id = d.item_id WHERE d.id = ?", (p["case_id"],)).fetchone()
-        finally:
-            c.close()
-        item = row[0] if row else "aji"
-        head = ("出来事：担当者が選んだ案は、承認の時の再検証で確定できませんでした（案件 {}）。理由：{}。"
+        item = _case_item(owner, p["case_id"])
+        head =("出来事：担当者が選んだ案は、承認の時の再検証で確定できませんでした（案件 {}）。理由：{}。"
                 "条件を調べ直し、磁石ボードを出し直してください。").format(p["case_id"], "・".join(p.get("reasons", [])))
     elif event["kind"] == "staff_question":
         item, head = _question_situation(owner, p)
     else:
-        item = p.get("item", "aji")
+        item = event_item(owner, event)
         head = f"出来事：{event['kind']}"
-    lines = _thread_lines(owner, item, on_date)
+    lines = _thread_lines(owner, item, on_date) if item else []
     hist = "\n今日のこの品目のやり取り：\n" + "\n".join(lines) if lines else ""
-    return f"{head}\n日付：{on_date}\n必要なことを道具で調べ、判断してください。{hist}", item
+    return f"{head}\n{_item_line(owner, item)}日付：{on_date}\n必要なことを道具で調べ、判断してください。{hist}", item
+
+
+def _item_line(owner: str, item: str | None) -> str:
+    """状況の報告に、品目の名前・道具に渡す品目のコード・単位を書く（Claude が品目のコードを推測しないように）。"""
+    if not item:
+        return ""
+    c = db.connect(owner)
+    try:
+        it = c.execute("SELECT name, unit FROM item WHERE code = ?", (item,)).fetchone()
+    finally:
+        c.close()
+    return f"品目：{it['name']}（道具に渡す品目のコード {item}・単位 {sc.unit_label(it['unit'])}）\n" if it else f"品目のコード：{item}\n"
 
 
 def run_event(client, owner: str, event: dict, on_date: str, run_kind: str = "mock", max_calls: int = autonomy.MAX_CALLS) -> dict:

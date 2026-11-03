@@ -33,6 +33,11 @@ def _name(code: str) -> str:
     return sc.OWNERS.get(code, {}).get("name", code)
 
 
+def _unit(con, item_code: str) -> str:
+    r = con.execute("SELECT unit FROM item WHERE code = ?", (item_code,)).fetchone()
+    return sc.unit_label(r[0]) if r else ""
+
+
 def _ts(s: str) -> float:
     try:
         return datetime.datetime.fromisoformat(s).timestamp()
@@ -49,8 +54,8 @@ def _items(con, m) -> list[dict]:
         k = f"ev:{e['id']}"
         if e["kind"] == "order_new":
             it = con.execute("SELECT name, unit FROM item WHERE code = ?", (p["item"],)).fetchone()
-            out.append(dict(key=k, at=e["at"], kind="order", ref=p["order_id"],
-                            text=f"新しい注文を確認しました：{p['customer']}から {it['name'] if it else p['item']} {p['quantity']}{it['unit'] if it else ''}"))
+            out.append(dict(key=k, at=e["at"], kind="order", ref=p["order_id"], item=p["item"],
+                            text=f"新しい注文を確認しました：{p['customer']}から {it['name'] if it else p['item']} {p['quantity']}{sc.unit_label(it['unit']) if it else ''}"))
         elif e["kind"] == "info_received" and p.get("source") == "broadcast":
             out.append(dict(key=k, at=e["at"], kind="packet", frm=p.get("from_owner", "iwase"), to=OWNER, text="岩瀬漁協から今日の資料が届きました"))
         elif e["kind"] == "info_received" and p.get("source") == "deal_request":
@@ -58,7 +63,7 @@ def _items(con, m) -> list[dict]:
                 r = network.request_for(OWNER, p["request_id"])
                 side = "買いたい" if r["side"] == "buy" else "譲りたい"
                 out.append(dict(key=k, at=e["at"], kind="packet", frm=r["owner"], to=OWNER,
-                                text=f"{_name(r['owner'])}の掲示が届きました（{side}・{r['quantity']}kg）"))
+                                text=f"{_name(r['owner'])}の掲示が届きました（{side}・{r['quantity']}{_unit(con, r['item_code'])}）"))
             except network.NetworkError:
                 pass
         elif e["kind"] == "staff_question":
@@ -100,7 +105,7 @@ def _items(con, m) -> list[dict]:
     for msg in m.execute("SELECT * FROM network_message WHERE from_owner = ? OR to_owner = ? ORDER BY id", (OWNER, OWNER)):
         terms = network.terms_of(dict(msg))
         what = {"inquiry": "問い合わせ", "offer": "条件の返事", "decline": "断りの返事"}[msg["kind"]]
-        qs = "・".join(f"{q}kg" for q, _ in terms) if terms else ""
+        qs = "・".join(f"{q}{_unit(con, msg['item_code'])}" for q, _ in terms) if terms else ""
         out.append(dict(key=f"msg:{msg['id']}", at=msg["created_at"], kind="packet", frm=msg["from_owner"], to=msg["to_owner"], msg_kind=msg["kind"],
                         text=f"{_name(msg['from_owner'])} → {_name(msg['to_owner'])}：{what}" + (f"（{qs}）" if qs else "")))
     for d in con.execute("SELECT id, action, at, result FROM case_decision ORDER BY id"):

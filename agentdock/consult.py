@@ -196,7 +196,9 @@ def changes_priority(con, case, change: dict) -> bool:
         if a["order_id"] is not None:
             got[a["order_id"]] = got.get(a["order_id"], 0) + a["quantity"]
     short = {o["id"] for o in orders if got.get(o["id"], 0) < o["quantity"]}
-    return bool(short) and sum(a["quantity"] for a in allocs if a["order_id"] not in short) > 0
+    # 欠ける注文のどれかについて、ほかの売り先（ほかの注文・注文の無い売り先）に回す数があれば優先の変更
+    # （回す先の注文も欠けていても同じ。2026-11-03 撮影で、料亭 4本・スーパー 0本の案が担当者だけで確定した）
+    return any(sum(a["quantity"] for a in allocs if a["order_id"] != s) > 0 for s in short)
 
 
 def _answer_change(con, c, option_id: int, key: str, reason_text, change, role: str) -> dict:

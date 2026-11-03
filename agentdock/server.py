@@ -15,7 +15,7 @@ POST /api/decide   {"owner", "case_id", "option_id", "action", "fingerprint", "i
 GET  /api/flow?owner=amiya                           ← 段階と経過（業務 DB の事実からコードが決める）
 POST /api/ask      {"owner", "case_id", "text", "idempotency_key"}  ← 担当者の質問（出来事として記録し、Claude を起こす）
 GET  /api/verify?owner=amiya                         ← 技術の検証（Claude の道具の呼び出し・市場の取引帳簿の API・照合・費用）
-POST /api/start    {"variant"}                        ← 業務を始める（漁協の資料と注文を入れる・1回だけ）
+POST /api/start    {"variant", "item"}                ← 業務を始める（漁協の資料と品目の注文を入れる・1回だけ・item は aji か buri_xl）
 POST /api/worker/resume                               ← 止まった実演の通しを再開する
 
   python -m agentdock.server --port 8792 --real --new-take   # 本物の Claude で通す（記録は AgentDock-local の takes フォルダの「日時-live」）
@@ -94,7 +94,8 @@ class Handler(BaseHTTPRequestHandler):
             if u.path == "/api/thread":
                 if q["owner"] not in db.OWNER_CODES:
                     raise ValueError(q["owner"])
-                return self._send(200, dict(owner=q["owner"], item=q["item"], messages=thread_view(q["owner"], q["item"], q.get("date", sc.DEMO_DATE))))
+                return self._send(200, dict(owner=q["owner"], item=q["item"], unit=_unit(q["owner"], q["item"]),
+                                            messages=thread_view(q["owner"], q["item"], q.get("date", sc.DEMO_DATE))))
             if u.path == "/api/board":
                 owner = q["owner"]
                 if owner not in db.OWNER_CODES:
@@ -181,12 +182,15 @@ class Handler(BaseHTTPRequestHandler):
             n = int(self.headers.get("Content-Length") or 0)
             b = json.loads(self.rfile.read(n).decode("utf-8")) if 0 < n <= MAX_BODY else {}
             variant = b.get("variant", "normal")
+            item = b.get("item", "aji")
             if variant not in scene.VARIANTS:
                 raise ValueError(variant)
+            if item not in sc.SCENE_ORDERS:
+                raise ValueError(item)
             if live.has_started():
                 return self._send(409, dict(error="rejected", detail="今日の業務はもう始まっています"))
             scene.apply_variant(variant)
-            return self._send(200, dict(started=scene.start(variant=variant), variant=variant))
+            return self._send(200, dict(started=scene.start(variant=variant, item=item), variant=variant, item=item))
         except (KeyError, ValueError, json.JSONDecodeError) as e:
             return self._send(400, dict(error=f"bad request: {e}"))
 
@@ -210,6 +214,16 @@ class Handler(BaseHTTPRequestHandler):
 
 THREAD_FIELDS = ("message_id", "from_owner", "frm", "to_owner", "to", "kind", "side", "quantity", "unit_price_yen", "valid_until",
                  "hold_state", "reason", "body", "in_reply_to", "created_at")
+
+
+def _unit(owner: str, item: str) -> str | None:
+    """品目の単位の書き方（本・kg・箱）。品目が無ければ None。"""
+    c = db.connect(owner)
+    try:
+        r = c.execute("SELECT unit FROM item WHERE code = ?", (item,)).fetchone()
+    finally:
+        c.close()
+    return sc.unit_label(r[0]) if r else None
 
 
 def thread_view(owner: str, item: str, on_date: str) -> list[dict]:

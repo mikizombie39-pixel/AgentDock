@@ -310,10 +310,15 @@ def build(con, owner: str, item_code: str, on_date: str, payload: dict, run_id: 
         suggested_questions=payload.get("suggested_questions") or [], ask_human=payload.get("ask_human")),
         {o["code"]: n["executable"] for o, _, n in computed}, allowed)
     now_iso = db.now_iso()
+    item_id = con.execute("SELECT id FROM item WHERE code = ?", (item_code,)).fetchone()[0]
     with con:
-        case = con.execute("SELECT id, version FROM deal_case WHERE order_id = ?", (oid,)).fetchone()
+        case = None
+        for o in orders or [oid]:
+            case = case or con.execute("SELECT id, version FROM deal_case WHERE order_id = ?", (o,)).fetchone()
+        if case is None:   # 案の注文の並びが変わっても（例：料亭だけに回す案）、同じ品目の開いた案件の版を上げる
+            case = con.execute("SELECT id, version FROM deal_case WHERE item_id = ? AND trade_date = ? AND status IN (?, ?, ?, ?, ?) "
+                               "ORDER BY id DESC LIMIT 1", (item_id, on_date, "open", *consult.CASE_OPEN)).fetchone()
         if case is None:
-            item_id = con.execute("SELECT id FROM item WHERE code = ?", (item_code,)).fetchone()[0]
             cid = con.execute("INSERT INTO deal_case (order_id, item_id, trade_date, status, version, created_at, updated_at) VALUES (?, ?, ?, 'open', 0, ?, ?)",
                               (oid, item_id, on_date, now_iso, now_iso)).lastrowid
             version = 1
@@ -486,7 +491,7 @@ def view(con, case_id: int | None = None) -> dict:
             o["numbers"]["profit_kind"] = "確定"
             o["chosen"] = True
     summary = con.execute("SELECT detail FROM audit_event WHERE event = 'board_presented' ORDER BY id DESC LIMIT 1").fetchone()
-    decisions = [dict(r) for r in con.execute("SELECT action, actor, at, result, detail FROM case_decision WHERE case_id = ? ORDER BY id", (case["id"],))]
+    decisions = [dict(r) for r in con.execute("SELECT option_id, action, actor, at, result, detail FROM case_decision WHERE case_id = ? ORDER BY id", (case["id"],))]
     t = con.execute("SELECT * FROM workspace_turn WHERE case_id = ? AND version = ? ORDER BY id DESC LIMIT 1", (case["id"], v)).fetchone()
     layout = _gate_actions(json.loads(t["layout_json"]), case["status"], opts) if t else None
     if layout:
@@ -499,12 +504,22 @@ def view(con, case_id: int | None = None) -> dict:
     turns = [dict(id=r["id"], version=r["version"], question=r["question"], answer=r["answer"], at=r["at"],
                   focus=json.loads(r["layout_json"])["focus"]) for r in con.execute(
         "SELECT * FROM workspace_turn WHERE case_id = ? AND source = 'answer' ORDER BY id", (case["id"],))]
-    cons = con.execute("SELECT id, task_version, status, question FROM consultation WHERE case_id = ? ORDER BY id DESC LIMIT 1", (case["id"],)).fetchone()
+    cons = con.execute("SELECT id, task_version, status, question, change_json, answered_by FROM consultation WHERE case_id = ? ORDER BY id DESC LIMIT 1",
+                       (case["id"],)).fetchone()
     consultation = None
     if cons is not None:
         consultation = dict(consultation_id=cons["id"], version=cons["task_version"], status=cons["status"], question=cons["question"],
+                            change=json.loads(cons["change_json"]) if cons["change_json"] else None, answered_by=cons["answered_by"],
                             options=[dict(code=o["code"], label=o["label"], valid=bool(o["valid"])) for o in con.execute(
                                 "SELECT code, label, valid FROM consultation_option WHERE consultation_id = ? ORDER BY id", (cons["id"],))])
+    it = con.execute("SELECT code, name, unit FROM item WHERE id = ?", (case["item_id"],)).fetchone()
+    # 数量・配分を変える操作の行：この品目の今日の注文（開いているもの）と、注文の無い売り先（売値のある先）
+    orders = [dict(order_id=r["id"], customer=r["name"], quantity=r["quantity"], status=r["status"]) for r in con.execute(
+        "SELECT o.id, c.name, o.quantity, o.status FROM order_book o JOIN customer c ON c.id = o.customer_id "
+        "WHERE o.item_id = ? AND o.order_date = ? AND o.status IN ('open', 'partly_filled') ORDER BY o.id", (case["item_id"], case["trade_date"]))]
+    leads = [r[0] for r in con.execute("SELECT c.name FROM customer c JOIN sales_price s ON s.customer_id = c.id AND s.item_id = ? ORDER BY c.id",
+                                       (case["item_id"],)) if r[0] not in {o["customer"] for o in orders}]
     return dict(case=dict(case), cards=cards, options=opts, summary=json.loads(summary[0])["summary"] if summary else None, decisions=decisions,
                 layout=layout, layout_turn=t["id"] if t else None, turns=turns, consultation=consultation,
+                item=dict(code=it["code"], name=it["name"], unit=sc.unit_label(it["unit"])), orders=orders, leads=leads,
                 records=records(con, case["id"]) if case["status"] == "registered" else [])

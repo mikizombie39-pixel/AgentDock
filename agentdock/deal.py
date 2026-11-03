@@ -5,6 +5,7 @@
 決まり：
 - 表示した時の照合番号と、承認の時に計算し直した照合番号が違えば、古い案では確定しない（'stale'）
 - 承認の時に、権限（1件 50万円）・値・在庫・期限・相手の組織の事前の承認を確かめ直す
+- 売り先の注文を欠いてほかの売り先に回す案（顧客の間の優先）は、権限の表で許された役割（社長）だけが確定できる
 - 漁協は、示した条件（期限の内・仮押さえ済み・担当者の権限の内）を事前の承認として扱う
 - B社は、担当者が事前に承認した条件の内でした条件付きの合意を、B社の承認として扱う。超えていれば確定しない
 - 同じ操作は idempotency_key で1回だけ。途中で止まったら 'incomplete' のまま残し、resume で残りを進める
@@ -12,7 +13,7 @@
 """
 import json
 
-from agentdock import authority, db, events, market, network, workspace
+from agentdock import authority, consult, db, events, market, network, workspace
 from agentdock.seed import scenario as sc
 
 STEPS = ("buy_trade", "seller_stock", "terms", "sell_trades", "buyer_side", "own_books")
@@ -272,11 +273,15 @@ def _approve(owner: str, case, opt, shown_fp: str, actor: str, now: str, fail_at
     c = db.connect(owner)
     try:
         auth = authority.check(c, actor, term["seller"], case["item_id"], case["trade_date"], purchase["amount_yen"])
+        # 顧客の間の優先（どの売り先の注文を欠くか）を決める案は、表で許された役割だけが確定できる（相談の答えと同じ判定）
+        allocs = [dict(order_id=l["ref_id"] if l["kind"] == "order" else None, quantity=l["quantity"]) for l in numbers["lines"]]
+        priority = consult.changes_priority(c, case, dict(quantity=purchase["quantity"], allocations=allocs))
+        may = authority.may_change_priority(c, actor)
     finally:
         c.close()
-    if not auth["allowed"]:
+    if not auth["allowed"] or (priority and not may):
         _set_case(owner, case["id"], "needs_president")
-        return dict(result="needs_president", case_id=case["id"], authority=auth)
+        return dict(result="needs_president", case_id=case["id"], authority=auth, priority_change=priority)
     _book_proposals(owner, case, opt, numbers, actor)
     _set_case(owner, case["id"], "incomplete")
     return _run_steps(owner, case["id"], fail_at)
