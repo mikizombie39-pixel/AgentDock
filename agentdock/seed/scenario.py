@@ -21,6 +21,15 @@ OWNERS = {
     "buyer_c": dict(name="C社", role="buyer", person_name="C社の社長", companion_name=None),
 }
 
+# 権限（Rules）：誰が1件いくらまでの買い付けを確定できるか。None は上限なし
+# 実証用の架空の設定で、実在の仲買会社の権限の規程ではない。仲買は多くの得意先の注文をまとめて仕入れるので、
+# 担当者の上限は個別の注文ではなく、まとめた仕入れの額を基準にしている
+AUTHORITY = {
+    "amiya": [("staff", "若い担当者", 500000), ("president", "網谷さん", None)],
+    "buyer_b": [("staff", "B社の担当者", 500000), ("president", "B社の社長", None)],
+    "buyer_c": [("staff", "C社の担当者", 500000), ("president", "C社の社長", None)],
+}
+
 # 売り先（仲買だけ）
 CUSTOMERS = {
     "amiya": [("料亭", "restaurant"), ("スーパー", "supermarket")],

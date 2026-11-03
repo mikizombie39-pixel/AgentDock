@@ -37,6 +37,7 @@ def _fill_owner(con, code: str, public_rows, scene_c: bool) -> None:
         item = _ids(con, "item")
         con.executemany("INSERT INTO customer (name, kind) VALUES (?, ?)", sc.CUSTOMERS.get(code, []))
         cust = _ids(con, "customer", "name")
+        con.executemany("INSERT INTO authority (role, person_name, max_trade_yen) VALUES (?, ?, ?)", sc.AUTHORITY.get(code, []))
 
         if o["role"] == "buyer":
             con.executemany(

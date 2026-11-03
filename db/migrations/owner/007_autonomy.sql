@@ -137,6 +137,9 @@ CREATE TABLE proposal (
   task_id INTEGER NOT NULL REFERENCES task(id),
   task_version INTEGER NOT NULL,
   quote_id INTEGER NOT NULL REFERENCES quote_in(id),
+  item_id INTEGER NOT NULL REFERENCES item(id),
+  counterparty TEXT NOT NULL,
+  trade_date TEXT NOT NULL,       -- 権限の「1件」の範囲（同じ相手・同じ品目・同じ取引日の買い付けの合計）
   quantity INTEGER NOT NULL CHECK (quantity > 0),
   unit_price_yen INTEGER NOT NULL CHECK (unit_price_yen > 0),
   order_id INTEGER REFERENCES order_book(id),
