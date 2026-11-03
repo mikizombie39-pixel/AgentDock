@@ -5,10 +5,17 @@
 - 二重の回答：同じ idempotency_key の回答は一度しか効かない。同じ回答の繰り返しは同じ結果を返す
 - 無回答：答えが無いうちは仕事は awaiting_owner のままで、先へ進めない（時間が来ても勝手に決めない）
 - 選べない選択肢：コードが確かめて valid=0 にした選択肢は選べない
+- 条件を変える答え（change）：磁石ボードの版ごとの相談で、数量・配分を変える。答えを記録するのと同じトランザクションで
+  出来事 human_choice を書き、Claude を起こす（二重の回答・古い版の回答では書かない）
+- 顧客の間の優先を変える答えは、権限の表で許された役割（社長）だけが確定できる。担当者の答えは needs_president で止まる
 """
-from agentdock import db
+import json
+
+from agentdock import authority, db, events
 
 STATES_WAITING = ("awaiting_owner",)
+CASE_OPTIONS = [("change", "数量・配分を変えて交渉し直す", True)]
+CASE_OPEN = ("presented", "held", "stale", "needs_president")   # 条件を変えてよい案件の状態（確定・見送りの後は変えない）
 
 
 class ConsultError(Exception):
@@ -75,16 +82,21 @@ def _refresh_group(con, gid):
     con.execute("UPDATE consultation_group SET status = ? WHERE id = ?", (status, gid))
 
 
-def answer(con, consultation_id: int, option_code: str, idempotency_key: str, reason_text: str | None = None) -> dict:
-    """持ち主の回答。結果の dict を返す（duplicate=True は同じ回答の繰り返し）。"""
-    prev = con.execute("SELECT id, chosen_option_id FROM consultation WHERE idempotency_key = ?", (idempotency_key,)).fetchone()
+def answer(con, consultation_id: int, option_code: str, idempotency_key: str, reason_text: str | None = None,
+           change: dict | None = None, role: str = "staff") -> dict:
+    """持ち主の回答。結果の dict を返す（duplicate=True は同じ回答の繰り返し）。
+    option_code が 'change' の時は change（数量・配分）を渡す。role は答えた人の役割（権限の表の role）。"""
+    prev = con.execute("SELECT id, chosen_option_id, status FROM consultation WHERE idempotency_key = ?", (idempotency_key,)).fetchone()
     if prev is not None:
         code = con.execute("SELECT code FROM consultation_option WHERE id = ?", (prev["chosen_option_id"],)).fetchone()[0]
         if prev["id"] != consultation_id or code != option_code:
             raise ConsultError("idempotency_key reused for a different answer")
-        return dict(consultation_id=consultation_id, option=code, duplicate=True)
+        out = dict(consultation_id=consultation_id, option=code, duplicate=True)
+        if code == "change":
+            out["result"] = prev["status"]
+        return out
 
-    c = con.execute("SELECT id, group_id, task_id, task_version, status FROM consultation WHERE id = ?", (consultation_id,)).fetchone()
+    c = con.execute("SELECT id, group_id, task_id, task_version, status, case_id FROM consultation WHERE id = ?", (consultation_id,)).fetchone()
     if c is None:
         raise KeyError(consultation_id)
     t = task(con, c["task_id"])
@@ -94,7 +106,7 @@ def answer(con, consultation_id: int, option_code: str, idempotency_key: str, re
             _refresh_group(con, c["group_id"])
             _audit(con, "system", "stale_answer_rejected", t["id"], f"consultation {c['id']} v{c['task_version']} != v{t['version']}")
         raise StaleError(f"consultation {c['id']} is for v{c['task_version']}, task is v{t['version']}")
-    if c["status"] != "open":
+    if c["status"] != "open" and not (c["status"] == "needs_president" and option_code == "change"):
         raise ConsultError(f"consultation {c['id']} is {c['status']}")
     opt = con.execute("SELECT id, valid FROM consultation_option WHERE consultation_id = ? AND code = ?",
                       (c["id"], option_code)).fetchone()
@@ -102,6 +114,8 @@ def answer(con, consultation_id: int, option_code: str, idempotency_key: str, re
         raise ConsultError(f"no option {option_code}")
     if not opt["valid"]:
         raise ConsultError(f"option {option_code} is not allowed")
+    if option_code == "change":
+        return _answer_change(con, c, opt["id"], idempotency_key, reason_text, change, role)
     now = db.now_iso()
     with con:
         con.execute("UPDATE consultation SET status = 'answered', chosen_option_id = ?, reason_text = ?, answered_at = ?, idempotency_key = ? WHERE id = ?",
@@ -110,6 +124,117 @@ def answer(con, consultation_id: int, option_code: str, idempotency_key: str, re
         _refresh_group(con, c["group_id"])
         _audit(con, "owner", "consultation_answered", t["id"], f"consultation {c['id']} {option_code}")
     return dict(consultation_id=c["id"], option=option_code, duplicate=False)
+
+
+def open_for_case(con, case_id: int, item_id: int, version: int, question: str) -> int:
+    """磁石ボードの版ごとの相談を開く（担当者が数量・配分を変える入口）。呼ぶ側のトランザクションの中で書く。
+    案件の仕事の版をボードの版にそろえ、前の版の相談は stale にする。相談の番号を返す。"""
+    now = db.now_iso()
+    tid = con.execute("SELECT task_id FROM deal_case WHERE id = ?", (case_id,)).fetchone()[0]
+    if tid is None:
+        tid = con.execute("INSERT INTO task (kind, item_id, state, version, updated_at) VALUES ('purchase', ?, 'awaiting_owner', ?, ?)",
+                          (item_id, version, now)).lastrowid
+        con.execute("UPDATE deal_case SET task_id = ? WHERE id = ?", (tid, case_id))
+    else:
+        con.execute("UPDATE task SET version = ?, state = 'awaiting_owner', updated_at = ? WHERE id = ?", (version, now, tid))
+        con.execute("UPDATE consultation SET status = 'stale' WHERE task_id = ? AND status IN ('open', 'needs_president')", (tid,))
+    cid = con.execute("INSERT INTO consultation (task_id, task_version, question, status, case_id) VALUES (?, ?, ?, 'open', ?)",
+                      (tid, version, question, case_id)).lastrowid
+    con.executemany("INSERT INTO consultation_option (consultation_id, code, label, valid) VALUES (?, ?, ?, ?)",
+                    [(cid, code, label, 1 if v else 0) for code, label, v in CASE_OPTIONS])
+    _audit(con, "companion", "consultation_opened", tid, f"case {case_id} v{version}")
+    return cid
+
+
+def _int(v) -> bool:
+    return isinstance(v, int) and not isinstance(v, bool) and v > 0
+
+
+def check_change(con, case, change) -> dict:
+    """担当者が変えた数量・配分を、自社の DB で確かめて整える（画面の操作の値だけを読む・自然文は読まない）。"""
+    if not isinstance(change, dict) or not _int(change.get("quantity")):
+        raise ConsultError("change needs a positive integer quantity")
+    out = dict(quantity=change["quantity"])
+    allocs = change.get("allocations")
+    if allocs is None:
+        return out
+    if not isinstance(allocs, list) or not allocs:
+        raise ConsultError("allocations must be a non-empty list")
+    norm = []
+    for a in allocs:
+        if not isinstance(a, dict) or not _int(a.get("quantity")):
+            raise ConsultError("each allocation needs a positive integer quantity")
+        if a.get("order_id") is not None:
+            o = con.execute("SELECT o.id, c.name FROM order_book o JOIN customer c ON c.id = o.customer_id WHERE o.id = ? AND o.item_id = ? "
+                            "AND o.status IN ('open', 'partly_filled')", (a["order_id"], case["item_id"])).fetchone()
+            if o is None:
+                raise ConsultError(f"no open order {a['order_id']} for this item")
+            norm.append(dict(order_id=o["id"], customer=o["name"], quantity=a["quantity"]))
+        elif a.get("customer"):
+            cu = con.execute("SELECT name FROM customer WHERE name = ?", (a["customer"],)).fetchone()
+            if cu is None:
+                raise ConsultError(f"no customer {a['customer']}")
+            norm.append(dict(order_id=None, customer=cu["name"], quantity=a["quantity"]))
+        else:
+            raise ConsultError("each allocation needs order_id or customer")
+    if sum(a["quantity"] for a in norm) != out["quantity"]:
+        raise ConsultError("allocations must add up to the quantity")
+    out["allocations"] = norm
+    return out
+
+
+def changes_priority(con, case, change: dict) -> bool:
+    """顧客の間の優先を変える答えか：ある売り先の注文を欠き、ほかの売り先に回す（配分を決めずに注文の合計より減らすのも同じ）。"""
+    orders = [dict(r) for r in con.execute(
+        "SELECT o.id, o.quantity, c.name AS customer FROM order_book o JOIN customer c ON c.id = o.customer_id "
+        "WHERE o.item_id = ? AND o.order_date = ? AND o.status IN ('open', 'partly_filled')", (case["item_id"], case["trade_date"]))]
+    allocs = change.get("allocations")
+    if allocs is None:
+        return len({o["customer"] for o in orders}) >= 2 and change["quantity"] < sum(o["quantity"] for o in orders)
+    got = {}
+    for a in allocs:
+        if a["order_id"] is not None:
+            got[a["order_id"]] = got.get(a["order_id"], 0) + a["quantity"]
+    short = {o["id"] for o in orders if got.get(o["id"], 0) < o["quantity"]}
+    return bool(short) and sum(a["quantity"] for a in allocs if a["order_id"] not in short) > 0
+
+
+def _answer_change(con, c, option_id: int, key: str, reason_text, change, role: str) -> dict:
+    """条件を変える答え。確定できれば、記録と同じトランザクションで出来事 human_choice を書く。"""
+    if c["case_id"] is None:
+        raise ConsultError("change is only for a board consultation")
+    case = con.execute("SELECT id, item_id, trade_date, status FROM deal_case WHERE id = ?", (c["case_id"],)).fetchone()
+    if case["status"] not in CASE_OPEN:
+        raise ConsultError(f"case {case['id']} is {case['status']}")
+    change = check_change(con, case, change)
+    try:
+        may = authority.may_change_priority(con, role)
+    except authority.AuthorityError as e:
+        raise ConsultError(str(e)) from None
+    if c["status"] == "needs_president" and not may:
+        raise ConsultError(f"consultation {c['id']} waits for the president")
+    priority = changes_priority(con, case, change)
+    now = db.now_iso()
+    cj = json.dumps(change, ensure_ascii=False, sort_keys=True)
+    base = dict(consultation_id=c["id"], option="change", duplicate=False, priority_change=priority)
+    if priority and not may:
+        with con:
+            con.execute("UPDATE consultation SET status = 'needs_president', chosen_option_id = ?, reason_text = ?, answered_at = ?, idempotency_key = ?, "
+                        "change_json = ?, answered_by = ? WHERE id = ?", (option_id, reason_text, now, key, cj, role, c["id"]))
+            _audit(con, "owner", "consultation_needs_president", c["task_id"], f"consultation {c['id']} by {role}")
+        return dict(base, result="needs_president")
+    with con:
+        con.execute("UPDATE consultation SET status = 'answered', chosen_option_id = ?, reason_text = ?, answered_at = ?, idempotency_key = ?, "
+                    "change_json = ?, answered_by = ? WHERE id = ?", (option_id, reason_text, now, key, cj, role, c["id"]))
+        con.execute("UPDATE task SET state = 'resumed', updated_at = ? WHERE id = ?", (now, c["task_id"]))
+        # 前の版の案では承認できないようにする（交渉し直した結果で、ボードを出し直す）
+        con.execute("UPDATE board_option SET status = 'withdrawn' WHERE case_id = ? AND status = 'offered'", (case["id"],))
+        con.execute("UPDATE deal_case SET status = 'open', updated_at = ? WHERE id = ?", (now, case["id"]))
+        eid = events._insert(con, "human_choice", dict(source="consultation", consultation_id=c["id"], case_id=case["id"], version=c["task_version"],
+                                                       option="change", change=change, answered_by=role, priority_change=priority), events._now())
+        _refresh_group(con, c["group_id"])
+        _audit(con, "owner", "consultation_answered", c["task_id"], f"consultation {c['id']} change by {role} event {eid}")
+    return dict(base, result="answered", event_id=eid)
 
 
 def revise(con, task_id: int, reason: str) -> int:

@@ -66,9 +66,10 @@ def terms_of(m: dict) -> list[tuple[int, int]]:
 def send(from_owner: str, to_owner: str, kind: str, item_code: str, body: str, on_date: str,
          quantity: int | None = None, unit_price_yen: int | None = None,
          in_reply_to: int | None = None, request_id: int | None = None, terms=None,
-         side: str | None = None, valid_until: str | None = None) -> int:
+         side: str | None = None, valid_until: str | None = None, reason: str | None = None) -> int:
     """問い合わせ（kind='inquiry'）か返事（'offer'・'decline'）を送る。番号を返す。
-    terms は条件の組 [(数量, 値), ...]。渡すと最初の組を quantity・unit_price_yen の列にも書く。"""
+    terms は条件の組 [(数量, 値), ...]。渡すと最初の組を quantity・unit_price_yen の列にも書く。
+    reason は相手に伝えてよい短い理由（送る側が書く。文と同じく開示の検査を通す）。"""
     terms = [tuple(t) for t in terms] if terms else []
     if not terms and kind == "offer" and quantity and unit_price_yen:
         terms = [(quantity, unit_price_yen)]   # 条件が1つの返事
@@ -89,15 +90,15 @@ def send(from_owner: str, to_owner: str, kind: str, item_code: str, body: str, o
         raise NetworkError("an inquiry needs side 'buy' or 'sell'")
     if kind == "offer" and (not terms or not valid_until):
         raise NetworkError("an offer needs terms and valid_until")
-    _check(from_owner, item_code, unit_price_yen, quantity, body, on_date, terms)
+    _check(from_owner, item_code, unit_price_yen, quantity, body + ("\n" + reason if reason else ""), on_date, terms)
     m = db.connect(db.MARKET)
     try:
         with m:
             mid = m.execute(
-                "INSERT INTO network_message (from_owner, to_owner, kind, item_code, quantity, unit_price_yen, body, in_reply_to, request_id, trade_date, created_at, terms_json, side) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "INSERT INTO network_message (from_owner, to_owner, kind, item_code, quantity, unit_price_yen, body, in_reply_to, request_id, trade_date, created_at, terms_json, side, reason) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (from_owner, to_owner, kind, item_code, quantity, unit_price_yen, body, in_reply_to, request_id, on_date, db.now_iso(),
-                 json.dumps(terms) if len(terms) > 1 else None, side if kind == "inquiry" else None)).lastrowid
+                 json.dumps(terms) if len(terms) > 1 else None, side if kind == "inquiry" else None, reason)).lastrowid
             if kind == "offer":
                 # 条件の売り手と買い手は、問い合わせの向きで決まる（買いたいへの返事なら返事をした側が売り手）
                 seller, buyer = (from_owner, to_owner) if q["side"] == "buy" else (to_owner, from_owner)
@@ -138,6 +139,17 @@ def attach_hold(mid: int, hold_id: int) -> None:
     try:
         with m:
             m.execute("UPDATE offer_term SET hold_ref = ?, updated_at = ? WHERE message_id = ?", (hold_id, db.now_iso(), mid))
+    finally:
+        m.close()
+
+
+def release_terms(seller: str, hold_ids: list[int]) -> int:
+    """売り手が下ろした仮押さえに結びついた、まだ示したままの条件を released にする。"""
+    m = db.connect(db.MARKET)
+    try:
+        with m:
+            return m.execute(f"UPDATE offer_term SET status = 'released', updated_at = ? WHERE seller = ? AND status = 'offered' "
+                             f"AND hold_ref IN ({', '.join('?' * len(hold_ids))})", (db.now_iso(), seller, *hold_ids)).rowcount
     finally:
         m.close()
 

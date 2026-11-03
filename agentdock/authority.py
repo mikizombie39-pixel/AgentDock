@@ -4,6 +4,7 @@
 - 「1件」＝同じ取引の相手・同じ品目・同じ取引日の買い付けの合計（確定済みの分＋今回の分）
   いくつもの得意先の注文をまとめても、取引を小分けにしても、この合計で判定するので上限を迂回できない
 - 上限を超えれば、上限の無い人（社長など）の承認が要る
+- 顧客の間の優先を変える判断（どの売り先の注文を欠くか）も、表で許された役割（社長）だけが確定できる
 - 採算や在庫の損の判断（判断の基準・費用の決まり）とは別に持つ。権限は「誰が決めてよいか」だけを見る
 """
 from agentdock import db
@@ -21,6 +22,14 @@ def limit_for(con, role: str) -> int | None:
     if row is None:
         raise AuthorityError(f"no authority for role: {role}")
     return row["max_trade_yen"] if hasattr(row, "keys") else row[0]
+
+
+def may_change_priority(con, role: str) -> bool:
+    """その役割が、顧客の間の優先（どの売り先の注文を欠くか）を変えてよいか。表に無い役割は止める。"""
+    row = con.execute("SELECT may_change_priority FROM authority WHERE role = ?", (role,)).fetchone()
+    if row is None:
+        raise AuthorityError(f"no authority for role: {role}")
+    return bool(row[0])
 
 
 def case_total(con, counterparty: str, item_id: int, trade_date: str, exclude_proposal_id: int | None = None) -> int:

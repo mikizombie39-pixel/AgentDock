@@ -100,6 +100,7 @@ def run(clients: dict, on_date: str = sc.DEMO_DATE, run_kind: str = "mock",
 
 # ── 撮影の1回（take）：種を作り直した専用の置き場で、本物の Claude で通す ──
 #   python -m agentdock.scene --real            # 本物の Claude（claude-opus-5-5・effort medium）
+#   python -m agentdock.scene --real --change-qty 10   # ボードが出たら、担当者が相談に答えて数量を変え、続きを通す
 #   python -m agentdock.scene                   # 模擬の Claude は台本が要るので、この入口では本物だけを扱う
 # 置き場は AgentDock-local\takes\<日時>（OneDrive の外・本番の data とは別）。記録は take.json に書く
 
@@ -114,16 +115,39 @@ def _dump(folder) -> dict:
             out[owner] = dict(
                 runs=[dict(r) for r in c.execute("SELECT * FROM agent_run ORDER BY id")],
                 steps=[dict(r) for r in c.execute("SELECT * FROM agent_step ORDER BY run_id, seq")],
-                usage=[dict(r) for r in c.execute("SELECT * FROM api_usage ORDER BY id")])
+                usage=[dict(r) for r in c.execute("SELECT * FROM api_usage ORDER BY id")],
+                events=[dict(r) for r in c.execute("SELECT * FROM biz_event ORDER BY id")],
+                holds=[dict(r) for r in c.execute("SELECT * FROM stock_hold ORDER BY id")],
+                consultations=[dict(r) for r in c.execute("SELECT * FROM consultation ORDER BY id")])
         finally:
             c.close()
     m = db.connect(db.MARKET)
     try:
         out["market"] = dict(messages=[dict(r) for r in m.execute("SELECT * FROM network_message ORDER BY id")],
-                             requests=[dict(r) for r in m.execute("SELECT * FROM deal_request ORDER BY id")])
+                             requests=[dict(r) for r in m.execute("SELECT * FROM deal_request ORDER BY id")],
+                             terms=[dict(r) for r in m.execute("SELECT * FROM offer_term ORDER BY id")],
+                             agreements=[dict(r) for r in m.execute("SELECT * FROM agreement ORDER BY id")])
     finally:
         m.close()
     return out
+
+
+def staff_change(quantity: int) -> dict:
+    """撮影の途中の担当者の操作：最新のボードの相談に、数量を変えて答える（画面の /api/answer と同じ consult.answer）。
+    数量が注文の内なら、その注文に全量を充てる配分を付ける。"""
+    from agentdock import consult
+    c = db.connect("amiya")
+    try:
+        row = c.execute("SELECT c.id, d.order_id, o.quantity FROM consultation c JOIN deal_case d ON d.id = c.case_id "
+                        "JOIN order_book o ON o.id = d.order_id WHERE c.status = 'open' ORDER BY c.id DESC LIMIT 1").fetchone()
+        if row is None:
+            return dict(result="no_open_consultation")
+        change = dict(quantity=quantity)
+        if quantity <= row["quantity"]:
+            change["allocations"] = [dict(order_id=row["order_id"], quantity=quantity)]
+        return dict(consult.answer(c, row["id"], "change", f"take-change-{row['id']}", change=change, role="staff"), change=change)
+    finally:
+        c.close()
 
 
 def main(argv=None) -> int:
@@ -139,6 +163,7 @@ def main(argv=None) -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--real", action="store_true")
     ap.add_argument("--variant", default="normal", choices=list(VARIANTS))
+    ap.add_argument("--change-qty", type=int, help="ボードが出た後に、担当者が相談に答えて変える仕入れの数量")
     a = ap.parse_args(argv)
     if not a.real:
         print("use --real (the mock run needs a script; see tests/test_scene.py)")
@@ -152,7 +177,15 @@ def main(argv=None) -> int:
     started = start(variant=a.variant)
     clients = {o: companion.ClaudeClient(effort=agents.autonomy.EFFORT) for o in db.OWNER_CODES}
     log = run(clients, run_kind="real")
+    change = None
+    if a.change_qty:
+        change = staff_change(a.change_qty)
+        print(f"staff change: {change}")
+        left = MAX_TOTAL_CALLS - sum(x.get("calls") or 0 for x in log)
+        if change.get("result") == "answered" and left > 0:
+            log += [dict(x, phase="after_change") for x in run(clients, run_kind="real", max_total_calls=left)]
     data = _dump(folder)
+    data["change"] = change
     data["log"] = log
     data["started"] = started
     data["variant"] = dict(name=a.variant, description=VARIANTS[a.variant])

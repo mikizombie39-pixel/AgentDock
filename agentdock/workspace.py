@@ -8,7 +8,7 @@ Claude の文の中の金額は使わない。文に書かれた金額が計算�
 import hashlib
 import json
 
-from agentdock import authority, criteria, db, disclosure, market, network
+from agentdock import authority, consult, criteria, db, disclosure, market, network
 from agentdock.seed import scenario as sc
 
 CARD_TYPES = ("order", "quote", "agreement", "vault", "customer", "post", "market", "risk", "note")
@@ -331,9 +331,13 @@ def build(con, owner: str, item_code: str, on_date: str, payload: dict, run_id: 
                          json.dumps(n, ensure_ascii=False), int(o["code"] == payload["recommended"]), int(n["executable"]), fingerprint(plan, n)))
         con.execute("INSERT INTO workspace_turn (case_id, version, source, layout_json, run_id, at) VALUES (?, ?, 'present', ?, ?, ?)",
                     (cid, version, json.dumps(layout, ensure_ascii=False), run_id, now_iso))
+        # 版ごとの相談：担当者が数量・配分を変える入口（前の版の相談は stale になる）
+        item_id = con.execute("SELECT item_id FROM deal_case WHERE id = ?", (cid,)).fetchone()[0]
+        consult_id = consult.open_for_case(con, cid, item_id, version, layout["ask_human"] or layout["headline"])
         con.execute("INSERT INTO audit_event (at, actor, event, detail) VALUES (?, 'companion', 'board_presented', ?)",
                     (now_iso, json.dumps(dict(case_id=cid, version=version, run_id=run_id, summary=payload["summary"]), ensure_ascii=False)))
-    return dict(case_id=cid, version=version, options=[(o["code"], n["executable"], n["errors"]) for o, _, n in computed])
+    return dict(case_id=cid, version=version, consultation_id=consult_id,
+                options=[(o["code"], n["executable"], n["errors"]) for o, _, n in computed])
 
 
 def check_layout(con, owner: str, layout: dict, codes: dict, allowed: set) -> dict:
@@ -495,6 +499,12 @@ def view(con, case_id: int | None = None) -> dict:
     turns = [dict(id=r["id"], version=r["version"], question=r["question"], answer=r["answer"], at=r["at"],
                   focus=json.loads(r["layout_json"])["focus"]) for r in con.execute(
         "SELECT * FROM workspace_turn WHERE case_id = ? AND source = 'answer' ORDER BY id", (case["id"],))]
+    cons = con.execute("SELECT id, task_version, status, question FROM consultation WHERE case_id = ? ORDER BY id DESC LIMIT 1", (case["id"],)).fetchone()
+    consultation = None
+    if cons is not None:
+        consultation = dict(consultation_id=cons["id"], version=cons["task_version"], status=cons["status"], question=cons["question"],
+                            options=[dict(code=o["code"], label=o["label"], valid=bool(o["valid"])) for o in con.execute(
+                                "SELECT code, label, valid FROM consultation_option WHERE consultation_id = ? ORDER BY id", (cons["id"],))])
     return dict(case=dict(case), cards=cards, options=opts, summary=json.loads(summary[0])["summary"] if summary else None, decisions=decisions,
-                layout=layout, layout_turn=t["id"] if t else None, turns=turns,
+                layout=layout, layout_turn=t["id"] if t else None, turns=turns, consultation=consultation,
                 records=records(con, case["id"]) if case["status"] == "registered" else [])

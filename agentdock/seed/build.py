@@ -47,6 +47,7 @@ def _fill_owner(con, code: str, public_rows, scene_c: bool, with_aji_s: bool = F
         con.executemany("INSERT INTO customer (name, kind) VALUES (?, ?)", sc.CUSTOMERS.get(code, []))
         cust = _ids(con, "customer", "name")
         con.executemany("INSERT INTO authority (role, person_name, max_trade_yen) VALUES (?, ?, ?)", sc.AUTHORITY.get(code, []))
+        con.executemany("UPDATE authority SET may_change_priority = 1 WHERE role = ?", [(r,) for r in sc.PRIORITY_ROLES.get(code, ())])
 
         if o["role"] == "buyer":
             con.executemany(

@@ -6,9 +6,12 @@ GET  /api/state?owner=amiya
 GET  /api/events?owner=amiya&since=0
 GET  /api/view/bid?owner=amiya&item=shiroebi&kind=tender&date=2026-11-02
 GET  /api/tender?lot=T-shiroebi-1&viewer=amiya
-POST /api/answer   {"owner", "consultation_id", "option", "idempotency_key", "reason"}  ← 社長のスマホの答え
+POST /api/answer   {"owner", "consultation_id", "option", "idempotency_key", "reason", "change", "role"}  ← 相談への答え
+                   option="change" は磁石ボードの相談で数量・配分を変える：change={"quantity", "allocations": [{"order_id" か "customer", "quantity"}]}
+                   role は答えた人（staff・president）。答えが通ると出来事 human_choice を書き、Claude が交渉し直す
+GET  /api/thread?owner=amiya&item=aji&date=2026-11-02   ← 組織のやり取り（送り手・受け手・種類・数量・値・期限・仮押さえ・理由）
 GET  /api/board?owner=amiya                          ← 磁石ボード（最新の版・金額はコードの計算）
-POST /api/decide   {"owner", "case_id", "option_id", "action", "fingerprint", "idempotency_key"}  ← 担当者の承認・見送り・保留
+POST /api/decide   {"owner", "case_id", "option_id", "action", "fingerprint", "idempotency_key", "actor"}  ← 担当者（または社長）の承認・見送り・保留
 GET  /api/flow?owner=amiya                           ← 段階と経過（業務 DB の事実からコードが決める）
 POST /api/ask      {"owner", "case_id", "text", "idempotency_key"}  ← 担当者の質問（出来事として記録し、Claude を起こす）
 GET  /api/verify?owner=amiya                         ← 技術の検証（Claude の道具の呼び出し・市場の取引帳簿の API・照合・費用）
@@ -26,7 +29,7 @@ import sys
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
-from agentdock import consult, db, deal, events, feed, live, scene, stage, workspace
+from agentdock import agents, consult, db, deal, events, feed, live, scene, stage, workspace
 from agentdock.db import REPO
 from agentdock.seed import scenario as sc
 
@@ -88,6 +91,10 @@ class Handler(BaseHTTPRequestHandler):
                 out["worker"] = WORKER.status() if WORKER else None
                 out["worker_log"] = WORKER.log[-40:] if WORKER else []
                 return self._send(200, out)
+            if u.path == "/api/thread":
+                if q["owner"] not in db.OWNER_CODES:
+                    raise ValueError(q["owner"])
+                return self._send(200, dict(owner=q["owner"], item=q["item"], messages=thread_view(q["owner"], q["item"], q.get("date", sc.DEMO_DATE))))
             if u.path == "/api/board":
                 owner = q["owner"]
                 if owner not in db.OWNER_CODES:
@@ -126,7 +133,8 @@ class Handler(BaseHTTPRequestHandler):
                 raise ValueError(owner)
             c = db.connect(owner)
             try:
-                r = consult.answer(c, int(b["consultation_id"]), b["option"], b["idempotency_key"], b.get("reason"))
+                r = consult.answer(c, int(b["consultation_id"]), b["option"], b["idempotency_key"], b.get("reason"),
+                                   change=b.get("change"), role=str(b.get("role") or "staff"))
             finally:
                 c.close()
             return self._send(200, r)
@@ -188,15 +196,31 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(400, dict(error="bad body size"))
         try:
             b = json.loads(self.rfile.read(n).decode("utf-8"))
-            if b["owner"] not in db.OWNER_CODES or b["action"] not in ("approve", "reject", "hold"):
-                raise ValueError("owner or action")
+            actor = b.get("actor") or "staff"
+            if b["owner"] not in db.OWNER_CODES or b["action"] not in ("approve", "reject", "hold") or actor not in ("staff", "president"):
+                raise ValueError("owner, action or actor")
             r = deal.decide(b["owner"], int(b["case_id"]), int(b["option_id"]) if b.get("option_id") else None, b["action"],
-                            b.get("fingerprint"), str(b["idempotency_key"]))
+                            b.get("fingerprint"), str(b["idempotency_key"]), actor=actor)
             return self._send(409 if r["result"] == "stale" else 200, r)
         except deal.DealError as e:
             return self._send(409, dict(error="rejected", detail=str(e)))
         except (KeyError, ValueError, json.JSONDecodeError) as e:
             return self._send(400, dict(error=f"bad request: {e}"))
+
+
+THREAD_FIELDS = ("message_id", "from_owner", "frm", "to_owner", "to", "kind", "side", "quantity", "unit_price_yen", "valid_until",
+                 "hold_state", "reason", "body", "in_reply_to", "created_at")
+
+
+def thread_view(owner: str, item: str, on_date: str) -> list[dict]:
+    """owner が送ったか受け取った文だけを、市場の記録から読む（読むだけ）。条件ごとの仮押さえの状態も添える。"""
+    out = []
+    for m in agents.thread(owner, item, on_date):
+        d = {k: m[k] for k in THREAD_FIELDS}
+        d["terms"] = [dict(term_id=t["term_id"], quantity=t["quantity"], unit_price_yen=t["unit_price_yen"], valid_until=t["valid_until"],
+                           status=t["status"], hold_state=t["hold_state"]) for t in m["term_list"]]
+        out.append(d)
+    return out
 
 
 def make_server(port: int = DEFAULT_PORT) -> ThreadingHTTPServer:

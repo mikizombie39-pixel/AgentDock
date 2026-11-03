@@ -10,7 +10,7 @@
 import datetime
 import json
 
-from agentdock import autonomy, criteria, db, market, network
+from agentdock import authority, autonomy, criteria, db, market, network
 from agentdock.autonomy import Tool, ToolError
 from agentdock.seed import scenario as sc
 
@@ -20,6 +20,8 @@ NULL_INT = {"type": ["integer", "null"]}
 STR = {"type": "string"}
 INT = {"type": "integer"}
 ITEM = {"type": "string", "description": "品目のコード（例：aji）"}
+MAX_REASON = 120
+REASON = {"type": ["string", "null"], "description": "相手に伝えてよい短い理由（60字ほど・無ければ null）。自社の上限・最低の値・原価・売り先の名前は書かない"}
 
 
 def demo_now(on_date: str) -> str:
@@ -122,7 +124,17 @@ def read_posts(ctx, inp):
                     message=p["message"], valid_until=p["valid_until"]) for p in posts])
 
 
+def _hold_state(t: dict, now: str):
+    """条件に結びついた売り手の仮押さえの状態（市場の条件の記録から読む）。仮押さえの無い条件は None。"""
+    if t["hold_ref"] is None:
+        return None
+    if t["status"] == "offered":
+        return "held" if t["valid_until"] > now else "expired"
+    return t["status"]   # released・expired・confirmed（条件と仮押さえは一緒に動く）
+
+
 def thread(owner: str, item_code: str, on_date: str) -> list[dict]:
+    now = demo_now(on_date)
     m = market._con()
     try:
         rows = m.execute("SELECT * FROM network_message WHERE (from_owner = ? OR to_owner = ?) AND item_code = ? AND trade_date = ? ORDER BY id",
@@ -135,11 +147,14 @@ def thread(owner: str, item_code: str, on_date: str) -> list[dict]:
         for t in network.terms_for_message(r["id"]):
             ag = _agreement_for_term(t["id"])
             tl.append(dict(term_id=t["id"], seller=t["seller"], buyer=t["buyer"], quantity=t["quantity"], unit_price_yen=t["unit_price_yen"],
-                           status=t["status"], valid_until=t["valid_until"],
+                           status=t["status"], valid_until=t["valid_until"], hold_ref=t["hold_ref"], hold_state=_hold_state(t, now),
                            agreement_id=ag["id"] if ag else None, agreement_status=ag["status"] if ag else None))
+        states = [t["hold_state"] for t in tl if t["hold_state"]]
+        hold = next((st for st in ("confirmed", "held") if st in states), states[0] if states else None)
         out.append(dict(message_id=r["id"], frm=OWNER_NAMES[r["from_owner"]], to=OWNER_NAMES[r["to_owner"]], from_owner=r["from_owner"],
                         to_owner=r["to_owner"], kind=r["kind"], side=r["side"], quantity=r["quantity"], unit_price_yen=r["unit_price_yen"],
-                        terms=network.terms_of(dict(r)), term_list=tl, body=r["body"], in_reply_to=r["in_reply_to"], request_id=r["request_id"]))
+                        terms=network.terms_of(dict(r)), term_list=tl, body=r["body"], in_reply_to=r["in_reply_to"], request_id=r["request_id"],
+                        valid_until=tl[0]["valid_until"] if tl else None, hold_state=hold, reason=r["reason"], created_at=r["created_at"]))
     return out
 
 
@@ -156,14 +171,15 @@ def read_thread(ctx, inp):
     return _j(thread(ctx.owner, inp["item_code"], ctx.on_date))
 
 
-def _available(con, item_id: int, now: str) -> tuple[int, int | None]:
-    """売りに出している数から、期限の内の仮押さえを引いた数と、在庫の番号。"""
+def _available(con, item_id: int, now: str, except_buyer: str | None = None) -> tuple[int, int | None]:
+    """売りに出している数から、期限の内の仮押さえを引いた数と、在庫の番号。
+    except_buyer の仮押さえは引かない（その相手への新しい返事が、前の仮押さえに代わるため）。"""
     s = con.execute("SELECT id, quantity FROM stock WHERE item_id = ? AND status IN ('for_sale', 'unallocated') ORDER BY id LIMIT 1",
                     (item_id,)).fetchone()
     if s is None:
         return 0, None
-    held = con.execute("SELECT coalesce(sum(quantity), 0) FROM stock_hold WHERE stock_id = ? AND status = 'held' AND expires_at > ?",
-                       (s[0], now)).fetchone()[0]
+    held = con.execute("SELECT coalesce(sum(quantity), 0) FROM stock_hold WHERE stock_id = ? AND status = 'held' AND expires_at > ? AND buyer IS NOT ?",
+                       (s[0], now, except_buyer)).fetchone()[0]
     return s[1] - held, s[0]
 
 
@@ -175,6 +191,12 @@ def read_stock(ctx, inp):
     if rules:
         out["floor_by_quantity"] = [dict(from_qty=r[0], floor_yen=r[1]) for r in rules]
         out["note"] = "floor_by_quantity は自社の最低の値。相手に書かない。これより安い条件は出せない（コードが止める）"
+    holds = [dict(hold_id=r[0], buyer=r[1], buyer_name=OWNER_NAMES.get(r[1], r[1]), quantity=r[2], unit_price_yen=r[3], expires_at=r[4]) for r in ctx.con.execute(
+        "SELECT h.id, h.buyer, h.quantity, h.unit_price_yen, h.expires_at FROM stock_hold h JOIN stock s ON s.id = h.stock_id "
+        "WHERE s.item_id = ? AND h.status = 'held' AND h.expires_at > ? ORDER BY h.id", (it["id"], demo_now(ctx.on_date)))]
+    if holds:
+        out["holds"] = holds
+        out["holds_note"] = "available は仮押さえを引いた数。同じ相手に答え直す時は、その相手の仮押さえは新しい返事に置き換わる（その分も出せる）"
     mine = [p for p in market.open_requests(it["code"], demo_now(ctx.on_date)) if p["owner"] == ctx.owner]
     if mine:
         out["my_posts"] = [dict(request_id=p["id"], side=p["side"], quantity=p["quantity"], min_qty=p["min_qty"],
@@ -200,12 +222,19 @@ def _send(ctx, **kw):
         raise ToolError(str(e)) from None
 
 
+def _reason(inp):
+    r = (inp.get("reason") or "").strip() or None
+    if r and len(r) > MAX_REASON:
+        raise ToolError(f"reason は {MAX_REASON}字までで書いてください")
+    return r
+
+
 def send_inquiry(ctx, inp):
     if inp["to_owner"] == ctx.owner or inp["to_owner"] not in OWNER_NAMES:
         raise ToolError(f"宛先が正しくありません：{inp['to_owner']}")
     mid = _send(ctx, from_owner=ctx.owner, to_owner=inp["to_owner"], kind="inquiry", item_code=inp["item_code"], body=inp["message"],
                 on_date=ctx.on_date, quantity=inp["quantity"], unit_price_yen=inp["unit_price_yen"], request_id=inp["request_id"],
-                side=inp["side"])
+                side=inp["side"], reason=_reason(inp))
     return f"{OWNER_NAMES[inp['to_owner']]}に問い合わせを送りました（番号 {mid}）。返事は出来事として届きます。"
 
 
@@ -232,12 +261,15 @@ def _check_reply_rules(ctx, q: dict, inp: dict):
     now = demo_now(ctx.on_date)
     if q.get("side") == "buy":
         # 売る側（相手は買いたい）：在庫の内・最低の値以上・掲示のまとめての条件（条件ごとに確かめる）
-        avail, stock_id = _available(ctx.con, it["id"], now)
+        avail, stock_id = _available(ctx.con, it["id"], now, except_buyer=q["from_owner"])
         mine = [p for p in market.open_requests(it["code"], now) if p["owner"] == ctx.owner and p["side"] == "sell"]
+        limit = authority.limit_for(ctx.con, "staff")   # 自社の担当者の権限（1件の上限・表から読む）
         for t in terms:
             qty, price = t["quantity"], t["unit_price_yen"]
             if qty > avail:
                 raise ToolError(f"在庫の内で出せる数を超えています（出せるのは {avail}{it['unit']}）")
+            if limit is not None and qty * price > limit:
+                raise ToolError("この条件の金額は、自社の担当者の権限（1件の上限）を超えます")
             floor = _floor_for(ctx.con, it["id"], qty)
             if floor is not None and price < floor:
                 raise ToolError(f"この数量では、その値は自社の最低の値を下回ります（{qty}{it['unit']} の最低は {floor}円）")
@@ -273,8 +305,9 @@ def reply(ctx, inp):
     now = demo_now(ctx.on_date)
     expires = (datetime.datetime.fromisoformat(now) + datetime.timedelta(minutes=HOLD_MINUTES)).isoformat()
     mid = _send(ctx, from_owner=ctx.owner, to_owner=q["from_owner"], kind=inp["kind"], item_code=q["item_code"], body=inp["message"],
-                on_date=ctx.on_date, terms=terms or None, in_reply_to=q["id"], valid_until=expires if terms else None)
+                on_date=ctx.on_date, terms=terms or None, in_reply_to=q["id"], valid_until=expires if terms else None, reason=_reason(inp))
     tail = ""
+    hold = None
     if plan and plan["kind"] == "seller":
         # 仮押さえは最も多い数量の1件。示した条件の全てに結びつける（示しただけでは確保ではない。承認の時に確かめ直す）
         with ctx.con:
@@ -290,7 +323,27 @@ def reply(ctx, inp):
         for t in network.terms_for_message(mid):
             network.make_agreement(t["id"], f"{seller_name}の担当者の承認と、{seller_name}の仕入れの確定を条件とする", plan["status"], expires)
         tail = "・条件付きの合意" + ("（事前の承認の内）" if plan["status"] == "conditional" else "（事前の承認を超えるので、自社の担当者の承認待ち）")
+    if q.get("side") == "buy":   # 売る側：新しい返事（条件か断り）が、同じ相手への前の仮押さえに代わる
+        old = _replace_holds(ctx, q["from_owner"], _item(ctx.con, q["item_code"])["id"], hold, mid)
+        if old:
+            tail += f"・前の仮押さえ {', '.join(map(str, old))} 番を下ろしました"
     return f"{OWNER_NAMES[q['from_owner']]}に返事を送りました（番号 {mid}{tail}）。"
+
+
+def _replace_holds(ctx, buyer: str, item_id: int, keep: int | None, mid: int) -> list[int]:
+    """同じ相手への前の仮押さえを下ろし、その条件も市場で released にする（期限の内の押さえは相手ごとに1件）。下ろした番号を返す。"""
+    old = [r[0] for r in ctx.con.execute(
+        "SELECT h.id FROM stock_hold h JOIN stock s ON s.id = h.stock_id WHERE s.item_id = ? AND h.buyer = ? AND h.status = 'held' AND h.id IS NOT ? "
+        "ORDER BY h.id", (item_id, buyer, keep))]
+    if not old:
+        return []
+    at = db.now_iso()
+    with ctx.con:
+        ctx.con.executemany("UPDATE stock_hold SET status = 'released', updated_at = ? WHERE id = ? AND status = 'held'", [(at, h) for h in old])
+        ctx.con.execute("INSERT INTO audit_event (at, actor, event, detail) VALUES (?, 'system', 'hold_replaced', ?)",
+                        (at, _j(dict(buyer=buyer, released=old, new_hold=keep, message_id=mid))))
+    network.release_terms(ctx.owner, old)
+    return old
 
 
 def post_request(ctx, inp):
@@ -405,7 +458,8 @@ SEND_INQUIRY = Tool(
     "send_inquiry", "他の組織に問い合わせる（買いたい・売りたい・条件を聞く）。message は相手に届く文。自社の上限・原価・売り先の名前は書かない。",
     {"to_owner": {"type": "string", "enum": list(OWNER_NAMES)}, "side": {"type": "string", "enum": ["buy", "sell"], "description": "自社が買いたいか売りたいか"},
      "item_code": ITEM, "quantity": NULL_INT,
-     "unit_price_yen": NULL_INT, "message": STR, "request_id": {"type": ["integer", "null"], "description": "掲示への問い合わせならその番号"}},
+     "unit_price_yen": NULL_INT, "message": STR, "request_id": {"type": ["integer", "null"], "description": "掲示への問い合わせならその番号"},
+     "reason": REASON},
     send_inquiry)
 _TERM = {"type": "object", "additionalProperties": False, "required": ["quantity", "unit_price_yen"],
          "properties": {"quantity": INT, "unit_price_yen": INT}}
@@ -414,7 +468,7 @@ REPLY = Tool(
              "terms は数量と値の組で、1〜3件まで並べられる（例：10kg ならこの値・15kg まとめてならこの値）。断る時は空にする。"
              "条件は自社の決まり（在庫・最低の値・上限・まとめての条件）をコードが条件ごとに確かめる。",
     {"in_reply_to": INT, "kind": {"type": "string", "enum": ["offer", "decline"]},
-     "terms": {"type": "array", "items": _TERM}, "message": STR},
+     "terms": {"type": "array", "items": _TERM}, "message": STR, "reason": REASON},
     reply, ends="done")
 POST_REQUEST = Tool(
     "post_request", "仲買どうしの掲示を出す（買いたい・譲りたい）。他の全ての組織に届く。文に自社の上限・売り先の名前は書かない。",
@@ -509,9 +563,12 @@ SYSTEMS = {
              "磁石ボードは担当者と一緒に仕事を進める作業の場です。全部を並べず、今の判断に要るものだけを選んで出します。"
              "勧める案は利益の額だけで決めず、売り先の確かさ・期限・品質・社長の経験・追加の手間も比べます。"
              "担当者から質問が届いたら、業務の状態を道具で確かめ直してから answer_staff で答え、画面を組み直します。"
-             "仕入れ値の上限は自社の決まりで、超える案は実行できません。" + _COMMON,
+             "仕入れ値の上限は自社の決まりで、超える案は実行できません。"
+             "担当者が相談に答えて数量や配分を変えたら、注文・在庫・やり取りを道具で確かめ直し、変えた条件で相手に問い合わせ直します（前の条件は使いません）。"
+             "返事を確かめ、取引ができない（断られた・決まりを超える）時は、present_options で担当者に相談し直します。" + _COMMON,
     "iwase": "あなたは岩瀬漁協（売り手）の Claude AI パートナーです（Agent Dock）。仲買からの問い合わせに、自社の在庫と数量ごとの最低の値を見て答えます。"
-             "最低の値より安い条件は出せません。まとめて買えば値を下げられる場合は、その条件を示してかまいません。" + _COMMON,
+             "最低の値より安い条件は出せません。まとめて買えば値を下げられる場合は、その条件を示してかまいません。"
+             "同じ仲買から条件を変えた問い合わせが届いたら、その問い合わせに、今の在庫と数量ごとの最低の値で答え直します（前の仮押さえは新しい返事に置き換わります）。" + _COMMON,
     "buyer_b": "あなたは B社（仲買）の Claude AI パートナーです（Agent Dock）。注文を満たす仕入れ先を探します。"
                "少量なら仲買どうしの掲示で探す方法があります。問い合わせが届いたら、注文と上限を見て答えます。" + _COMMON,
     "buyer_c": "あなたは C社（仲買）の Claude AI パートナーです（Agent Dock）。引当のない在庫を掲示で譲りに出しています。"
@@ -575,6 +632,28 @@ def _question_situation(owner: str, p: dict) -> tuple[str, str]:
     return item, head
 
 
+def _change_situation(owner: str, p: dict) -> tuple[str, str]:
+    """担当者（または社長）が相談に答えて、数量・配分を変えた時の状況の報告。中身は答えの記録からコードが書く。"""
+    c = db.connect(owner)
+    try:
+        row = c.execute("SELECT i.code, i.unit FROM deal_case d JOIN item i ON i.id = d.item_id WHERE d.id = ?", (p["case_id"],)).fetchone()
+    finally:
+        c.close()
+    item, unit = (row[0], row[1]) if row else ("aji", "")
+    ch = p["change"]
+    parts = []
+    for a in ch.get("allocations") or []:
+        to = f"注文 {a['order_id']}（{a['customer']}）" if a["order_id"] else f"{a['customer']}（注文なし・未打診）"
+        parts.append(f"{to}に {a['quantity']}{unit}")
+    who = {"staff": "担当者", "president": "社長"}.get(p.get("answered_by"), p.get("answered_by"))
+    head = (f"出来事：{who}が相談に答えて、条件を変えました（案件 {p['case_id']}・版 {p['version']}・相談 {p['consultation_id']}）："
+            f"仕入れの数量 {ch['quantity']}{unit}・" + ("配分 " + "・".join(parts) if parts else "配分の指定なし") + "。\n"
+            "前の版の案は取り下げました。下のやり取りの条件は、この変更の前のものです。"
+            "注文・在庫・やり取りを道具で確かめ直し、変えた条件で相手に問い合わせ直してください（希望の値を添える）。"
+            "取引ができない時は、present_options で担当者に相談し直してください。")
+    return item, head
+
+
 def situation(owner: str, event: dict, on_date: str) -> tuple[str, str]:
     """状況の報告（Claude に渡す最初の文）と、品目のコードを返す。数字はコードが DB から出す。"""
     p = event["payload"]
@@ -594,6 +673,8 @@ def situation(owner: str, event: dict, on_date: str) -> tuple[str, str]:
         tm = next((x for x in thread(owner, m["item_code"], on_date) if x["message_id"] == m["id"]), None)
         cond = _terms_text(tm) if tm else ""
         head = f"出来事：{OWNER_NAMES[m['from_owner']]}から{what}が届きました（番号 {m['id']}・{m['kind']}）：「{m['body']}」{cond}"
+    elif event["kind"] == "human_choice" and p.get("source") == "consultation":
+        item, head = _change_situation(owner, p)
     elif event["kind"] == "human_choice":
         c = db.connect(owner)
         try:

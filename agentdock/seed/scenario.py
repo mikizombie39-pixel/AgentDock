@@ -34,6 +34,8 @@ AUTHORITY = {
     "buyer_b": [("staff", "B社の担当者", 500000), ("president", "B社の社長", None)],
     "buyer_c": [("staff", "C社の担当者", 500000), ("president", "C社の社長", None)],
 }
+# 顧客の間の優先を変える判断（どの売り先の注文を欠くか）をしてよい役割。担当者は決められず、社長の答えを待つ
+PRIORITY_ROLES = {code: ("president",) for code in AUTHORITY}
 
 # 売り先（仲買だけ）
 CUSTOMERS = {

@@ -63,6 +63,9 @@ def _items(con, m) -> list[dict]:
                 pass
         elif e["kind"] == "staff_question":
             out.append(dict(key=k, at=e["at"], kind="question", text=p["text"], ref=p.get("case_id")))
+        elif e["kind"] == "human_choice" and p.get("source") == "consultation":
+            who = "社長" if p.get("answered_by") == "president" else "担当者"
+            out.append(dict(key=k, at=e["at"], kind="change", text=f"{who}が条件を変えました（仕入れの数量 {p['change']['quantity']}）"))
         elif e["kind"] == "human_choice":
             out.append(dict(key=k, at=e["at"], kind="exception", text="承認の時の確かめ直しで確定できませんでした：" + "・".join(p.get("reasons", []))))
     for r in con.execute("SELECT id, event_id, started_at, ended_at, outcome FROM agent_run ORDER BY id"):
