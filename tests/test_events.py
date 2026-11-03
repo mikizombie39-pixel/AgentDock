@@ -80,5 +80,28 @@ class EventsTest(unittest.TestCase):
         self.assertTrue(events.claim(self.con, eid, 2))
 
 
+class SeedOrderTest(unittest.TestCase):
+    """本編の注文（scenario.AJI_ORDER）を本編の種の DB に入れると、出来事が1件だけ待ちに出る。"""
+
+    def test_aji_order_wakes_one_event(self):
+        import os
+        from agentdock.seed import build
+        from agentdock.seed import scenario as sc
+        with tempfile.TemporaryDirectory() as tmp:
+            os.environ["AGENTDOCK_DATA"] = tmp
+            try:
+                self.assertEqual(build.main([]), 0)
+                o = sc.AJI_ORDER
+                c = db.connect(o["owner"])
+                try:
+                    oid, eid = events.order_received(c, o["customer"], o["item"], o["quantity"], o["sell_price_yen"], sc.DEMO_DATE)
+                    self.assertEqual([e["id"] for e in events.pending(c)], [eid])
+                    self.assertEqual(events.get(c, eid)["payload"]["quantity"], 10)
+                finally:
+                    c.close()
+            finally:
+                os.environ.pop("AGENTDOCK_DATA", None)
+
+
 if __name__ == "__main__":
     unittest.main()

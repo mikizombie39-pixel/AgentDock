@@ -106,9 +106,9 @@ class SeedTest(unittest.TestCase):
         # 本編：網谷水産の注文 10kg・上限 1,600円/kg。10kg だけなら最低の値 1,700円で採算に合わず、15kg なら 1,500円
         a, s = self.con("amiya"), self.con("iwase")
         self.assertEqual(a.execute("SELECT unit FROM item WHERE code = 'aji'").fetchone()[0], "kg")
-        order = a.execute("SELECT o.quantity, c.name FROM order_book o JOIN item i ON i.id = o.item_id "
-                          "JOIN customer c ON c.id = o.customer_id WHERE i.code = 'aji'").fetchall()
-        self.assertEqual([tuple(r) for r in order], [(10, "スーパー")])
+        aji_orders = a.execute("SELECT count(*) FROM order_book o JOIN item i ON i.id = o.item_id WHERE i.code = 'aji'").fetchone()[0]
+        self.assertEqual(aji_orders, 0)                                   # 注文はデモの中で入る（出来事から起きる）
+        self.assertEqual(a.execute("SELECT count(*) FROM biz_event").fetchone()[0], 0)
         self.assertEqual(criteria.ceiling_yen(a, "aji", "スーパー"), 1600)
         self.assertEqual(criteria.ceiling_yen(a, "aji", "料亭"), 1900)
         rules = s.execute("SELECT q.min_qty, q.floor_yen FROM quote_rule q JOIN item i ON i.id = q.item_id "
