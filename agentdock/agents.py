@@ -10,7 +10,7 @@
 import datetime
 import json
 
-from agentdock import autonomy, criteria, market, network
+from agentdock import autonomy, criteria, db, market, network
 from agentdock.autonomy import Tool, ToolError
 from agentdock.seed import scenario as sc
 
@@ -414,7 +414,7 @@ TOOLSETS = {
 
 # どの出来事で起きるか（他の出来事は待ちのまま残す）
 WAKE = {
-    "amiya": {"order_new", "quote_received", "info_received:deal_request", "quote_request"},
+    "amiya": {"order_new", "quote_received", "info_received:deal_request", "quote_request", "human_choice"},
     "iwase": {"quote_request"},
     "buyer_b": {"order_new", "quote_request", "quote_received"},
     "buyer_c": {"quote_request"},
@@ -493,6 +493,15 @@ def situation(owner: str, event: dict, on_date: str) -> tuple[str, str]:
         tm = next((x for x in thread(owner, m["item_code"], on_date) if x["message_id"] == m["id"]), None)
         cond = _terms_text(tm) if tm else ""
         head = f"出来事：{OWNER_NAMES[m['from_owner']]}から{what}が届きました（番号 {m['id']}・{m['kind']}）：「{m['body']}」{cond}"
+    elif event["kind"] == "human_choice":
+        c = db.connect(owner)
+        try:
+            row = c.execute("SELECT i.code FROM deal_case d JOIN item i ON i.id = d.item_id WHERE d.id = ?", (p["case_id"],)).fetchone()
+        finally:
+            c.close()
+        item = row[0] if row else "aji"
+        head = ("出来事：担当者が選んだ案は、承認の時の再検証で確定できませんでした（案件 {}）。理由：{}。"
+                "条件を調べ直し、磁石ボードを出し直してください。").format(p["case_id"], "・".join(p.get("reasons", [])))
     else:
         item = p.get("item", "aji")
         head = f"出来事：{event['kind']}"
