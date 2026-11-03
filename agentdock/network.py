@@ -5,6 +5,8 @@
   掲示 → 'info_received'（全ての他の組織）／問い合わせ → 'quote_request'／返事 → 'quote_received'
 - 運ぶのは市場の DB（network_message・deal_request）。各組織は自社の DB と、自社に届いたものだけを読む
 """
+import json
+
 from agentdock import db, disclosure, events, market
 
 
@@ -12,10 +14,11 @@ class NetworkError(Exception):
     pass
 
 
-def _check(owner: str, item_code: str, unit_price_yen, quantity, text: str, on_date: str) -> None:
+def _check(owner: str, item_code: str, unit_price_yen, quantity, text: str, on_date: str, terms=()) -> None:
     oc = db.connect(owner)
     try:
-        reasons = disclosure.check(oc, item_code, unit_price_yen or 0, quantity or 0, text, on_date)
+        allowed = {v for q, p in terms for v in (p, p * q)}
+        reasons = disclosure.check(oc, item_code, unit_price_yen or 0, quantity or 0, text, on_date, also_allowed=allowed)
     finally:
         oc.close()
     if reasons:
@@ -51,10 +54,23 @@ def announce_material(broadcast_id: int, sender: str = "iwase") -> None:
             _emit(other, "info_received", dict(source="broadcast", broadcast_id=broadcast_id, from_owner=sender))
 
 
+def terms_of(m: dict) -> list[tuple[int, int]]:
+    """文の条件の組（数量・値）。条件が1つの文は quantity・unit_price_yen の列だけで持つ。"""
+    if m.get("terms_json"):
+        return [tuple(t) for t in json.loads(m["terms_json"])]
+    if m.get("quantity") and m.get("unit_price_yen"):
+        return [(m["quantity"], m["unit_price_yen"])]
+    return []
+
+
 def send(from_owner: str, to_owner: str, kind: str, item_code: str, body: str, on_date: str,
          quantity: int | None = None, unit_price_yen: int | None = None,
-         in_reply_to: int | None = None, request_id: int | None = None) -> int:
-    """問い合わせ（kind='inquiry'）か返事（'offer'・'decline'）を送る。番号を返す。"""
+         in_reply_to: int | None = None, request_id: int | None = None, terms=None) -> int:
+    """問い合わせ（kind='inquiry'）か返事（'offer'・'decline'）を送る。番号を返す。
+    terms は条件の組 [(数量, 値), ...]。渡すと最初の組を quantity・unit_price_yen の列にも書く。"""
+    terms = [tuple(t) for t in terms] if terms else []
+    if terms:
+        quantity, unit_price_yen = terms[0]
     if from_owner not in db.OWNER_CODES or to_owner not in db.OWNER_CODES or from_owner == to_owner:
         raise NetworkError(f"bad parties: {from_owner} -> {to_owner}")
     if kind not in ("inquiry", "offer", "decline"):
@@ -65,14 +81,15 @@ def send(from_owner: str, to_owner: str, kind: str, item_code: str, body: str, o
         q = message(in_reply_to)
         if q["to_owner"] != from_owner or q["from_owner"] != to_owner:
             raise NetworkError(f"message {in_reply_to} was not sent from {to_owner} to {from_owner}")
-    _check(from_owner, item_code, unit_price_yen, quantity, body, on_date)
+    _check(from_owner, item_code, unit_price_yen, quantity, body, on_date, terms)
     m = db.connect(db.MARKET)
     try:
         with m:
             mid = m.execute(
-                "INSERT INTO network_message (from_owner, to_owner, kind, item_code, quantity, unit_price_yen, body, in_reply_to, request_id, trade_date, created_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                (from_owner, to_owner, kind, item_code, quantity, unit_price_yen, body, in_reply_to, request_id, on_date, db.now_iso())).lastrowid
+                "INSERT INTO network_message (from_owner, to_owner, kind, item_code, quantity, unit_price_yen, body, in_reply_to, request_id, trade_date, created_at, terms_json) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (from_owner, to_owner, kind, item_code, quantity, unit_price_yen, body, in_reply_to, request_id, on_date, db.now_iso(),
+                 json.dumps(terms) if len(terms) > 1 else None)).lastrowid
     finally:
         m.close()
     _emit(to_owner, "quote_request" if kind == "inquiry" else "quote_received",

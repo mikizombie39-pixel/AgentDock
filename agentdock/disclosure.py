@@ -58,10 +58,10 @@ def secrets(con, item_code: str, on_date: str) -> dict[int, str]:
     return {v: k for v, k in out.items() if v >= MIN_YEN}
 
 
-def check(con, item_code: str, unit_price_yen: int, quantity: int, text: str, on_date: str) -> list[str]:
-    """止める理由のリスト。空なら送ってよい。"""
+def check(con, item_code: str, unit_price_yen: int, quantity: int, text: str, on_date: str, also_allowed=frozenset()) -> list[str]:
+    """止める理由のリスト。空なら送ってよい。also_allowed は条件が複数の時の、ほかの条件の値と合計。"""
     reasons = []
-    allowed = {unit_price_yen, unit_price_yen * quantity}
+    allowed = {unit_price_yen, unit_price_yen * quantity, *also_allowed}
     sec = secrets(con, item_code, on_date)
     for v in sorted(amounts(text) - allowed):
         if v in sec:

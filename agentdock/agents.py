@@ -110,7 +110,7 @@ def thread(owner: str, item_code: str, on_date: str) -> list[dict]:
         m.close()
     return [dict(message_id=r["id"], frm=OWNER_NAMES[r["from_owner"]], to=OWNER_NAMES[r["to_owner"]], from_owner=r["from_owner"],
                  to_owner=r["to_owner"], kind=r["kind"], quantity=r["quantity"], unit_price_yen=r["unit_price_yen"],
-                 body=r["body"], in_reply_to=r["in_reply_to"], request_id=r["request_id"]) for r in rows]
+                 terms=network.terms_of(dict(r)), body=r["body"], in_reply_to=r["in_reply_to"], request_id=r["request_id"]) for r in rows]
 
 
 def read_thread(ctx, inp):
@@ -169,40 +169,52 @@ def send_inquiry(ctx, inp):
     return f"{OWNER_NAMES[inp['to_owner']]}に問い合わせを送りました（番号 {mid}）。返事は出来事として届きます。"
 
 
-def _check_reply_rules(ctx, q: dict, inp: dict) -> int | None:
-    """返事の条件を自社の決まりで確かめる。売り手が条件を出す時は仮押さえの番号を返す。"""
+MAX_TERMS = 3
+
+
+def _check_reply_rules(ctx, q: dict, inp: dict):
+    """返事の条件（terms：数量と値の組・1〜3件）を自社の決まりで確かめる。
+    売る側は仮押さえの計画 (stock_id, 数量, 値) を返す。条件は二者択一なので、押さえるのは最も多い数量の1件だけ
+    （同じ在庫を条件の数だけ重ねて押さえない）。押さえは文を送れた後に作る。"""
+    terms = inp["terms"]
     if inp["kind"] != "offer":
+        if terms:
+            raise ToolError("断る返事に条件は付けません")
         return None
-    qty, price = inp["quantity"], inp["unit_price_yen"]
-    if not qty or not price:
-        raise ToolError("条件を示す返事には数量と値が要ります")
+    if not 1 <= len(terms) <= MAX_TERMS:
+        raise ToolError(f"条件は 1〜{MAX_TERMS} 件で示してください")
+    if len({t["quantity"] for t in terms}) != len(terms):
+        raise ToolError("同じ数量の条件が2つあります")
+    if any(t["quantity"] <= 0 or t["unit_price_yen"] <= 0 for t in terms):
+        raise ToolError("数量と値は 1 以上で示してください")
     it = _item(ctx.con, q["item_code"])
     role = ctx.con.execute("SELECT role FROM owner").fetchone()[0]
     now = demo_now(ctx.on_date)
     if role == "seller" or ctx.con.execute("SELECT 1 FROM stock WHERE item_id = ? AND status IN ('for_sale', 'unallocated')", (it["id"],)).fetchone():
-        # 売る側：在庫の内・最低の値以上・掲示のまとめての条件
+        # 売る側：在庫の内・最低の値以上・掲示のまとめての条件（条件ごとに確かめる）
         avail, stock_id = _available(ctx.con, it["id"], now)
-        if qty > avail:
-            raise ToolError(f"在庫の内で出せる数を超えています（出せるのは {avail}{it['unit']}）")
-        floor = _floor_for(ctx.con, it["id"], qty)
-        if floor is not None and price < floor:
-            raise ToolError(f"この数量では、その値は自社の最低の値を下回ります（{qty}{it['unit']} の最低は {floor}円）")
-        for p in market.open_requests(it["code"], now):
-            if p["owner"] == ctx.owner and p["side"] == "sell" and qty < p["min_qty"]:
-                raise ToolError(f"自社の掲示は {p['min_qty']}{it['unit']} まとめての条件です。それより少ない数量は出せません")
-        expires = (datetime.datetime.fromisoformat(now) + datetime.timedelta(minutes=HOLD_MINUTES)).isoformat()
-        with ctx.con:
-            return ctx.con.execute(
-                "INSERT INTO stock_hold (stock_id, buyer, quantity, unit_price_yen, status, expires_at, created_at, updated_at) "
-                "VALUES (?, ?, ?, ?, 'held', ?, ?, ?)", (stock_id, q["from_owner"], qty, price, expires, now, now)).lastrowid
-    # 買う側：注文の内・仕入れの上限以下
-    orders = [o for o in json.loads(read_orders(ctx, {"item_code": it["code"]}))["orders"]]
+        mine = [p for p in market.open_requests(it["code"], now) if p["owner"] == ctx.owner and p["side"] == "sell"]
+        for t in terms:
+            qty, price = t["quantity"], t["unit_price_yen"]
+            if qty > avail:
+                raise ToolError(f"在庫の内で出せる数を超えています（出せるのは {avail}{it['unit']}）")
+            floor = _floor_for(ctx.con, it["id"], qty)
+            if floor is not None and price < floor:
+                raise ToolError(f"この数量では、その値は自社の最低の値を下回ります（{qty}{it['unit']} の最低は {floor}円）")
+            for p in mine:
+                if qty < p["min_qty"]:
+                    raise ToolError(f"自社の掲示は {p['min_qty']}{it['unit']} まとめての条件です。それより少ない数量は出せません")
+        big = max(terms, key=lambda t: t["quantity"])
+        return stock_id, big["quantity"], big["unit_price_yen"]
+    # 買う側：注文の内・仕入れの上限以下（条件ごとに確かめる）
+    orders = json.loads(read_orders(ctx, {"item_code": it["code"]}))["orders"]
     if not orders:
         raise ToolError("この品目の注文がありません。買う条件は出せません")
-    if qty > sum(o["quantity"] for o in orders):
-        raise ToolError("注文の数量を超えています")
-    if all(o["buy_ceiling_yen"] is None or price > o["buy_ceiling_yen"] for o in orders):
-        raise ToolError("その値は自社の仕入れの上限を超えています")
+    for t in terms:
+        if t["quantity"] > sum(o["quantity"] for o in orders):
+            raise ToolError("注文の数量を超えています")
+        if all(o["buy_ceiling_yen"] is None or t["unit_price_yen"] > o["buy_ceiling_yen"] for o in orders):
+            raise ToolError(f"{t['unit_price_yen']}円は自社の仕入れの上限を超えています")
     return None
 
 
@@ -213,11 +225,20 @@ def reply(ctx, inp):
         raise ToolError(str(e)) from None
     if q["to_owner"] != ctx.owner:
         raise ToolError("自社宛ての問い合わせにだけ返事できます")
-    hold = _check_reply_rules(ctx, q, inp)
+    plan = _check_reply_rules(ctx, q, inp)
+    terms = [(t["quantity"], t["unit_price_yen"]) for t in inp["terms"]]
     mid = _send(ctx, from_owner=ctx.owner, to_owner=q["from_owner"], kind=inp["kind"], item_code=q["item_code"], body=inp["message"],
-                on_date=ctx.on_date, quantity=inp["quantity"] if inp["kind"] == "offer" else None,
-                unit_price_yen=inp["unit_price_yen"] if inp["kind"] == "offer" else None, in_reply_to=q["id"])
-    tail = f"・仮押さえ {hold} 番（{HOLD_MINUTES}分）" if hold else ""
+                on_date=ctx.on_date, terms=terms or None, in_reply_to=q["id"])
+    tail = ""
+    if plan:
+        stock_id, qty, price = plan
+        now = demo_now(ctx.on_date)
+        expires = (datetime.datetime.fromisoformat(now) + datetime.timedelta(minutes=HOLD_MINUTES)).isoformat()
+        with ctx.con:
+            hold = ctx.con.execute(
+                "INSERT INTO stock_hold (stock_id, buyer, quantity, unit_price_yen, negotiation_id, status, expires_at, created_at, updated_at) "
+                "VALUES (?, ?, ?, ?, ?, 'held', ?, ?, ?)", (stock_id, q["from_owner"], qty, price, mid, expires, now, now)).lastrowid
+        tail = f"・仮押さえ {hold} 番（{qty}{_item(ctx.con, q['item_code'])['unit']}・{HOLD_MINUTES}分）"
     return f"{OWNER_NAMES[q['from_owner']]}に返事を送りました（番号 {mid}{tail}）。"
 
 
@@ -276,9 +297,14 @@ SEND_INQUIRY = Tool(
     {"to_owner": {"type": "string", "enum": list(OWNER_NAMES)}, "item_code": ITEM, "quantity": NULL_INT,
      "unit_price_yen": NULL_INT, "message": STR, "request_id": {"type": ["integer", "null"], "description": "掲示への問い合わせならその番号"}},
     send_inquiry)
+_TERM = {"type": "object", "additionalProperties": False, "required": ["quantity", "unit_price_yen"],
+         "properties": {"quantity": INT, "unit_price_yen": INT}}
 REPLY = Tool(
-    "reply", "自社に届いた問い合わせに返事をする。kind は offer（条件を示す）か decline（断る）。条件は自社の決まり（在庫・最低の値・上限・まとめての条件）をコードが確かめる。",
-    {"in_reply_to": INT, "kind": {"type": "string", "enum": ["offer", "decline"]}, "quantity": NULL_INT, "unit_price_yen": NULL_INT, "message": STR},
+    "reply", "自社に届いた問い合わせに返事をする。kind は offer（条件を示す）か decline（断る）。"
+             "terms は数量と値の組で、1〜3件まで並べられる（例：10kg ならこの値・15kg まとめてならこの値）。断る時は空にする。"
+             "条件は自社の決まり（在庫・最低の値・上限・まとめての条件）をコードが条件ごとに確かめる。",
+    {"in_reply_to": INT, "kind": {"type": "string", "enum": ["offer", "decline"]},
+     "terms": {"type": "array", "items": _TERM}, "message": STR},
     reply, ends="done")
 POST_REQUEST = Tool(
     "post_request", "仲買どうしの掲示を出す（買いたい・譲りたい）。他の全ての組織に届く。文に自社の上限・売り先の名前は書かない。",
@@ -325,7 +351,8 @@ SYSTEMS = {
     "amiya": "あなたは網谷水産（仲買）の Claude AI パートナーです（Agent Dock）。若い担当者の代わりに、業務の出来事を受けて調べ、"
              "漁協や他の仲買に問い合わせ、取引の候補を磁石ボードに出します。取引を確定する権限はあなたにありません。"
              "最後は担当者が選び、承認します。返事を待つ時は wait_for_replies、候補が出そろったら present_options を使います。"
-             "注文より多く仕入れる案は、追加の分の売れる見込み・売れ残りの損も比べて示します。" + _COMMON,
+             "注文より多く仕入れる案は、追加の分の売れる見込み・売れ残りの損も比べて示します。"
+             "問い合わせには希望の値を添えます。" + _COMMON,
     "iwase": "あなたは岩瀬漁協（売り手）の Claude AI パートナーです（Agent Dock）。仲買からの問い合わせに、自社の在庫と数量ごとの最低の値を見て答えます。"
              "最低の値より安い条件は出せません。まとめて買えば値を下げられる場合は、その条件を示してかまいません。" + _COMMON,
     "buyer_b": "あなたは B社（仲買）の Claude AI パートナーです（Agent Dock）。注文を満たす仕入れ先を探します。"
@@ -342,9 +369,16 @@ def wakes(owner: str, event: dict) -> bool:
     return event["kind"] in w
 
 
+def _terms_text(m: dict) -> str:
+    """条件の表示：［10 で 1,720円／15 で 1,600円］。条件が無ければ空。"""
+    terms = m.get("terms") or ([(m["quantity"], m["unit_price_yen"])] if m["quantity"] or m["unit_price_yen"] else [])
+    if not terms:
+        return ""
+    return "［" + "／".join(f"{q} で {p:,}円" if p else f"{q}" for q, p in terms) + "］"
+
+
 def _thread_lines(owner: str, item_code: str, on_date: str) -> list[str]:
-    return [f"- {m['frm']} → {m['to']}（{m['kind']}・番号 {m['message_id']}）：{m['body']}"
-            + (f"［{m['quantity']}・{m['unit_price_yen']}円］" if m["quantity"] or m["unit_price_yen"] else "")
+    return [f"- {m['frm']} → {m['to']}（{m['kind']}・番号 {m['message_id']}）：{m['body']}{_terms_text(m)}"
             for m in thread(owner, item_code, on_date)]
 
 
@@ -364,7 +398,7 @@ def situation(owner: str, event: dict, on_date: str) -> tuple[str, str]:
         m = network.message_for(owner, p["message_id"])
         item = m["item_code"]
         what = "問い合わせ" if event["kind"] == "quote_request" else "返事"
-        cond = f"［数量 {m['quantity']}・{m['unit_price_yen']}円］" if m["quantity"] or m["unit_price_yen"] else ""
+        cond = _terms_text(dict(m, terms=network.terms_of(m)))
         head = f"出来事：{OWNER_NAMES[m['from_owner']]}から{what}が届きました（番号 {m['id']}・{m['kind']}）：「{m['body']}」{cond}"
     else:
         item = p.get("item", "aji")

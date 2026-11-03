@@ -57,17 +57,17 @@ B = [
     tools(("post_request", dict(side="buy", item_code="aji", quantity=5, min_qty=5, unit_price_yen=1650,
                                 message="アジを 5kg 買いたいです。今朝のうちに受け渡しできれば助かります。"))),
     # 起動2（網谷水産の問い合わせ）：受ける
-    tools(("reply", dict(in_reply_to=5, kind="offer", quantity=5, unit_price_yen=1650, message="ありがとうございます。5kg を 1kg 1,650円で、8:00 にお願いします。"))),
+    tools(("reply", dict(in_reply_to=5, kind="offer", terms=[dict(quantity=5, unit_price_yen=1650)], message="ありがとうございます。5kg を 1kg 1,650円で、8:00 にお願いします。"))),
 ]
 IWASE = [
     tools(("read_stock", A)),
-    tools(("reply", dict(in_reply_to=1, kind="offer", quantity=10, unit_price_yen=1400, message="10kg を 1,400円でお出しします。"))),   # 決まりが止める
-    tools(("reply", dict(in_reply_to=1, kind="offer", quantity=15, unit_price_yen=1500,
-                         message="その値では出せません。15kg まとめてなら 1kg 1,500円でお出しできます。"))),
+    tools(("reply", dict(in_reply_to=1, kind="offer", terms=[dict(quantity=10, unit_price_yen=1400)], message="10kg を 1,400円でお出しします。"))),   # 決まりが止める
+    tools(("reply", dict(in_reply_to=1, kind="offer", terms=[dict(quantity=10, unit_price_yen=1720), dict(quantity=15, unit_price_yen=1500)],
+                         message="その値では出せません。10kg なら 1kg 1,720円、15kg まとめてなら 1kg 1,500円でお出しできます。"))),
 ]
 C = [
-    tools(("reply", dict(in_reply_to=2, kind="offer", quantity=5, unit_price_yen=1600, message="5kg でお分けします。"))),       # 決まりが止める
-    tools(("reply", dict(in_reply_to=2, kind="decline", quantity=None, unit_price_yen=None,
+    tools(("reply", dict(in_reply_to=2, kind="offer", terms=[dict(quantity=5, unit_price_yen=1600)], message="5kg でお分けします。"))),       # 決まりが止める
+    tools(("reply", dict(in_reply_to=2, kind="decline", terms=[],
                          message="申し訳ありません。8kg まとめてでのみお譲りしています。"))),
 ]
 
@@ -134,6 +134,7 @@ class SceneTest(unittest.TestCase):
         prompt, item = agents.situation("amiya", ev, D)
         self.assertEqual(item, "aji")
         self.assertIn("15kg まとめてなら", prompt)
+        self.assertIn("［10 で 1,720円／15 で 1,500円］", prompt)                # 条件の2つの組が Claude に渡る
         self.assertIn("今日のこの品目のやり取り", prompt)
 
 
@@ -235,3 +236,62 @@ class LoopSafetyTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TermsTest(unittest.TestCase):
+    """返事の条件を2つ以上示す：条件ごとの決まりの検査・仮押さえは最も多い数量の1件・送れなければ押さえない。"""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        os.environ["AGENTDOCK_DATA"] = self.tmp.name
+        self.assertEqual(build.main([]), 0)
+        from agentdock import network
+        self.network = network
+        self.q = network.send("amiya", "iwase", "inquiry", "aji", "アジを 10kg、1kg 1,400円でいかがでしょうか。", D, 10, 1400)
+        c = db.connect("iwase")
+        try:
+            self.ev = events.pending(c, ["quote_request"])[0]
+        finally:
+            c.close()
+
+    def tearDown(self):
+        os.environ.pop("AGENTDOCK_DATA", None)
+        self.tmp.cleanup()
+
+    def iwase(self, sql):
+        c = db.connect("iwase")
+        try:
+            return [tuple(r) for r in c.execute(sql)]
+        finally:
+            c.close()
+
+    def answer(self, *replies):
+        return agents.run_event(MockClient(list(replies) + [tools(("do_nothing", dict(reason="試験")))]), "iwase", self.ev, D)
+
+    def test_one_term_below_floor_blocks_the_whole_reply(self):
+        self.answer(tools(("reply", dict(in_reply_to=self.q, kind="offer", message="10kg 1,720円・15kg 1,450円でどうぞ。",
+                                         terms=[dict(quantity=10, unit_price_yen=1720), dict(quantity=15, unit_price_yen=1450)]))))
+        self.assertEqual(self.iwase("SELECT count(*) FROM stock_hold"), [(0,)])
+        self.assertEqual([m["kind"] for m in agents.thread("amiya", "aji", D)], ["inquiry"])   # 返事は送られていない
+
+    def test_blocked_text_leaves_no_hold(self):
+        self.answer(tools(("reply", dict(in_reply_to=self.q, kind="offer", message="最低でも 1,700円です。15kg なら 1,600円。",
+                                         terms=[dict(quantity=15, unit_price_yen=1600)]))))
+        self.assertEqual(self.iwase("SELECT count(*) FROM stock_hold"), [(0,)])        # 開示の検査で止まった文は押さえを作らない
+
+    def test_two_terms_travel_and_hold_the_larger(self):
+        self.answer(tools(("reply", dict(in_reply_to=self.q, kind="offer", message="10kg なら 1,720円、15kg まとめてなら 1,600円です。",
+                                         terms=[dict(quantity=10, unit_price_yen=1720), dict(quantity=15, unit_price_yen=1600)]))))
+        self.assertEqual(self.iwase("SELECT buyer, quantity, unit_price_yen, status FROM stock_hold"), [("amiya", 15, 1600, "held")])
+        reply = agents.thread("amiya", "aji", D)[-1]
+        self.assertEqual(reply["terms"], [(10, 1720), (15, 1600)])
+
+    def test_decline_has_no_terms(self):
+        r = self.answer(tools(("reply", dict(in_reply_to=self.q, kind="decline", message="お断りします。",
+                                             terms=[dict(quantity=10, unit_price_yen=1720)]))),
+                        tools(("reply", dict(in_reply_to=self.q, kind="decline", message="今朝は見送らせてください。", terms=[]))))
+        self.assertEqual(r["outcome"], "done")
+        self.assertEqual(agents.thread("amiya", "aji", D)[-1]["kind"], "decline")
+
+    def test_amiya_is_told_to_add_a_price(self):
+        self.assertIn("問い合わせには希望の値を添えます。", agents.SYSTEMS["amiya"])
