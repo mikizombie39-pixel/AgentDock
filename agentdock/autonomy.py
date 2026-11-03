@@ -18,6 +18,8 @@ from agentdock.companion import MODEL, _get
 MAX_CALLS = 20
 EFFORT = "medium"
 OUTCOMES = ("presented", "waiting", "nothing", "done", "error", "max_turns", "refusal")
+# 起動の種類（agent_run：mock・real）と、費用の記録の種類（api_usage：mock・scene_check・full_run・recording）の対応
+USAGE_KIND = {"mock": "mock", "real": "full_run"}
 
 
 class ToolError(Exception):
@@ -77,7 +79,7 @@ def run(client, owner: str, event_id: int, role: str, tools: list[Tool], system:
             while calls < max_calls:
                 resp = client.create(system=system, tools=schemas, messages=messages)
                 calls += 1
-                runlog.record_usage(con, MODEL, resp.usage, run_kind)
+                runlog.record_usage(con, MODEL, resp.usage, USAGE_KIND[run_kind])
                 if resp.stop_reason == "refusal":
                     ctx.outcome = "refusal"
                     break

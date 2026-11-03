@@ -180,6 +180,27 @@ class LoopSafetyTest(unittest.TestCase):
         finally:
             c.close()
 
+    def test_scene_stops_at_the_first_error(self):
+        class Broken:
+            calls = 0
+
+            def create(self, **kw):
+                Broken.calls += 1
+                raise ConnectionError("network down")
+        log = scene.run({o: Broken() for o in db.OWNER_CODES})
+        self.assertEqual([x["outcome"] for x in log], ["error"])
+        self.assertEqual(Broken.calls, 1)                                    # 同じ出来事を呼び直さない
+
+    def test_real_usage_is_recorded(self):
+        r = agents.run_event(MockClient([tools(("do_nothing", dict(reason="試験")))]), "amiya", self.ev, D, run_kind="real")
+        self.assertEqual(r["outcome"], "nothing")
+        c = db.connect("amiya")
+        try:
+            self.assertEqual(c.execute("SELECT run_kind FROM api_usage").fetchall()[0][0], "full_run")
+            self.assertEqual(c.execute("SELECT run_kind FROM agent_run").fetchall()[0][0], "real")
+        finally:
+            c.close()
+
     def test_second_run_cannot_take_the_same_event(self):
         agents.run_event(MockClient([tools(("do_nothing", dict(reason="試験")))]), "amiya", self.ev, D)
         r = agents.run_event(MockClient([]), "amiya", self.ev, D)

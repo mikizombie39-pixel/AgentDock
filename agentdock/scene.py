@@ -59,4 +59,76 @@ def run(clients: dict, on_date: str = sc.DEMO_DATE, run_kind: str = "mock",
         r = agents.run_event(clients[owner], owner, ev, on_date, run_kind=run_kind, max_calls=min(agents.autonomy.MAX_CALLS, left))
         total += r["calls"]
         log.append(dict(owner=owner, event_kind=ev["kind"], **r))
+        if r["outcome"] == "error":   # 失敗した出来事は待ちに戻るので、ここで止める（同じ出来事を繰り返し呼ばない）
+            break
     return log
+
+
+# ── 撮影の1回（take）：種を作り直した専用の置き場で、本物の Claude で通す ──
+#   python -m agentdock.scene --real            # 本物の Claude（claude-opus-5-5・effort medium）
+#   python -m agentdock.scene                   # 模擬の Claude は台本が要るので、この入口では本物だけを扱う
+# 置き場は AgentDock-local\takes\<日時>（OneDrive の外・本番の data とは別）。記録は take.json に書く
+
+TAKES = r"C:\Users\mikiz\AgentDock-local\takes"
+
+
+def _dump(folder) -> dict:
+    out = {}
+    for owner in db.OWNER_CODES:
+        c = db.connect(owner)
+        try:
+            out[owner] = dict(
+                runs=[dict(r) for r in c.execute("SELECT * FROM agent_run ORDER BY id")],
+                steps=[dict(r) for r in c.execute("SELECT * FROM agent_step ORDER BY run_id, seq")],
+                usage=[dict(r) for r in c.execute("SELECT * FROM api_usage ORDER BY id")])
+        finally:
+            c.close()
+    m = db.connect(db.MARKET)
+    try:
+        out["market"] = dict(messages=[dict(r) for r in m.execute("SELECT * FROM network_message ORDER BY id")],
+                             requests=[dict(r) for r in m.execute("SELECT * FROM deal_request ORDER BY id")])
+    finally:
+        m.close()
+    return out
+
+
+def main(argv=None) -> int:
+    import argparse
+    import datetime
+    import json
+    import os
+    from pathlib import Path
+
+    from agentdock import companion, runlog
+    from agentdock.seed import build
+
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--real", action="store_true")
+    a = ap.parse_args(argv)
+    if not a.real:
+        print("use --real (the mock run needs a script; see tests/test_scene.py)")
+        return 2
+    folder = Path(TAKES) / datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+    folder.mkdir(parents=True)
+    os.environ["AGENTDOCK_DATA"] = str(folder)
+    if build.main([]) != 0:
+        return 2
+    started = start()
+    clients = {o: companion.ClaudeClient(effort=agents.autonomy.EFFORT) for o in db.OWNER_CODES}
+    log = run(clients, run_kind="real")
+    data = _dump(folder)
+    data["log"] = log
+    data["started"] = started
+    spent = runlog.spent_micro_usd()
+    data["spent_usd"] = spent / 1_000_000
+    (folder / "take.json").write_text(json.dumps(data, ensure_ascii=False, indent=1, default=str), encoding="utf-8")
+    for x in log:
+        print(f"{x['owner']:8} {x.get('event_kind', ''):15} {x.get('outcome')!s:10} calls={x.get('calls')} steps={x.get('steps')}  {(x.get('summary') or '')[:80]}")
+    print(f"take: {folder}")
+    print(f"spent: {spent / 1_000_000:.3f} USD, calls: {sum(x.get('calls') or 0 for x in log)}")
+    return 0
+
+
+if __name__ == "__main__":
+    import sys
+    sys.exit(main())
