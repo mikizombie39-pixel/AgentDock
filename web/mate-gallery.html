@@ -1,0 +1,69 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<title>Agent Dock — 仲間の態度の見本帳</title>
+<link rel="stylesheet" href="mate.css">
+<style>
+  .gal { display: grid; grid-template-columns: repeat(3, 1fr); gap: 18px; margin-top: 18px; }
+  .cell { background: var(--paper); border-radius: 18px; padding: 10px 14px 16px; text-align: center; }
+  .cell .mate-svg { width: 200px; height: 200px; }
+  .cell b { display: block; font-size: 19px; }
+  .cell small { display: block; color: var(--mute); font-size: 13px; margin-top: 4px; line-height: 1.5; }
+  .cell .say { font-size: 14px; margin-top: 6px; color: var(--ink); }
+  .marks { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 18px; align-items: center; font-size: 13px; color: var(--mute); }
+  .marks .execmark { position: static; }
+  #morph { display: none; text-align: center; margin-top: 20px; }
+  #morph .mate-svg { width: 300px; height: 300px; }
+  #morph b { display: block; font-size: 24px; margin-top: 6px; }
+</style>
+</head>
+<body>
+<div class="wrap"><div class="card">
+  <div class="brand"><b>Agent Dock</b><small>仲間の態度の見本帳（同じ姿のまま、輪郭・姿勢・目元・眉・口・腕・動きで変わる）</small></div>
+  <div class="gal" id="gal"></div>
+  <div class="marks" id="marks"><span>実行の状態の印（態度とは別）：</span></div>
+  <div id="morph"><div id="mfig"></div><b id="mlabel"></b></div>
+</div></div>
+<script src="dock-icons.js"></script>
+<script src="mate-figure.js"></script>
+<script>
+(function () {
+  const S = [
+    ["calm", "基本の姿", "ふだん", "ゆっくり呼吸する・時々まばたき", "見張っています。"],
+    ["bold", "強気", "別の仕入先がある", "前のめり・胸を張る・小さく弾む・目が開いて眉が上がる", "この条件で押してみます。"],
+    ["struggle", "苦戦", "選択肢が少なく、上限を超える", "肩が落ちる・眉が寄る・汗のしずく・重くゆっくり揺れる", "代わりの魚も探しましょう。"],
+    ["careful", "慎重", "注文や条件が変わった", "首をかしげる・目を細める・手を前に出して「待って」・小刻みに見回す", "待ってください。確認し直します。"],
+    ["sorry", "残念", "交渉が成立しなかった", "うつむいて沈む → 間を置く → 顔を上げて向き直る", "難しかったです。別の浜を当たります。"],
+    ["relief", "安堵", "必要な数量と条件がそろった", "ふっと息を吐く・柔らかく弾む・目を細めて笑う", "そろいました。最後の確認をお願いします。"] ];
+  const ic = (n) => `<span class="ic">${window.DOCK_ICONS[n]}</span>`;
+  const gal = document.getElementById("gal");
+  const figs = [];
+  for (const [k, label, rule, how, say] of S) {
+    const c = document.createElement("div");
+    c.className = "cell";
+    c.innerHTML = `<div class="f"></div><b>${label}</b><small>${rule}</small><div class="say">「${say}」</div><small>${how}</small>`;
+    gal.appendChild(c);
+    const f = window.MateFigure.create(c.querySelector(".f"));
+    figs.push([f, k]);
+  }
+  setTimeout(() => figs.forEach(([f, k]) => f.set(k === "calm" ? null : k)), 300);
+  // 残念は向き直った後、もう一度うつむく所から見せる（見本帳だけ）
+  setInterval(() => { const [f] = figs[4]; f.set(null); setTimeout(() => f.set("sorry"), 60); }, 7000);
+  const M = [ ["running", "loader", "実行中"], ["your_turn", "hand", "あなたの判断待ち"], ["president", "hourglass", "社長確認中"], ["stopped", "octagon-x", "停止"],
+    ["registered", "circle-check", "登録済み"], ["idle", "eye", "見張り中"], ["unconnected", "octagon-pause", "未接続"] ];
+  for (const [k, i, l] of M) document.getElementById("marks").insertAdjacentHTML("beforeend", `<span class="execmark ${k}">${ic(i)}${l}</span>`);
+  window.__mate = () => ({ gallery: true });
+  window.__gallery = {
+    morph() {   // 1つの姿が態度を順に切り替える（形が滑らかに変わる過程）
+      gal.style.display = "none"; document.getElementById("marks").style.display = "none"; document.getElementById("morph").style.display = "block";
+      const f = window.MateFigure.create(document.getElementById("mfig"));
+      const seq = [ [null, "基本の姿", 1600], ["bold", "強気", 2000], ["careful", "慎重", 2000], ["struggle", "苦戦", 2000], ["sorry", "残念", 4200], ["relief", "安堵", 2200] ];
+      let t = 0;
+      for (const [s, l, d] of seq) { setTimeout(() => { f.set(s); document.getElementById("mlabel").textContent = l; }, t); t += d; }
+    },
+  };
+})();
+</script>
+</body>
+</html>

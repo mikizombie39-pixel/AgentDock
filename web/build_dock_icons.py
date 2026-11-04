@@ -12,7 +12,10 @@ from pathlib import Path
 SRC = Path(sys.argv[1] if len(sys.argv) > 1 else "C:/Users/mikiz/AgentDock-local/tmp/lucide/package")
 HERE = Path(__file__).parent
 NAMES = ["fish", "ship", "bot", "user-round", "handshake", "receipt-japanese-yen", "hourglass", "shopping-cart", "hand-platter",
-         "stamp", "file-search", "notebook-text", "package", "send", "inbox", "clock", "circle-alert", "play", "pause", "rotate-ccw", "radio", "x"]
+         "stamp", "file-search", "notebook-text", "package", "send", "inbox", "clock", "circle-alert", "play", "pause", "rotate-ccw", "radio", "x",
+         # 仲間との対話の画面（mate.html）
+         "message-circle", "arrow-up-right", "shield-check", "hand", "circle-check", "octagon-x", "loader", "eye", "mail", "list-checks",
+         "clipboard-list", "chevron-down", "store", "utensils", "octagon-pause", "circle-help", "arrow-right"]
 
 
 def svg(name: str) -> str:

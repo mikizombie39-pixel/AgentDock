@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Agent Dock — あなたと働く、AIの仲間</title>
+<link rel="stylesheet" href="mate.css">
+</head>
+<body>
+<div class="wrap" id="wrap">
+  <div class="card" id="card">
+    <div class="brand"><b>Agent Dock</b><small id="tagline">水産業に、新しい仲間を。</small><small class="mock">模擬のデータ</small>
+      <nav><button id="flowbtn" hidden><span class="ic" data-ic="list-checks"></span>今日の仕事の流れ</button>
+        <a id="evlink" href="dock.html?view=evidence"><span class="ic" data-ic="file-search"></span>仕組みと根拠を見る</a></nav></div>
+    <div class="rolebar" id="rolebar" hidden></div>
+
+    <!-- 朝：今日の仕事の流れ → 一緒に確認する → 任せる（SAL 見本 2枚目の構図） -->
+    <section id="morning" hidden>
+      <div class="who"><span class="ic" data-ic="user-round"></span><div><small>あなたとAIの、今朝の仕事</small><h1>お客さんの注文を、そろえる</h1></div></div>
+      <hr class="rule">
+      <div class="flow" id="flowline"></div>
+      <div class="mcols">
+        <aside class="side" id="mside"></aside>
+        <main id="mmain"></main>
+      </div>
+      <div class="youcan" id="youcan" hidden><span class="ic" data-ic="clipboard-list"></span><div><b id="youcan-b"></b><span id="youcan-s"></span></div></div>
+    </section>
+
+    <!-- 仕事の最中：仲間・何についての態度か・短い語りかけ・次の行動（SAL 見本 1枚目の構図） -->
+    <section id="talk" hidden>
+      <div class="subject"><span class="ic" data-ic="fish" id="subjic"></span><span id="subject"></span></div>
+      <div class="talk">
+        <button class="matebox" id="matebox" aria-label="仲間に触れて、理由を聞く">
+          <div id="figure"></div>
+          <div class="execmark" id="execmark"></div>
+          <div class="touch"><span class="ic" data-ic="message-circle"></span>私に触れて、理由を聞く</div>
+        </button>
+        <div class="whyslot" id="whyslot"></div>
+        <div>
+          <div class="tag" id="tag"></div>
+          <div class="head" id="headline"></div>
+          <div class="subs" id="subs"></div>
+          <div id="stateline"></div>
+          <div class="net" id="net"></div>
+        </div>
+      </div>
+      <hr class="divider">
+      <div class="bottom">
+        <div class="ask" id="ask"></div>
+        <div class="acts" id="acts"></div>
+      </div>
+      <div id="receipt"></div>
+      <div class="taken" id="taken"></div>
+      <div class="others" id="others"></div>
+      <button class="opbtn" id="opbtn" hidden></button>
+    </section>
+    <div class="pop" id="pop" hidden></div>
+  </div>
+</div>
+<script src="dock-icons.js"></script>
+<script src="mate-figure.js"></script>
+<script src="mate.js"></script>
+</body>
+</html>
