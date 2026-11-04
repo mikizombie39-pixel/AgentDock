@@ -438,5 +438,47 @@ class ApiTest(Base):
         self.assertEqual(self.call("/api/start", dict(item="nori"))[0], 400)
 
 
+class ToolInputTest(Base):
+    """本物の Claude の文法の上限（2026-11-04 実測：案の中に配列が2つ増え、strict の道具一式が 400 で断られた）。"""
+
+    def test_present_options_is_not_strict_so_the_buyer_tools_compile(self):
+        self.assertFalse(agents.PRESENT.strict)
+
+    def test_a_missing_field_in_a_non_strict_tool_goes_back_to_the_ai(self):
+        # strict を外した道具は、必須の項目が欠けても起動を止めず、理由を返して選び直してもらう
+        c = db.connect("amiya")
+        try:
+            _, ev_id = events.order_received(c, "料亭", "buri_xl", 1, 24000, D)
+            ev = events.get(c, ev_id)
+        finally:
+            c.close()
+        bad = dict(item_code="buri_xl", summary="漁協の返事を確かめました。", headline="ブリが足りません", ask_human="この案で進めますか",
+                   cards=[], recommended="E")   # options が無い
+        good = dict(bad, options=[dict(code="E", label="見送る", reason="条件が合わない", risk="注文を落とす", buy_term_id=None, allocations=[])])
+        r = agents.run_event(MockClient([tools(("present_options", bad)), tools(("present_options", good))]), "amiya", ev, D)
+        self.assertEqual(r["outcome"], "presented")
+        steps = self.last_steps("amiya")
+        self.assertEqual([(t, e) for t, e, _ in steps], [("present_options", 1), ("present_options", 0)])
+        self.assertIn("options", steps[0][2])
+
+    def test_a_wrong_type_in_a_non_strict_tool_goes_back_to_the_ai(self):
+        # 案の名前に数が入る（.strip() で AttributeError）時も、起動を止めずに選び直してもらう
+        c = db.connect("amiya")
+        try:
+            _, ev_id = events.order_received(c, "料亭", "buri_xl", 1, 24000, D)
+            ev = events.get(c, ev_id)
+        finally:
+            c.close()
+        opt = dict(code="E", label="見送る", reason="条件が合わない", risk="注文を落とす", buy_term_id=None, allocations=[])
+        good = dict(item_code="buri_xl", summary="漁協の返事を確かめました。", headline="ブリが足りません", ask_human="この案で進めますか",
+                    cards=[], recommended="E", options=[opt])
+        bad = dict(good, options=[dict(opt, short_label=6)])
+        r = agents.run_event(MockClient([tools(("present_options", bad)), tools(("present_options", good))]), "amiya", ev, D)
+        self.assertEqual(r["outcome"], "presented")
+        steps = self.last_steps("amiya")
+        self.assertEqual([(t, e) for t, e, _ in steps], [("present_options", 1), ("present_options", 0)])
+        self.assertIn("AttributeError", steps[0][2])
+
+
 if __name__ == "__main__":
     unittest.main()

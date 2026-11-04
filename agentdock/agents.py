@@ -680,7 +680,7 @@ PRESENT = Tool(
      "options": {"type": "array", "items": _OPTION}, "recommended": {"type": "string", "enum": ["A", "B", "C", "D", "E"]},
      "alternative": _CODE_OR_NULL, "ask_human": STR, "actions": _ACTIONS,
      "suggested_questions": {"type": "array", "items": STR}},
-    present_options, ends="presented")
+    present_options, ends="presented", strict=False)   # 案の中の配列が増え、strict のままでは道具一式の文法が大きすぎて断られた（2026-11-04 実測）
 ANSWER = Tool(
     "answer_staff",
     "担当者の質問に答え、磁石ボードを組み直す。答えの前に、必要な道具（read_thread・compare_options・read_vault など）で業務の状態を確かめる。"

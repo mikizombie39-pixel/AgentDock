@@ -124,6 +124,11 @@ def run(client, owner: str, event_id: int, role: str, tools: list[Tool], system:
                                 ctx.outcome = tool.ends
                         except ToolError as e:
                             text, err = f"実行しませんでした：{e}", True
+                        except (KeyError, TypeError, AttributeError) as e:   # strict を外した道具は、API が入力の形を守らない。欠けた項目・型の違いは理由を返して選び直してもらう
+                            if tool.strict:
+                                raise
+                            text, err = (f"実行しませんでした：入力に欠けている項目か、形の違う項目があります（{type(e).__name__}: {e}）。"
+                                         "道具の説明の項目をそろえて、もう一度呼んでください。"), True
                     _record_step(con, run_id, seq, name, inp, text, err)
                     r = {"type": "tool_result", "tool_use_id": _get(b, "id"), "content": text}
                     if err:
