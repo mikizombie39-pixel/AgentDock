@@ -98,7 +98,10 @@ hr.rule { border: 0; border-top: 1px solid var(--line); margin: 0 0 18px; }
 .subject { display: flex; gap: 8px; align-items: center; font-size: 15px; color: var(--mute); margin: 0 0 18px; }
 .subject .ic { color: var(--slate); }
 .talk { display: grid; grid-template-columns: 230px 1fr; gap: 6px 36px; align-items: center; min-height: 250px; position: relative; }
-.whyslot { position: absolute; left: 0; top: 100%; width: 230px; text-align: center; margin-top: 8px; }
+/* 「なぜ？」は仲間の姿のすぐ下の段（枠の中に収まるので、宙づりにしない）。右の列は2段ぶんの高さを使う */
+.talk > .matebox { grid-column: 1; grid-row: 1; }
+.whyslot { grid-column: 1; grid-row: 2; width: 230px; text-align: center; align-self: start; }
+.talk > div:last-child { grid-column: 2; grid-row: 1 / span 2; }
 .matebox { position: relative; text-align: center; cursor: pointer; border: 0; background: transparent; padding: 0; }
 .matebox .mate-svg { width: 210px; height: 210px; overflow: visible; }
 .touch { font-size: 13px; color: var(--mute); display: inline-flex; gap: 6px; align-items: center; margin-top: -4px; }
@@ -131,6 +134,7 @@ hr.rule { border: 0; border-top: 1px solid var(--line); margin: 0 0 18px; }
 
 /* the other organisations and letters between them (the AI at work) */
 .net { display: flex; gap: 10px; align-items: center; margin: 12px 0 0; min-height: 34px; }
+.net:empty { display: none; }   /* 照会先の無い仕事（シロエビの入札など）では行を畳み、枠を詰める */
 .net .me { font-size: 12px; color: var(--mute); }
 .org { display: inline-flex; gap: 6px; align-items: center; font-size: 13px; padding: 5px 12px; border-radius: 16px; border: 1px solid var(--line); background: var(--paper); position: relative; }
 .org .ic { color: var(--slate); width: 16px; height: 16px; }
@@ -421,7 +425,7 @@ hr.rule { border: 0; border-top: 1px solid var(--line); margin: 0 0 18px; }
 /* ── 今直面している問題の枠（2026-11-04 デイブ）：角の丸い枠で囲み、光が枠を一周し続ける。光の色は実行の状態
    （判断待ち＝暖色・実行中＝青緑・社長確認中＝灰青）。停止と未接続は赤の枠で光を止める。状況が変わると一度ふくらんで光る ── */
 @property --ang { syntax: "<angle>"; inherits: false; initial-value: 0deg; }
-.focus { --fc: var(--teal); position: relative; border: 2.5px solid #6B6F6A; border-radius: 34px; padding: 16px 24px 58px; margin: 22px -12px 0; }
+.focus { --fc: var(--teal); position: relative; border: 2.5px solid #6B6F6A; border-radius: 34px; padding: 16px 24px 18px; margin: 22px -12px 0; }
 .focus::before { content: ""; position: absolute; inset: -4px; border-radius: 36px; padding: 5px; pointer-events: none;
   background: conic-gradient(from var(--ang), transparent 0deg 230deg, var(--fc) 290deg, #FFFDF5 322deg, var(--fc) 340deg, transparent 360deg);
   -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0); -webkit-mask-composite: xor; mask-composite: exclude;
