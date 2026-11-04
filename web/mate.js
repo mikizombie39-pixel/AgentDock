@@ -307,14 +307,62 @@
       ask = V.ask ? `<b>${esc(V.ask.text)}</b>` : "";
       if (V.ask && V.ask.origin === "ai") ask = `<b>どれで進めるか、選んでください。</b><small class="ai">${esc(V.ask.text)}</small>`;
       if (V.exec === "your_turn" || V.exec === "running") ask += V.exec === "running" ? `<small>判断が要る時は、私から声をかけます。</small>` : "";
-      if (V.exec === "your_turn" && (V.actions || []).some((a) => String(a.id).startsWith("opt")))
-        ask += `<small class="actnote">案を押すと、その配分で登録します（買い付けを確定）。押す前に中身を見る時は［なぜ？］を開いてください。</small>`;
+      const decideMode = V.exec === "your_turn" && (V.actions || []).some((a) => String(a.id).startsWith("opt"));
+      $("acts").closest(".bottom").classList.toggle("decidemode", decideMode);
+      if (decideMode) { ask = ""; acts = decideHTML(V.actions); } else
       acts = (V.actions || []).map((a) => `<button class="dbtn ${a.president ? "pres" : a.kind === "primary" ? "" : "alt"}" data-act="${esc(a.id)}" ${a.disabled ? "disabled" : ""} title="${esc(a.note || "")}">
         ${icon(a.president ? "user-round" : a.kind === "primary" ? "arrow-up-right" : "arrow-right")}<span>${esc(a.label)}${a.note ? `<small>${esc(a.note)}</small>` : ""}</span></button>`).join("");
     }
     setHTML("whyslot", `<button class="whybtn" data-why="1">${icon("circle-help")}${V.exec === "your_turn" ? "なぜ？" : "条件を見る"}</button>`);
     setHTML("ask", ask);
     setHTML("acts", acts);
+  }
+
+  // ═════ 判断のブロック（SAL 2026-11-04 §2・§3／デイブ「関連性・重要度・操作の方法を分かりやすく、矢印を動かす」）═════
+  // ① 案を選ぶ（画面の下見だけ・サーバーには書かない）→ ② 配分を確かめる（右に店ごとの確保と不足）→ ③ 承認のボタンで初めて登録（既存の処理）。
+  // AI のおすすめは★の札で示し、選択中（丸の印と枠）とは別の形にする。社長の確認が要る案は、承認のボタンが「社長に確かめる」になる
+  let SEL = null;
+  function decideHTML(acts) {
+    const u = esc((V.item && V.item.unit) || "");
+    const opts = acts.filter((a) => String(a.id).startsWith("opt"));
+    if (SEL && !opts.some((a) => a.id === SEL && !a.disabled)) SEL = null;
+    const sel = opts.find((a) => a.id === SEL);
+    const rec = opts.find((a) => a.recommended && !a.disabled);
+    const at = sel ? 2 : 1;
+    const step = (n, t, s) => `<li class="${n < at ? "done" : n === at ? "on" : ""}"><b>${["", "①", "②", "③"][n]} ${esc(t)}</b><small>${esc(s)}</small></li>`;
+    const chev = `<span class="chev" aria-hidden="true"><i>›</i><i>›</i><i>›</i></span>`;
+    const card = (a) => {
+      const short = (a.alloc || []).filter((x) => x.short > 0);
+      const cls = ["opt", a.choice, a.recommended && !a.disabled ? "rec" : "", a.id === SEL ? "sel" : "", a.disabled ? "off" : ""].filter(Boolean).join(" ");
+      return `<div class="optrow">${!sel && rec && a.id === rec.id ? `<span class="pointer" aria-hidden="true">${icon("arrow-right")}</span>` : `<span class="pointer"></span>`}
+        <button class="${cls}" data-pick="${esc(a.id)}" aria-pressed="${a.id === SEL}" ${a.disabled ? "disabled" : ""}>
+        <span class="radio" aria-hidden="true"></span>
+        <span class="ot"><b>${esc(a.title || a.label)}</b>
+          <span class="badges">${a.recommended && !a.disabled ? `<em class="recb">★ AI のおすすめ</em>` : ""}${a.president ? `<em class="presb">${icon("user-round")}社長の確認が要る</em>` : ""}</span>
+          <span class="os ${a.disabled ? "bad" : short.length ? "short" : "ok"}">${a.disabled ? esc(a.note) : a.choice === "reject" ? "足りない：" + short.map((x) => `${esc(x.shop)} ${x.short}${u}`).join("・")
+            : short.length ? "足りない：" + short.map((x) => `${esc(x.shop)} ${x.short}${u}`).join("・") : "全部の注文がそろう"}</span></span></button>
+        ${a.id === SEL ? `<span class="tab" aria-hidden="true">${chev}</span>` : ""}</div>`;
+    };
+    let pv;
+    if (!sel) {
+      pv = `<div class="pv0"><span class="back">${icon("arrow-right")}</span><div><b>左の案を選ぶと、ここに配分を下見します。</b><small>選んでも、まだ何も登録しません。</small></div></div>`;
+    } else {
+      const bars = (sel.alloc || []).map((x) => `<div class="bar"><span class="nm">${esc(x.shop)}</span>
+        <span class="track"><i style="width:${x.ordered ? Math.round((x.secured / x.ordered) * 100) : 0}%"></i></span>
+        <span class="q">${x.secured} / ${x.ordered}${u}</span><span class="st ${x.short ? "short" : "ok"}">${x.short ? `${x.short}${u} 足りない` : "確保"}</span></div>`).join("");
+      pv = `<div class="pvh"><small>② 下見（まだ登録していません）</small><b>${esc(sel.title)}</b></div>
+        ${(sel.buys || []).length ? `<div class="pvs">${icon("ship")}仕入れ：${sel.buys.map((b) => `${esc(b.seller)} ${b.quantity}${u}`).join("・")}</div>` : ""}
+        <div class="bars">${bars}</div>
+        <div class="eff">${icon(sel.choice === "president" ? "user-round" : sel.choice === "reject" ? "x" : "stamp")}押すと：${esc(sel.effect)}</div>
+        <div class="go"><span class="down" aria-hidden="true">${icon("arrow-right")}</span>
+          <button class="dbtn ${sel.choice === "president" ? "pres" : sel.choice === "reject" ? "alt" : ""}" data-act="${esc(sel.id)}">${icon(sel.choice === "president" ? "user-round" : sel.choice === "reject" ? "x" : "stamp")}<span>③ ${esc(sel.confirm)}</span></button>
+          <button class="linkbtn" data-unpick="1">選び直す</button></div>`;
+    }
+    return `<div class="decide" data-at="${at}">
+      <div class="dk">${icon("hand")}あなたに決めてほしいこと</div>
+      <div class="dq">${sel ? "右の下見を確かめて、③ のボタンを押してください。押すまで、何も登録しません。" : `どの分け方で買うか、選んでください。${rec ? `おすすめは「${esc(rec.title || rec.label)}」です。` : ""}`}</div>
+      <ol class="dsteps">${step(1, "案を選ぶ", "まだ何も登録しません")}${chev}${step(2, "配分を確かめる", "右に下見が出ます")}${chev}${step(3, "承認する", "ここで初めて登録します")}</ol>
+      <div class="dgrid"><div class="opts">${opts.map(card).join("")}</div><div class="pv ${sel ? "on" : ""}">${pv}</div></div></div>`;
   }
 
   function drawReceipt() {
@@ -415,7 +463,7 @@
     const done = () => {
       pop.hidden = true; popFor = null;
       // the eyes go back to the decision that was open
-      const b = document.querySelector("#acts .dbtn:not([disabled])") || document.querySelector("#mmain .pbtn");
+      const b = document.querySelector("#acts .dbtn:not([disabled])") || document.querySelector("#acts .opt.rec") || document.querySelector("#mmain .pbtn");
       if (b) { b.focus({ preventScroll: true }); b.classList.add("focusring"); setTimeout(() => b.classList.remove("focusring"), 1400); }
     };
     if (REDUCED || !from) return done();
@@ -435,6 +483,15 @@
   $("acts").addEventListener("click", async (e) => {
     const b = e.target.closest("button");
     if (!b || b.disabled) return;
+    if (b.dataset.pick || b.dataset.unpick) {
+      const was = SEL;
+      SEL = b.dataset.pick || null;
+      if (SEL === was) return;
+      drawAsk(ROLE === "president");
+      const pv = $("acts").querySelector(".pv");
+      if (pv && !REDUCED) pv.animate([{ opacity: 0, transform: "translateX(-14px)" }, { opacity: 1, transform: "none" }], { duration: 360, easing: "ease-out" });
+      return;
+    }
     if (b.dataset.why) return openPop($("figure"), V.why);
     let path, body;
     if (b.dataset.pres) {
@@ -454,6 +511,7 @@
     const r = await post(path, body);
     const res = r.j.result;
     if (r.ok && res !== "stale" && res !== "not_executable") {
+      SEL = null;
       waitReceipt = { prev, t: Date.now() };
       setHTML("receipt", `<div class="receipt pending">${icon("loader")}サーバーが記録を確かめています…</div>`);
     } else {

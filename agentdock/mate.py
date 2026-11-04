@@ -493,7 +493,20 @@ def tally(f) -> dict:
                     hit["quantity"] += a["short_after"]
                 else:
                     short_after.append(dict(shop=shop, quantity=a["short_after"]))
+        alloc = []   # 店ごとに：残りの注文と、この案で確保できる数（下見に出す・コードの計算）
+        for a in o["after"]:
+            shop = shops.get(a["customer"], a["customer"])
+            hit = next((x for x in alloc if x["shop"] == shop), None)
+            if not hit:
+                hit = dict(shop=shop, ordered=0, secured=0, short=0)
+                alloc.append(hit)
+            hit["ordered"] += a["quantity"]
+            hit["secured"] += a["secured_after"]
+            hit["short"] += a["short_after"]
+        buys = [dict(seller=r["seller"], quantity=r["quantity"]) for r in n.get("rows") or []] or \
+            ([dict(seller=n["purchase"]["seller"], quantity=n["purchase"]["quantity"])] if n["purchase"] else [])
         options.append(dict(option_id=o["option_id"], code=o["code"], no=no, label=label, short_after=short_after, rows=n.get("rows") or [],
+                            alloc=alloc, buys=buys,
                             note=("この案では足りない：" + "・".join(f"{s['shop']} {s['quantity']}{u}" for s in short_after)) if short_after else "全部の注文がそろう"))
     held_text = "・".join(f"{h['name']} {h['quantity']}{u}" for h in held)
     line = (f"注文は合わせて {total}{u}。登録済み {registered}{u}・仮押さえ {held_total}{u}" + (f"（{held_text}）" if held else "") +
@@ -663,6 +676,29 @@ def _directive_shop(f):
     return (d["shop_name"] or d["customer"]) if d else None
 
 
+def _choice_words(f, c, action, needs_president) -> tuple[str, str, str]:
+    """案の名前（人の返事の言葉）・承認のボタンの文・押すと起きること。数はコードの計算（tally の alloc・buys）から書く。"""
+    u = f["item"]["unit"]
+    if action != "approve":
+        held = sum(h["quantity"] for h in f["holds"])
+        return ("今回は仕入れを見送る", "今回は見送る",
+                "仕入れずに、この相談を閉じます。" + (f"仮押さえの {held}{u}は手放します。" if held else ""))
+    ds = _directive_shop(f)
+    got = [(a["shop"], a["secured"]) for a in c["alloc"]]
+    mine = next((g for s_, g in got if s_ == ds), None)
+    rest = "・".join(f"{s_}へ {g}{u}" for s_, g in got if s_ != ds and g > 0)
+    if ds and mine:
+        title = f"{ds} {mine}{u}を確保し、{rest}を回す" if rest else f"{ds} {mine}{u}を確保する"
+    elif ds and mine == 0:
+        title = f"{rest}を回す（{ds}は 0{u}）"
+    else:
+        title = f"{rest}に分ける"
+    buys = "・".join(f"{b['seller']} {b['quantity']}{u}" for b in c["buys"])
+    if needs_president:
+        return title, "この案を社長に確かめる", "社長に確認を送ります。社長が承認するまで、何も登録しません。"
+    return title, "この配分で購入を承認する", f"{buys}の買い付けを登録します（購入の確定）。"
+
+
 def _choices(f, tl):
     """あなたの判断待ちの時のボタン。案の名前と数はコードの計算（tally）から書く（AI の案の名前の数字は使わない）。
     社長の確認が要る案は「社長に確かめる」にする（新人に決めさせない）。"""
@@ -680,9 +716,11 @@ def _choices(f, tl):
                 continue
             tags = [t for t in ("社長の確認が要る案" if pv["needs"] else "", "AI の勧め" if o["recommended"] and not pv["needs"] else "",
                                 c["note"] if o["action"] == "approve" else "") if t]
+            title, confirm, effect = _choice_words(f, c, o["action"], pv["needs"])
             acts.append(dict(id=f"opt{o['option_id']}", label=("社長に確かめる：" + label) if pv["needs"] else label,
                              kind="primary" if o["recommended"] else "secondary", recommended=o["recommended"], short_after=c["short_after"],
-                             note="・".join(tags),
+                             note="・".join(tags), title=title, confirm=confirm, effect=effect, alloc=c["alloc"], buys=c["buys"],
+                             choice="reject" if o["action"] != "approve" else ("president" if pv["needs"] else "approve"),
                              api=dict(path="/api/decide", body=dict(case_id=cur["case"]["id"], option_id=o["option_id"] if o["action"] == "approve" else None,
                                                                     action=o["action"], fingerprint=o["fingerprint"] if o["action"] == "approve" else None,
                                                                     actor="staff")),

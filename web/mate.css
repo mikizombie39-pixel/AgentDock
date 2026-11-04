@@ -440,3 +440,82 @@ hr.rule { border: 0; border-top: 1px solid var(--line); margin: 0 0 18px; }
 .focus.unconnected { border-style: dashed; }
 @keyframes trace { to { --ang: 360deg; } }
 @media (prefers-reduced-motion: reduce) { .focus::before { animation: none; display: none; } }
+
+/* ── 判断のブロック（SAL §2・§3／デイブ「関連性・重要度・操作の方法を分かりやすく・矢印を動かす」）──
+   手順の帯（① 選ぶ → ② 確かめる → ③ 承認）の山形の矢印が流れ、いまの手順が光る。左に案のカード（★＝AI のおすすめ・丸の印と枠＝選択中・人の印＝社長の確認が要る）、
+   右に下見。選ぶ前はおすすめのカードを指す矢印と、下見の欄から案を指す矢印が動く。選んだ後は、カードから下見へ山形の矢印が流れ、承認のボタンを矢印が指す */
+.bottom.decidemode { display: block; }
+.bottom.decidemode .ask { display: none; }
+.bottom.decidemode .acts { display: block; }
+.decide { border: 1.5px solid var(--line); background: var(--paper); border-radius: 24px; padding: 18px 22px 20px; }
+.decide .dk { display: flex; gap: 8px; align-items: center; color: var(--warm); font-size: 14px; font-weight: bold; }
+.decide .dq { font-size: 17px; font-weight: bold; margin: 6px 0 12px; line-height: 1.5; text-wrap: balance; word-break: auto-phrase; }
+.dsteps { list-style: none; display: flex; align-items: center; gap: 10px; margin: 0 0 16px; padding: 0; }
+.dsteps li { border: 1.5px solid var(--line); border-radius: 14px; padding: 6px 14px; background: var(--card); color: var(--mute); transition: all .35s; }
+.dsteps li b { display: block; font-size: 14px; }
+.dsteps li small { font-size: 11px; }
+.dsteps li.on { border-color: var(--warm); background: #F6EBD6; color: #5E4718; box-shadow: 0 0 0 0 rgba(224,165,38,.45); animation: stepglow 1.8s ease-out infinite; }
+.dsteps li.done { border-color: var(--teal); color: var(--teal); background: var(--tealb); }
+.chev { display: inline-flex; gap: 1px; font-size: 22px; font-weight: bold; color: var(--warm); line-height: 1; }
+.chev i { font-style: normal; opacity: .2; animation: chev 1.2s ease-in-out infinite; }
+.chev i:nth-child(2) { animation-delay: .2s; }
+.chev i:nth-child(3) { animation-delay: .4s; }
+.dgrid { display: grid; grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr); gap: 0 18px; align-items: start; }
+.opts { display: flex; flex-direction: column; gap: 10px; }
+.optrow { display: grid; grid-template-columns: 26px 1fr 30px; align-items: center; }
+.optrow .pointer { color: var(--warm); display: grid; place-items: center; }
+.optrow .pointer .ic { width: 22px; height: 22px; animation: poke 1.1s ease-in-out infinite; }
+.optrow .tab { display: grid; place-items: center; }
+.opt { display: flex; gap: 12px; align-items: flex-start; text-align: left; width: 100%; background: #fff; border: 1.5px solid var(--line); border-radius: 16px; padding: 12px 14px;
+  color: var(--ink); transition: border-color .25s, box-shadow .25s, transform .2s; }
+.opt:hover:not([disabled]) { border-color: var(--teal); transform: translateX(2px); }
+.opt .radio { flex: none; width: 20px; height: 20px; border-radius: 50%; border: 2px solid var(--mute); margin-top: 2px; position: relative; }
+.opt .ot { display: flex; flex-direction: column; gap: 4px; }
+.opt .ot b { font-size: 16px; line-height: 1.4; }
+.opt .badges { display: flex; gap: 6px; flex-wrap: wrap; }
+.opt .badges:empty { display: none; }
+.opt em { font-style: normal; font-size: 12px; border-radius: 9px; padding: 1px 9px; display: inline-flex; gap: 4px; align-items: center; }
+.opt em .ic { width: 13px; height: 13px; }
+.opt .recb { background: #F6EBD6; color: #5E4718; border: 1px solid #E0A526; font-weight: bold; }
+.opt .presb { background: #E6EBF0; color: var(--slate); border: 1px solid var(--slate); }
+.opt .os { font-size: 13px; }
+.opt .os.ok { color: var(--ok); }
+.opt .os.short { color: var(--stop); }
+.opt .os.bad { color: var(--stop); }
+.opt.rec { border-color: #E0A526; }
+.opt.reject { background: transparent; }
+.opt.reject .ot b { font-weight: normal; font-size: 15px; }
+.opt.sel { border-color: var(--teal); border-width: 2.5px; box-shadow: 0 0 0 4px rgba(59,110,119,.16); }
+.opt.sel .radio { border-color: var(--teal); }
+.opt.sel .radio::after { content: ""; position: absolute; inset: 3px; border-radius: 50%; background: var(--teal); }
+.opt.off { opacity: .55; }
+.pv { border: 1.5px dashed var(--line); border-radius: 18px; padding: 16px 18px; min-height: 100%; background: var(--card); }
+.pv.on { border: 2px solid var(--teal); background: #fff; }
+.pv0 { display: flex; gap: 12px; align-items: center; color: var(--mute); height: 100%; min-height: 160px; }
+.pv0 .back .ic { width: 30px; height: 30px; color: var(--warm); transform: scaleX(-1); animation: pokeback 1.1s ease-in-out infinite; }
+.pv0 b { display: block; color: var(--ink); font-size: 15px; }
+.pv0 small { font-size: 13px; }
+.pvh small { display: block; font-size: 12px; color: var(--teal); font-weight: bold; }
+.pvh b { font-size: 17px; line-height: 1.4; }
+.pvs { margin: 10px 0 6px; font-size: 14px; display: flex; gap: 6px; align-items: center; }
+.bars { display: flex; flex-direction: column; gap: 8px; margin: 10px 0; }
+.bar { display: grid; grid-template-columns: 72px 1fr 64px 92px; gap: 10px; align-items: center; font-size: 14px; }
+.bar .track { height: 12px; border-radius: 6px; background: #F1DDD8; overflow: hidden; }
+.bar .track i { display: block; height: 100%; background: var(--teal); border-radius: 6px; animation: grow .6s ease-out both; }
+.bar .q { font-variant-numeric: tabular-nums; text-align: right; }
+.bar .st { font-size: 12px; font-weight: bold; }
+.bar .st.ok { color: var(--ok); }
+.bar .st.short { color: var(--stop); }
+.eff { font-size: 13px; color: var(--ink); display: flex; gap: 6px; align-items: flex-start; background: var(--card); border-radius: 10px; padding: 8px 10px; }
+.go { display: flex; gap: 10px; align-items: center; margin-top: 14px; flex-wrap: wrap; }
+.go .down .ic { width: 26px; height: 26px; color: var(--warm); animation: poke 1.1s ease-in-out infinite; }
+.go .dbtn { box-shadow: 0 0 0 0 rgba(224,165,38,.5); animation: stepglow 1.8s ease-out infinite; }
+@keyframes chev { 0%, 100% { opacity: .2; transform: translateX(0); } 40% { opacity: 1; transform: translateX(3px); } }
+@keyframes poke { 0%, 100% { transform: translateX(-4px); } 50% { transform: translateX(4px); } }
+@keyframes pokeback { 0%, 100% { transform: scaleX(-1) translateX(-4px); } 50% { transform: scaleX(-1) translateX(4px); } }
+@keyframes stepglow { 0% { box-shadow: 0 0 0 0 rgba(224,165,38,.45); } 100% { box-shadow: 0 0 0 10px rgba(224,165,38,0); } }
+@keyframes grow { from { width: 0; } }
+@media (prefers-reduced-motion: reduce) {
+  .chev i, .optrow .pointer .ic, .pv0 .back .ic, .go .down .ic, .go .dbtn, .dsteps li.on, .bar .track i { animation: none !important; }
+  .chev i { opacity: .8; }
+}

@@ -506,6 +506,40 @@ class BandTest(Base):
             c.close()
 
 
+class DecideBlockTest(Base):
+    """判断のブロック（SAL §2・§3）：案の名前は人の返事の言葉・店ごとの確保と不足・承認のボタンの文。選ぶ（下見）は画面だけで、承認のボタンが既存の処理を通る。"""
+
+    def test_the_choices_say_what_happens_in_plain_words(self):
+        self.start()
+        self.worker.step()
+        self.add_ryotei()
+        self.run_all()
+        acts = {a["title"]: a for a in self.v()["actions"]}
+        self.assertEqual(list(acts), [f"{SUPER} 4本を確保し、{RYOTEI}へ 4本を回す", f"{SUPER} 4本を確保し、{RYOTEI}へ 2本を回す",
+                                      f"{RYOTEI}へ 6本を回す（{SUPER}は 0本）", "今回は仕入れを見送る"])
+        rec = acts[f"{SUPER} 4本を確保し、{RYOTEI}へ 4本を回す"]
+        self.assertTrue(rec["recommended"])
+        self.assertEqual((rec["choice"], rec["confirm"]), ("approve", "この配分で購入を承認する"))
+        self.assertEqual(rec["buys"], [dict(seller="岩瀬漁協", quantity=6), dict(seller="B社", quantity=2)])
+        self.assertEqual(rec["alloc"], [dict(shop=SUPER, ordered=4, secured=4, short=0), dict(shop=RYOTEI, ordered=6, secured=4, short=2)])
+        self.assertEqual(rec["effect"], "岩瀬漁協 6本・B社 2本の買い付けを登録します（購入の確定）。")
+        pres = acts[f"{RYOTEI}へ 6本を回す（{SUPER}は 0本）"]
+        self.assertEqual((pres["choice"], pres["confirm"], pres["president"]), ("president", "この案を社長に確かめる", True))
+        self.assertIn("社長が承認するまで、何も登録しません", pres["effect"])
+        rej = acts["今回は仕入れを見送る"]
+        self.assertEqual((rej["choice"], rej["effect"]), ("reject", "仕入れずに、この相談を閉じます。仮押さえの 8本は手放します。"))
+
+    def test_the_approve_button_goes_through_the_existing_check(self):
+        self.start()
+        self.worker.step()
+        self.add_ryotei()
+        self.run_all()
+        pres = next(a for a in self.v()["actions"] if a.get("choice") == "president")
+        time.sleep(1.05)
+        self.assertEqual(self.decide(pres, "dp1")["result"], "needs_president")   # 承認のボタンでも、指示と違う案は社長の確認へ
+        self.assertEqual(self.v()["exec"], "president")
+
+
 class ShopNameTest(unittest.TestCase):
     """店の名前は種の1か所（SHOP_NAMES）。社長の指示の言葉の正本は Vault の記録なので、店の名前を変える時は Vault の指示の言葉も直す。
     片方だけ変えると build が止まる（食い違ったまま画面と AI の文に出さない・2026-11-04）。"""
