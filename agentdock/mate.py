@@ -331,7 +331,16 @@ def tally(f) -> dict:
     left = max(0, total - registered - held_total)
     shops = {o["customer"]: o["shop"] for o in f["orders"]}
     options = []
-    for o in f["cur"].get("options") or []:
+    ids = [o["option_id"] for o in f["cur"].get("options") or []]
+    con = db.connect(f["owner"])
+    try:   # 案が仕入れる条件の番号（案の計画の記録から）
+        used_terms = {json.loads(r[0]).get("buy_term_id") for r in con.execute(
+            f"SELECT plan_json FROM board_option WHERE id IN ({','.join('?' * len(ids))})", ids)} if ids else set()
+    finally:
+        con.close()
+    # どの案にも入っていない仮押さえ：1つの案で仕入れる条件は1つだけの作り（present_options の buy_term_id は1件・登録も1件）
+    unused = [h for h in held if h["term_id"] not in used_terms] if f["cur"].get("options") else []
+    for no, o in enumerate(f["cur"].get("options") or [], 1):
         n = o["numbers"]
         if n["purchase"]:
             p = n["purchase"]
@@ -339,13 +348,15 @@ def tally(f) -> dict:
         else:
             label = "見送る（仕入れない）"
         short_after = [dict(shop=shops.get(a["customer"], a["customer"]), quantity=a["short_after"]) for a in o["after"] if a["short_after"] > 0]
-        options.append(dict(option_id=o["option_id"], code=o["code"], label=label, short_after=short_after,
+        options.append(dict(option_id=o["option_id"], code=o["code"], no=no, label=label, short_after=short_after,
                             note=("この案では足りない：" + "・".join(f"{s['shop']} {s['quantity']}{u}" for s in short_after)) if short_after else "全部の注文がそろう"))
     held_text = "・".join(f"{h['name']} {h['quantity']}{u}" for h in held)
     line = (f"注文は合わせて {total}{u}。登録済み {registered}{u}・仮押さえ {held_total}{u}" + (f"（{held_text}）" if held else "") +
             (f"で、あと {left}{u}足りません。" if left else "で、数はそろっています。"))
+    unused_text = ("・".join(f"{h['name']}の {h['quantity']}{u}" for h in unused) + "（仮押さえ）は、どの案にも入っていません。"
+                   "今の作りでは、1つの案で仕入れる相手は1つだけです。") if unused else None
     return dict(total=total, registered=registered, held=held, held_total=held_total, reply_only=reply_only, left=left,
-                options=options, line=line, unit=u)
+                options=options, line=line, unit=u, unused_holds=unused, unused_text=unused_text)
 
 
 def _counterparts(f) -> list[str]:
@@ -403,6 +414,8 @@ def view(owner: str, item: str, on_date: str = sc.DEMO_DATE, worker_error: str |
         if mid:
             sub.append(_said("・".join(f"{o['shop']}から追加の注文 {o['quantity']}{u}" for o in mid) + "が入りました。"))
             sub.append(_said(tl["line"], "calc"))
+            if ex == "your_turn" and tl["unused_text"]:
+                sub.append(_said(tl["unused_text"], "calc"))
         elif refs.get("changed_by"):
             sub.append(_said("あなたの答えで条件が変わったので、相手に問い合わせ直します。"))
     elif st == "sorry":
@@ -430,6 +443,8 @@ def view(owner: str, item: str, on_date: str = sc.DEMO_DATE, worker_error: str |
         head = aiq or _said("どう進めるか、決めてください。")
         if cur.get("waiting_for") == "staff":
             sub.append(_said(tl["line"], "calc"))
+            if tl["unused_text"]:
+                sub.append(_said(tl["unused_text"], "calc"))
     elif ex == "running":
         waiting = [n for c, n in sup.items() if any(x["to_owner"] == c and x["from_owner"] == owner for x in f["messages"])]
         head = _said("買い付けの照会は私が進めます。")
@@ -586,7 +601,7 @@ def why_card(f, st, ex, head, tl=None, replaced=None) -> dict:
     by_id = {x["option_id"]: x for x in tl["options"]}
     for o in cur.get("options") or []:
         n, c = o["numbers"], by_id[o["option_id"]]
-        opts.append(_row(f"案 {o['code']}：{c['label']}" + (f"（仕入れ {_yen(n['purchase_yen'])}）" if n["purchase"] else "") + f"・{c['note']}" +
+        opts.append(_row(f"案{c['no']}：{c['label']}" + (f"（仕入れ {_yen(n['purchase_yen'])}）" if n["purchase"] else "") + f"・{c['note']}" +
                          ("" if o["executable"] else "（実行できません）"), "calc"))
     vault = [_row(f"{v['title']}（{v['author']}・{v['written_on']}）", "vault", None, dict(db="owner", table="vault_note", id=v["id"])) for v in f["vault"]]
     history = asked + [r for r in replies]
@@ -617,6 +632,8 @@ def why_card(f, st, ex, head, tl=None, replaced=None) -> dict:
         else:
             lead = f"注文の合計 {tl['total']}{u}に対して、あと {tl['left']}{u}足りません。どう分けるか、あなたの判断が要ります。"
         sections = [("足りない数と注文", orders), ("社長の指示と権限", dir_rows), ("相手の回答と値", replies), ("在庫", stock), ("案（コードの計算）", opts)]
+        if tl["unused_text"]:   # 案に入っていない仮押さえは、なぜ入っていないかを案の前に一文で
+            sections.insert(4, ("どの案にも入っていない仮押さえ", [_row(tl["unused_text"], "calc")]))
         more = [("Vault の記録", vault), ("これまでのやり取り", asked)]
     elif st == "bold":
         lead = f"{'と'.join(_suppliers(f).values())}の複数に当たれるので、希望の値で押せます。"

@@ -227,7 +227,15 @@ class NumbersTest(Base):
         self.assertEqual(a["label"], f"岩瀬漁協 6本：{SUPER} 4本・{RYOTEI} 2本")              # 案のボタン（案の配分から）
         self.assertEqual(a["short_after"], [dict(shop=RYOTEI, quantity=4)])
         self.assertIn(f"この案では足りない：{RYOTEI} 4本", a["note"])
-        self.assertTrue(any(r.startswith(f"案 A：岩瀬漁協 6本：{SUPER} 4本・{RYOTEI} 2本") and f"この案では足りない：{RYOTEI} 4本" in r for r in rows))
+        self.assertTrue(any(r.startswith(f"案1：岩瀬漁協 6本：{SUPER} 4本・{RYOTEI} 2本") and f"この案では足りない：{RYOTEI} 4本" in r for r in rows))
+        opts = next(s for s in v["why"]["sections"] if s["title"] == "案（コードの計算）")["rows"]
+        self.assertEqual([r["text"][:2] for r in opts], ["案1", "案2", "案3"])                  # 画面では続き番号（AI の記号 A・B・E は出さない）
+        # B社の 2本（仮押さえ）は、1つの案で仕入れる相手が1つだけの作りなので、どの案にも入らない。その理由を一文で出す
+        unused = "B社の 2本（仮押さえ）は、どの案にも入っていません。今の作りでは、1つの案で仕入れる相手は1つだけです。"
+        self.assertEqual(t["unused_text"], unused)
+        self.assertIn(unused, [s["text"] for s in v["sub"]])
+        sec = [s["title"] for s in v["why"]["sections"]]
+        self.assertLess(sec.index("どの案にも入っていない仮押さえ"), sec.index("案（コードの計算）"))
         b = next(x for x in v["actions"] if x.get("president"))
         self.assertEqual(b["label"], f"社長に確かめる：岩瀬漁協 6本：{RYOTEI} 6本")
         texts = [v["headline"]["text"]] + [s["text"] for s in v["sub"]] + [x["label"] for x in v["actions"]] + [x.get("note") or "" for x in v["actions"]] + rows
@@ -241,6 +249,18 @@ class NumbersTest(Base):
         self.check_one_calculation(v)
         self.assertEqual(v["headline"]["origin"], "ai")                                      # 数字の無い AI の文は使う（出所つき）
         self.assertIsNone(v["why"]["speech_origin"]["replaced"])
+
+    def test_no_unused_hold_line_once_every_hold_is_in_an_option(self):
+        v = self.consult()
+        a = next(x for x in v["actions"] if x.get("recommended"))
+        time.sleep(1.05)
+        self.assertEqual(self.decide(a, "u1")["result"], "registered")
+        self.run_all()                                                                         # 登録の後：B社の 2本を順風満帆へ回す案を相談する
+        v = self.v()
+        self.assertEqual(v["exec"], "your_turn")
+        self.assertEqual(v["tally"]["held_total"], 2)
+        self.assertIsNone(v["tally"]["unused_text"])
+        self.assertEqual(next(x for x in v["actions"] if x.get("recommended"))["label"], f"B社 2本：{RYOTEI} 2本")
 
     def test_an_ai_text_with_numbers_that_do_not_match_is_replaced_by_the_code(self):
         v = self.consult(lie=True)
