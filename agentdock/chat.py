@@ -173,7 +173,11 @@ def preview(owner: str, item: str, priority: list[str], on_date: str = sc.DEMO_D
         for o in [o for o in f["orders"] if o["customer"] == c]:
             got = min(o["quantity"], left)
             left -= got
-            rows.append(dict(shop=o["shop"], customer=c, quantity=o["quantity"], got=got, short=o["quantity"] - got))
+            hit = next((r for r in rows if r["shop"] == o["shop"]), None)   # 同じ店の注文は店ごとに合計する
+            if hit:
+                hit.update(quantity=hit["quantity"] + o["quantity"], got=hit["got"] + got, short=hit["short"] + o["quantity"] - got)
+            else:
+                rows.append(dict(shop=o["shop"], customer=c, quantity=o["quantity"], got=got, short=o["quantity"] - got))
     keep = {d["customer"] for d in f["directives"]}
     against = any(r["short"] > 0 for r in rows if r["customer"] in keep) and any(r["got"] > 0 for r in rows if r["customer"] not in keep)
     text = (f"今の手当て {supply}{u}（登録済み {tl['registered']}{u}・仮押さえ {tl['held_total']}{u}）を " +
@@ -367,7 +371,7 @@ def _prompt(t: Turn, text: str, history: list[dict]) -> str:
 DATE_PATTERNS = [
     re.compile(r"(\d{4})-(\d{2})-(\d{2})"),
     re.compile(r"(?:(\d{4})年)?(\d{1,2})月(\d{1,2})日(?:\s*(?:〜|~|から|－|-)\s*(?:(\d{1,2})月)?(\d{1,2})日)?"),
-    re.compile(r"(?<![\d:])(\d{1,2})/(\d{1,2})(?:\s*(?:〜|~|から|－|-)\s*(?:(\d{1,2})/)?(\d{1,2}))?(?![\d:])"),
+    re.compile(r"(?<!\d)(?<!\d:)(\d{1,2})/(\d{1,2})(?:\s*(?:〜|~|から|－|-)\s*(?:(\d{1,2})/)?(\d{1,2}))?(?![\d:])"),
 ]
 ID_PATTERN = re.compile(r"\b(?:AM|BB|IW|BC)-[A-Z]-\d+(?:-\d+)?\b|案件\s*\d+|条件\s*\d+|注文\s*\d+(?=[）)・])")
 
@@ -394,10 +398,22 @@ def _dates_ok(text: str, dates: set) -> tuple[str, list[str]]:
     return text, bad
 
 
+ENUM_PATTERN = re.compile(r"[(（]\s*\d{1,2}\s*[)）]|[①-⑳]")
+MONTH_PATTERN = re.compile(r"(?<!\d)(\d{1,2})月(?!\d)")
+
+
 def check_text(text: str, allowed: dict, dates: set) -> list[str]:
-    t = unicodedata.normalize("NFKC", text)
+    t = unicodedata.normalize("NFKC", ENUM_PATTERN.sub(" ", text))   # 箇条の番号（(1)・①）は数として扱わない（①は正規化で 1 になるので先に外す）
     t = ID_PATTERN.sub(" ", t)
+    t = ENUM_PATTERN.sub(" ", t)
     t, bad = _dates_ok(t, dates)
+    months = {d[5:7].lstrip("0") for d in dates if d}
+
+    def month(m):                          # 「10月」だけの書き方は、取得した記録の日付の月と照合する
+        if m.group(1).lstrip("0") not in months:
+            bad.append(f"{m.group(1)}月 は取得した記録の日付にありません")
+        return " "
+    t = MONTH_PATTERN.sub(month, t)
     t = re.sub(r"(?<!\d)1\s*件", " ", t)   # 「1件 500,000円」の「1件」は権限の言い方
     return bad + mate.check_numbers(t, allowed)
 
@@ -411,6 +427,7 @@ def _allowed(t: Turn) -> tuple[dict, set]:
     a["yen"] |= t.numbers["yen"]
     a["time"] |= t.numbers["time"]
     a["yen"] |= {r["max_trade_yen"] for r in f["authority"].values() if r["max_trade_yen"]}
+    a["time"] |= {x["at_shown"] for x in (t.state or {}).get("facts") or [] if x.get("at_shown")}   # 模擬の時計で文脈に出した時刻
     for o in f["orders"]:
         a["qty"].add(o["quantity"] - o["registered"])
     return a, t.numbers["dates"] | {t.on_date}
@@ -518,11 +535,18 @@ def finish(t: Turn, ask_text: str, run_enabled: bool = False) -> tuple[dict, dic
     for k in ("conclusion", "next_action", "detail", "interpretation"):
         if not out[k]:
             continue
-        bad = check_text(out[k], allowed, dates)
-        if bad:
-            dropped["replaced"].append(dict(field=k, text=out[k], reason="数の照合：" + "／".join(bad)))
-            out[k] = NUMBERS_REPLACED if k != "next_action" else "根拠の記録を開いて、数字を確かめてください。"
-            out["notes"].append(f"AI の文の数字を照合し、コードの値と合わない数が {len(bad)}つあったので、数字を出さない文に替えました（合わない数は画面に出しません・記録に残しました）")
+        keep, n_bad = [], 0
+        for sen in _sentences(out[k]):    # 合わない数を含む文だけを外す（段落全体は消さない）
+            bad = check_text(sen, allowed, dates)
+            if bad:
+                n_bad += len(bad)
+                dropped["replaced"].append(dict(field=k, text=sen, reason="数の照合：" + "／".join(bad)))
+            else:
+                keep.append(sen)
+        if n_bad:
+            rest = "".join(keep).strip()
+            out[k] = rest or (NUMBERS_REPLACED if k != "next_action" else "根拠の記録を開いて、数字を確かめてください。")
+            out["notes"].append(f"AI の文の数字を照合し、コードの値と合わない数が {n_bad}つあった文を外しました（外した文は記録に残しました）")
     if out["kind"] in ("question", "preview") and not ev and not out["conclusion"].startswith(UNKNOWN[:6]):
         dropped["replaced"].append(dict(field="conclusion", text=out["conclusion"], reason="根拠の記録が1件も無い答え"))
         out.update(conclusion=UNKNOWN, detail=None, interpretation=None, next_action="誰に何を確かめるか、決めてください。")

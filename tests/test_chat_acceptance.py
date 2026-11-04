@@ -13,6 +13,8 @@ import json
 from agentdock import chat, db, events, vault
 from agentdock.seed import scenario as sc
 from tests.test_chat import ChatBase, snapshot
+from agentdock.companion import MockClient
+from tests.test_chat import answer_reply, call
 from tests.test_mate import RYOTEI, SUPER
 
 D = sc.DEMO_DATE
@@ -168,3 +170,34 @@ class SuperlativeTest(ChatBase):
         self.assertEqual(len(s["compare"]["rows"]), len([o for o in v["tally"]["options"]]))   # 全部の案を計算に入れる
         staff = [r for r in s["compare"]["rows"] if r["staff"]]
         self.assertEqual(s["compare"]["best"], [r["no"] for r in staff if r["short"] == min(x["short"] for x in staff)])
+
+
+
+class NumberCheckTest(ChatBase):
+    """数の照合（本物の Claude の答えで見つかった誤判定を直した所・2026-11-04）。"""
+    A = dict(qty={2, 4, 6, 8, 12}, short={2, 4}, yen={20500}, time={"05:00", "05:45"}, unit="本", option_no={1, 2})
+    DATES = {"2026-10-20", "2026-10-24", "2026-11-02", "2026-08-14"}
+
+    def test_a_date_right_after_a_colon_is_a_date(self):
+        self.assertEqual(chat.check_text("期限切れの指示：10/20〜10/24 は過ぎた。", self.A, self.DATES), [])
+
+    def test_a_month_is_checked_against_the_records(self):
+        self.assertEqual(chat.check_text("10月の指示は期限切れ。8月には大 2本を受けてもらえた。", self.A, self.DATES), [])
+        self.assertEqual(chat.check_text("12月は安い。", self.A, self.DATES), ["12月 は取得した記録の日付にありません"])
+
+    def test_list_numbers_are_not_quantities(self):
+        self.assertEqual(chat.check_text("(1) 使い道に合う（2）同じ日に手に入る ③上限の内", self.A, self.DATES), [])
+
+    def test_only_the_sentence_with_a_wrong_number_is_removed(self):
+        self.consult()
+        mc = MockClient([call("list_vault", {}), answer_reply(conclusion="案1が答えです。", evidence=[dict(ref="calc:tally", quote=None)],
+                                                               detail="注文は合わせて 10本です。漁協は 9本を出せます。足りない分は照会します。")])
+        a = chat.ask(mc, "amiya", "buri_xl", "数は？", "n1")["answer"]
+        self.assertEqual(a["detail"], "注文は合わせて 10本です。足りない分は照会します。")
+
+    def test_a_time_shown_on_the_demo_clock_is_allowed(self):
+        self.consult()
+        s = chat.work_state("amiya", "buri_xl")
+        shown = next(x["at_shown"] for x in s["facts"] if x["ref"] == "order_book:3")
+        mc = MockClient([call("list_vault", {}), answer_reply(conclusion=f"順風満帆の注文は {shown} に受けました。", evidence=[dict(ref="order_book:3", quote=None)])])
+        self.assertEqual(chat.ask(mc, "amiya", "buri_xl", "いつ？", "n2")["answer"]["conclusion"], f"順風満帆の注文は {shown} に受けました。")
