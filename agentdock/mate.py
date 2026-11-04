@@ -188,6 +188,31 @@ def _last_decline(f):
     return None if later or presented or drafted else d
 
 
+def _round_declines(f):
+    """人の最後の判断の後に届いた断り（この回の相談の前の、相手の返事）。人の判断がまだ無ければ空。"""
+    if not f["acts"]:
+        return []
+    since = _t(f["acts"][-1]["at"])
+    return [x for x in f["messages"] if x["to_owner"] == f["owner"] and x["kind"] == "decline" and _t(x["created_at"]) >= since]
+
+
+def _round_story(f, tl) -> tuple[str, str | None]:
+    """相手の返事を受けて、AI が次の手を用意して戻ってきた時の語りかけ（SAL 2026-11-04）。数と名前はすべて記録とコードの計算から。
+    (見出し＝何が起きたか, 次の手＝勧める案と残りの不足)"""
+    u = f["item"]["unit"]
+    extra = "追加分を" if tl["registered"] else ""
+    parts = [f"{sc.OWNERS[x['from_owner']]['name']}では{extra}確保できませんでした。" for x in _round_declines(f)]
+    if tl["held"]:
+        parts.append("・".join(f"{h['name']}からは {h['quantity']}{u}" for h in tl["held"]) + "を仮押さえできています。")
+    rec = next((o for o in tl["options"] if o["option_id"] == next((x["option_id"] for x in f["cur"].get("options") or [] if x["recommended"]), None)), None)
+    nxt = None
+    if rec:
+        title, _, _ = _choice_words(f, rec, "approve" if rec["buys"] else "reject", False)
+        left = sum(x["quantity"] for x in rec["short_after"])
+        nxt = f"{title}案ですが、残り {left}{u}は不足します。" if left else f"{title}案で、全部の注文がそろいます。"
+    return "".join(parts), nxt
+
+
 def _short_total(f) -> int:
     return sum(o["short"] for o in f["orders"] if o["state"] != "secured")
 
@@ -243,6 +268,11 @@ def stance(f) -> tuple[str | None, str | None, dict]:
     d = _last_decline(f)
     if d and short > 0:
         return "sorry", STANCE_RULE["sorry"], dict(message=d["id"])
+    dec = _round_declines(f)
+    if dec and short > 0 and cur.get("waiting_for") == "staff":
+        rec = next((o for o in cur.get("options") or [] if o["recommended"]), None)
+        if not rec or any(a["short_after"] > 0 for a in rec["after"]):
+            return "careful", STANCE_RULE["careful"], dict(declined=[x["id"] for x in dec])
     if f["orders"] and short == 0 and any(o["registered"] < o["quantity"] for o in f["orders"]):
         return "relief", STANCE_RULE["relief"], dict(orders=[o["order_id"] for o in f["orders"]])
     if cur.get("waiting_for") == "staff" and short > 0:
@@ -510,11 +540,13 @@ def tally(f) -> dict:
                             alloc=alloc, buys=buys, purchase_yen=n["purchase_yen"],
                             note=("この案では足りない：" + "・".join(f"{s['shop']} {s['quantity']}{u}" for s in short_after)) if short_after else "全部の注文がそろう"))
     held_text = "・".join(f"{h['name']} {h['quantity']}{u}" for h in held)
-    have = "・".join(x for x in ((f"{registered}{u}を登録済み" if registered else ""),
+    reg_to = "・".join(f"{o['shop']} {o['registered']}{u}" for o in f["orders"] if o["registered"])
+    have = "・".join(x for x in ((f"{registered}{u}を登録済み（{reg_to}）" if registered else ""),
                                   (f"{held_total}{u}を仮押さえ" + (f"（{held_text}）" if held else "") if held_total else "")) if x)
     line = f"{total}{u}の注文に対し、" + (have if have else "まだ確保はありません") + "。" + (f"あと {left}{u}不足。" if left else "数はそろっています。")
-    if left and options:   # 案との関係：全部の案の不足（コードの計算）から言う
-        line += ("どの案でも、どこかの店が欠けます。" if all(o["short_after"] for o in options) else "全部そろう案もあります。")
+    buy_opts = [o for o in options if o["buys"]]
+    if left and len(buy_opts) >= 2:   # 案との関係：全部の案の不足（コードの計算）から言う。買う案が1つなら、その案の語りかけが言う
+        line += ("どの案でも、どこかの店が欠けます。" if all(o["short_after"] for o in buy_opts) else "全部そろう案もあります。")
     told = bool(f["presents"]) and bool(json.loads(f["presents"][-1]["layout_json"] or "{}").get("all_holds_missing"))
     unused_text = ("・".join(f"{h['name']}の {h['quantity']}{u}" for h in unused) + "（仮押さえ）は、どの案にも入っていません。" +
                    ("仮押さえを全部使う案が無いことを、AI に伝えました。" if told else "")) if unused else None
@@ -574,6 +606,10 @@ def view(owner: str, item: str, on_date: str = sc.DEMO_DATE, worker_error: str |
         head = _said(part["done"])
         sub = [_said(part["rest"])] if part["rest"] else []
         sub.append(_said("あなたは魚を見てきてください。判断が必要になったら声をかけます。"))
+    elif st == "careful" and refs.get("declined") and ex == "your_turn":   # 相手の返事を受け、次の手を用意して戻ってきた
+        story, nxt = _round_story(f, tl)
+        head = _said(story, "calc")
+        sub = ([_said(nxt, "calc")] if nxt else []) + [_said(tl["line"], "calc")]   # 問いは判断のブロックが出す（AI の問いの文は重ねない）
     elif st == "careful":
         if ex == "your_turn":   # 相談の見出しはコードの文。数字を含まない AI の文だけを使う
             head = aiq or _said(f"{'・'.join(o['shop'] for o in mid)}の追加注文で、魚が足りません。どう分けますか" if mid else "条件が変わりました。どう進めますか")
@@ -841,6 +877,9 @@ def why_card(f, st, ex, head, tl=None, replaced=None) -> dict:
         if ds and others_short and ds_short:
             lead = (f"{ds}を優先するのは、社長の朝の指示があるためです。"
                     f"{'・'.join(o['shop'] for o in others_short)}を優先するには、社長への確認が必要です。")
+        elif st == "careful" and _round_declines(f) and _short_total(f) > 0:
+            names = "・".join(sorted({sc.OWNERS[x["from_owner"]]["name"] for x in _round_declines(f)}))
+            lead = f"{names}から断りの返事が届き、条件が変わったためです。足りない分をどう手配するか、あなたと相談しています。"
         elif st == "careful":
             lead = "注文や条件が変わったので、足りない数と相手の回答を確かめ直しています。"
         else:

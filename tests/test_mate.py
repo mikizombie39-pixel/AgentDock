@@ -542,6 +542,30 @@ class DecideBlockTest(Base):
         self.assertEqual(self.v()["exec"], "president")
 
 
+class RoundStoryTest(Base):
+    """相手の返事を受け、AI が次の手を用意して戻ってきた場面（SAL 2026-11-04）：見出し＝何が起きたか・次の手と残りの不足・登録済みの行き先・態度は慎重。"""
+
+    def test_after_a_decline_the_companion_tells_what_happened_and_the_next_move(self):
+        self.start()
+        self.worker.step()
+        self.add_ryotei()
+        self.run_all()
+        a = self.option(self.v(), f"：{RYOTEI} 6本")                       # 順風満帆 6本（魚廣 0本）→ 社長の確認
+        time.sleep(1.05)
+        self.assertEqual(self.decide(a, "rs1")["result"], "needs_president")
+        p = self.v()["president"]
+        time.sleep(1.05)
+        self.assertEqual(deal.decide("amiya", p["case_id"], p["option_id"], "approve", p["fingerprint"], "rs2", actor="president")["result"], "registered")
+        self.run_all()                                                      # 漁協は残りなしで断り・B社は 2本 → 次の相談
+        v = self.v()
+        self.assertEqual((v["exec"], v["stance"], v["rule"]), ("your_turn", "careful", "注文や条件が変わった"))   # 笑顔の基本の姿にしない
+        self.assertEqual(v["headline"], dict(text="岩瀬漁協では追加分を確保できませんでした。B社からは 2本を仮押さえできています。", origin="calc", ref=None))
+        subs = [s["text"] for s in v["sub"]]
+        self.assertEqual(subs[0], f"{SUPER} 2本を確保する案ですが、残り 2本は不足します。")
+        self.assertEqual(subs[1], f"10本の注文に対し、6本を登録済み（{RYOTEI} 6本）・2本を仮押さえ（B社 2本）。あと 2本不足。")   # 買う案が1つなので「どの案でも」は言わない
+        self.assertEqual(v["why"]["lead"], "岩瀬漁協から断りの返事が届き、条件が変わったためです。足りない分をどう手配するか、あなたと相談しています。")
+
+
 class ShopNameTest(unittest.TestCase):
     """店の名前は種の1か所（SHOP_NAMES）。社長の指示の言葉の正本は Vault の記録なので、店の名前を変える時は Vault の指示の言葉も直す。
     片方だけ変えると build が止まる（食い違ったまま画面と AI の文に出さない・2026-11-04）。"""
