@@ -13,7 +13,7 @@
 """
 import json
 
-from agentdock import authority, consult, db, events, market, network, workspace
+from agentdock import authority, consult, db, events, market, network, stockwork, workspace
 from agentdock.seed import scenario as sc
 
 STEPS = ("buy_trade", "seller_stock", "terms", "sell_trades", "buyer_side", "own_books")
@@ -516,17 +516,18 @@ def _own_books(owner: str, case: dict, numbers: dict, props: list[dict]) -> None
         with c:
             for l in numbers["lines"]:
                 if l["kind"] == "order":
-                    c.execute("INSERT INTO stock (item_id, quantity, status, order_id, trade_id, stock_date, updated_at) VALUES (?, ?, 'allocated', ?, ?, ?, ?)",
-                              (case["item_id"], l["quantity"], l["ref_id"], buy["trade_id"], case["trade_date"], now))
-                    oq = _q1(c, "SELECT quantity FROM order_book WHERE id = ?", (l["ref_id"],))[0]
-                    c.execute("UPDATE order_book SET status = ? WHERE id = ?", ("filled" if l["quantity"] >= oq else "partly_filled", l["ref_id"]))
+                    c.execute("INSERT INTO stock (item_id, quantity, status, order_id, trade_id, stock_date, updated_at, unit_cost_yen) VALUES (?, ?, 'allocated', ?, ?, ?, ?, ?)",
+                              (case["item_id"], l["quantity"], l["ref_id"], buy["trade_id"], case["trade_date"], now, buy["unit_price_yen"]))
+                    stockwork.set_order_status(c, l["ref_id"])   # 前に充てた分も合わせて充足を決める
                 elif l["kind"] == "agreement":
                     tid = f"case{case['id']}-sell-{l['ref_id']}"
                     c.execute("INSERT INTO stock (item_id, quantity, status, trade_id, stock_date, updated_at) VALUES (?, ?, 'sold', ?, ?, ?)",
                               (case["item_id"], l["quantity"], tid, case["trade_date"], now))
-                else:   # 未打診の売り先・売り先なし：引当のない在庫として持つ（売れたことにしない）
-                    c.execute("INSERT INTO stock (item_id, quantity, status, trade_id, stock_date, updated_at) VALUES (?, ?, 'unallocated', ?, ?, ?)",
-                              (case["item_id"], l["quantity"], buy["trade_id"], case["trade_date"], now))
+                else:   # 未打診の売り先・売り先なし：引当のない在庫として持つ（売れたことにしない）。回すつもりの売り先と仕入れ値を残す
+                    c.execute("INSERT INTO stock (item_id, quantity, status, trade_id, stock_date, updated_at, unit_cost_yen, intended_customer_id, unallocated_at) "
+                              "VALUES (?, ?, 'unallocated', ?, ?, ?, ?, ?, ?)",
+                              (case["item_id"], l["quantity"], buy["trade_id"], case["trade_date"], now, buy["unit_price_yen"],
+                               l["ref_id"] if l["kind"] == "customer_lead" else None, now))
             c.execute("UPDATE proposal SET status = 'registered' WHERE case_id = ?", (case["id"],))
     finally:
         c.close()

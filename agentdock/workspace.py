@@ -85,8 +85,11 @@ def compute(con, owner: str, item_code: str, option: dict, now: str) -> dict:
                 continue
             if o["status"] not in ("open", "partly_filled"):
                 errors.append(f"注文 {o['id']} は {o['status']}")
+            got = con.execute("SELECT coalesce(sum(quantity), 0) FROM stock WHERE order_id = ? AND status = 'allocated'", (o["id"],)).fetchone()[0]
             if qty > o["quantity"]:
                 errors.append(f"注文 {o['id']} の数量 {o['quantity']} を超えています")
+            elif qty > o["quantity"] - got:   # 前に登録した分・在庫から充てた分は、もう満たしている
+                errors.append(f"注文 {o['id']} の残り {o['quantity'] - got}（{got} は充当済み）を超えています")
             pc = _process_cost(con, item["id"], o["name"])
             lines.append(dict(kind="order", ref_id=o["id"], to=o["name"], quantity=qty, unit_price_yen=o["sell_price_yen"],
                               revenue_yen=qty * o["sell_price_yen"], certainty="order", process=pc))

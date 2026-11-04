@@ -69,7 +69,8 @@ def view(owner: str, item: str, on_date: str = sc.DEMO_DATE) -> dict:
         steps = _steps(con, item)
         items = (_orders(con, it, on_date, steps) + _material(con, it, steps) + _vault(con, it, steps) + _stock(con, it, steps)
                  + _messages(owner, item, on_date) + _holds(con, owner, it, on_date) + _trades(con, it, on_date)
-                 + _consultations(con, it, on_date) + _approvals(con, it, on_date) + _left(con, it, on_date))
+                 + _consultations(con, it, on_date) + _approvals(con, it, on_date) + _left(con, it, on_date)
+                 + _stock_left(con, it) + _stock_questions(con, it) + _stock_allocs(con, it))
         activity = _activity(con, owner, item)
     finally:
         con.close()
@@ -227,23 +228,29 @@ def _options(con, case_id: int, version: int) -> list[dict]:
     return out
 
 
+def _cons_history(con, c) -> tuple[str, list[dict]]:
+    """相談の状態の移り変わり（開いた時刻・社長待ち・答えた・古い版・閉じた）。c は consultation の行に case_status・case_at を足したもの。"""
+    t = con.execute("SELECT at FROM workspace_turn WHERE case_id = ? AND version = ? AND source = 'present' ORDER BY id LIMIT 1",
+                    (c["case_id"], c["task_version"])).fetchone()
+    opened = t["at"] if t else c["answered_at"]
+    needle = f"consultation {c['id']} "
+    hist = [dict(at=opened, state="open")]
+    hist += [dict(at=a, state="needs_president") for a in _audit_at(con, "consultation_needs_president", needle)]
+    hist += [dict(at=a, state="answered") for a in _audit_at(con, "consultation_answered", needle)]
+    if c["status"] == "stale":   # 版が上がって古くなった（答えても通らない）
+        nxt = con.execute("SELECT at FROM workspace_turn WHERE case_id = ? AND version > ? AND source = 'present' ORDER BY id LIMIT 1",
+                          (c["case_id"], c["task_version"])).fetchone()
+        hist.append(dict(at=nxt["at"] if nxt else c["case_at"], state="stale"))
+    if c["status"] == "closed" or (c["status"] in ("open", "needs_president") and c["case_status"] in CLOSED_CASE):   # 案件が登録・見送りで閉じた
+        hist.append(dict(at=c["case_at"], state="closed"))
+    return opened, hist
+
+
 def _consultations(con, it, on_date):
     out = []
     for c in con.execute("SELECT c.*, d.status AS case_status, d.updated_at AS case_at FROM consultation c JOIN deal_case d ON d.id = c.case_id "
                          "WHERE d.item_id = ? AND d.trade_date = ? ORDER BY c.id", (it["id"], on_date)):
-        t = con.execute("SELECT at FROM workspace_turn WHERE case_id = ? AND version = ? AND source = 'present' ORDER BY id LIMIT 1",
-                        (c["case_id"], c["task_version"])).fetchone()
-        opened = t["at"] if t else c["answered_at"]
-        needle = f"consultation {c['id']} "
-        hist = [dict(at=opened, state="open")]
-        hist += [dict(at=a, state="needs_president") for a in _audit_at(con, "consultation_needs_president", needle)]
-        hist += [dict(at=a, state="answered") for a in _audit_at(con, "consultation_answered", needle)]
-        if c["status"] == "stale":   # 版が上がって古くなった（答えても通らない）
-            nxt = con.execute("SELECT at FROM workspace_turn WHERE case_id = ? AND version > ? AND source = 'present' ORDER BY id LIMIT 1",
-                              (c["case_id"], c["task_version"])).fetchone()
-            hist.append(dict(at=nxt["at"] if nxt else c["case_at"], state="stale"))
-        if c["status"] == "closed" or (c["status"] in ("open", "needs_president") and c["case_status"] in CLOSED_CASE):   # 案件が登録・見送りで閉じた
-            hist.append(dict(at=c["case_at"], state="closed"))
+        opened, hist = _cons_history(con, c)
         out.append(_item(f"cons:{c['id']}", "waiting", "consultation", opened,
                          dict(consultation_id=c["id"], case_id=c["case_id"], version=c["task_version"], question=c["question"],
                               change=json.loads(c["change_json"]) if c["change_json"] else None, answered_by=c["answered_by"],
@@ -291,14 +298,56 @@ def _left(con, it, on_date):
     return out
 
 
+def _stock_left(con, it):
+    """引当のない在庫（売り先の当てのない数量）：残った仕事。AI が後で注文に充てた行は、充てた時刻に閉じる。"""
+    out = []
+    for s in con.execute("SELECT s.id, s.quantity, s.status, s.order_id, s.updated_at, coalesce(s.unallocated_at, s.updated_at) AS since, "
+                         "c.name AS intended FROM stock s LEFT JOIN customer c ON c.id = s.intended_customer_id "
+                         "WHERE s.item_id = ? AND s.trade_id IS NOT NULL AND (s.status = 'unallocated' OR (s.status = 'allocated' AND s.unallocated_at IS NOT NULL)) "
+                         "ORDER BY s.id",
+                         (it["id"],)):
+        hist = [dict(at=s["since"], state="open")] + ([dict(at=s["updated_at"], state="allocated")] if s["status"] == "allocated" else [])
+        out.append(_item(f"spare:{s['id']}", "left", "stock_left", s["since"],
+                         dict(quantity=s["quantity"], intended_customer=s["intended"], order_id=s["order_id"]),
+                         [dict(db="owner", table="stock", id=s["id"])], hist))
+    return out
+
+
+def _stock_questions(con, it):
+    """AI が人に問うた、引当のない在庫の扱い（あなたを待つこと）。"""
+    out = []
+    for q in con.execute("SELECT * FROM stock_question WHERE item_id = ? ORDER BY id", (it["id"],)):
+        hist = [dict(at=q["created_at"], state="open")]
+        if q["status"] == "answered":
+            hist.append(dict(at=q["answered_at"], state="answered"))
+        elif q["status"] in ("stale", "closed"):
+            hist.append(dict(at=q["closed_at"], state=q["status"]))
+        out.append(_item(f"sq:{q['id']}", "waiting", "stock_question", q["created_at"],
+                         dict(question_id=q["id"], question=q["question"], quantity=q["quantity"], choices=json.loads(q["choices_json"]),
+                              recommended=q["recommended"], reason=q["reason"], answer=q["answer"], answered_by=q["answered_by"]),
+                         [dict(db="owner", table="stock_question", id=q["id"])], hist))
+    return out
+
+
+def _stock_allocs(con, it):
+    """AI が引当のない在庫を注文に充てた（AI が済ませたこと）。"""
+    return [_item(f"alloc:{s['id']}", "done", "stock_alloc", s["updated_at"],
+                  dict(quantity=s["quantity"], order_id=s["order_id"], customer=s["customer"]),
+                  [dict(db="owner", table="stock", id=s["id"])] + ([dict(db="owner", table="agent_run", id=s["allocated_by_run"])] if s["allocated_by_run"] else []))
+            for s in con.execute("SELECT s.id, s.quantity, s.order_id, s.updated_at, s.allocated_by_run, c.name AS customer FROM stock s "
+                                 "JOIN order_book o ON o.id = s.order_id JOIN customer c ON c.id = o.customer_id "
+                                 "WHERE s.item_id = ? AND s.status = 'allocated' AND s.unallocated_at IS NOT NULL ORDER BY s.id", (it["id"],))]
+
+
 # ── AI の起動（画面の「AI が動いている」に使う）───────────────────────
 
 def _activity(con, owner, item):
     out = []
     for r in con.execute("SELECT r.id, r.started_at, r.ended_at, r.outcome, e.kind, e.payload_json FROM agent_run r JOIN biz_event e ON e.id = r.event_id ORDER BY r.id"):
-        if agents.event_item(owner, dict(kind=r["kind"], payload=json.loads(r["payload_json"]))) != item:
+        p = json.loads(r["payload_json"])
+        if agents.event_item(owner, dict(kind=r["kind"], payload=p)) != item:
             continue
-        out.append(dict(run_id=r["id"], event_kind=r["kind"], started_at=r["started_at"], ended_at=r["ended_at"], outcome=r["outcome"],
+        out.append(dict(run_id=r["id"], event_kind=r["kind"], event_source=p.get("source"), started_at=r["started_at"], ended_at=r["ended_at"], outcome=r["outcome"],
                         source=dict(db="owner", table="agent_run", id=r["id"])))
     return out
 
@@ -306,7 +355,7 @@ def _activity(con, owner, item):
 # ── 根拠の行（画面の「記録」から開く）──────────────────────────────
 
 OWNER_TABLES = ("order_book", "agent_step", "agent_run", "inbox_broadcast", "broadcast", "vault_note", "stock", "stock_hold", "proposal",
-                "consultation", "deal_case", "case_decision")
+                "consultation", "deal_case", "case_decision", "stock_question")
 MARKET_TABLES = ("network_message", "offer_term")
 
 
@@ -354,10 +403,12 @@ def _now_demo(on_date: str) -> str:
     return f"{on_date}T06:30:00+09:00"
 
 
-def current(owner: str, item: str, on_date: str = sc.DEMO_DATE) -> dict:
+def current(owner: str, item: str, on_date: str = sc.DEMO_DATE, at: str | None = None) -> dict:
+    """今の状態。at を渡すと、その時刻の状態を記録から組み直す（記録の再生）。at が None なら今の DB の状態そのもの。"""
     from agentdock import consult
     if owner not in db.OWNER_CODES:
         raise ValueError(owner)
+    cut = (lambda ts: True) if at is None else (lambda ts: ts is not None and _t(ts) <= _t(at))
     con = db.connect(owner)
     try:
         it = con.execute("SELECT id, code, name, unit FROM item WHERE code = ?", (item,)).fetchone()
@@ -365,13 +416,18 @@ def current(owner: str, item: str, on_date: str = sc.DEMO_DATE) -> dict:
             raise ValueError(item)
         unit = sc.unit_label(it["unit"])
         orders = [dict(r) for r in con.execute(
-            "SELECT o.id, c.name AS customer, o.quantity, o.status FROM order_book o JOIN customer c ON c.id = o.customer_id "
-            "WHERE o.item_id = ? AND o.order_date = ? ORDER BY o.id", (it["id"], on_date))]
+            "SELECT o.id, c.name AS customer, o.quantity, o.status, o.received_at FROM order_book o JOIN customer c ON c.id = o.customer_id "
+            "WHERE o.item_id = ? AND o.order_date = ? ORDER BY o.id", (it["id"], on_date)) if cut(r["received_at"])]
         for o in orders:
-            o["registered"] = con.execute("SELECT coalesce(sum(quantity), 0) FROM stock WHERE order_id = ? AND status = 'allocated'", (o["id"],)).fetchone()[0]
-        case = con.execute("SELECT * FROM deal_case WHERE item_id = ? AND trade_date = ? ORDER BY updated_at DESC, id DESC LIMIT 1", (it["id"], on_date)).fetchone()
-        decision = consult.latest_decision(con, case["id"]) if case and case["status"] not in CLOSED_CASE else None
-        holds = _live_holds(owner, item, on_date)
+            got = [r for r in con.execute("SELECT quantity, updated_at, unallocated_at FROM stock WHERE order_id = ? AND status = 'allocated'", (o["id"],))
+                   if cut(r["updated_at"])]
+            o["registered"] = sum(r["quantity"] for r in got)
+            o["from_stock"] = sum(r["quantity"] for r in got if r["unallocated_at"] is not None)   # 引当のない在庫から後で充てた分
+            if at is not None and o["status"] in ("open", "partly_filled", "filled"):
+                o["status"] = "filled" if o["registered"] >= o["quantity"] else "partly_filled" if o["registered"] else "open"
+        case = _case_at(con, it, on_date, at)
+        decision = _decision_at(con, case["id"], at) if case and case["status"] not in CLOSED_CASE else None
+        holds = _live_holds(owner, item, on_date, at)
         # 押さえ中の数を、人の決定の配分の順に注文へ回す（決定が無ければ、どの注文にも回さない）
         held_for, left_hold = {}, sum(h["quantity"] for h in holds)
         for a in (decision or {}).get("allocations") or []:
@@ -379,24 +435,36 @@ def current(owner: str, item: str, on_date: str = sc.DEMO_DATE) -> dict:
                 n = min(a["quantity"], left_hold)
                 held_for[a["order_id"]] = held_for.get(a["order_id"], 0) + n
                 left_hold -= n
-        asking = _open_inquiries(owner, item, on_date)
+        asking = _open_inquiries(owner, item, on_date, at)
         lines = [_order_line(o, held_for.get(o["id"], 0), holds, unit, asking) for o in orders]
         hold_lines = [] if decision and decision.get("allocations") else [
             dict(h, text=f"{h['seller_name']}が {h['quantity']}{unit}を 1{unit} {h['unit_price_yen']:,}円で押さえています（期限 {h['valid_until'][11:16]}）。"
                          "どの注文に回すかは未定です") for h in holds]
-        ask = _ask(con, case, orders, unit) if case else dict(waiting_for=None, pending=None, question=None, options=[], case=None)
+        ask = _ask(con, case, orders, unit, at) if case else dict(waiting_for=None, pending=None, question=None, options=[], case=None)
         # AI の順番を待つ出来事（まだ誰も引き受けていない・この組織の AI を起こす・この品目）
         ai_queue = []
-        for r in con.execute("SELECT id, at, kind, payload_json FROM biz_event WHERE status = 'pending' AND run_id IS NULL ORDER BY id"):
+        for r in con.execute("SELECT b.id, b.at, b.kind, b.payload_json, b.status, b.run_id, r.started_at FROM biz_event b "
+                             "LEFT JOIN agent_run r ON r.id = b.run_id ORDER BY b.id"):
+            waiting = (r["status"] == "pending" and r["run_id"] is None) if at is None else (cut(r["at"]) and (r["run_id"] is None or not cut(r["started_at"])))
+            if not waiting:
+                continue
             ev = dict(id=r["id"], kind=r["kind"], payload=json.loads(r["payload_json"]))
             if agents.wakes(owner, ev) and agents.event_item(owner, ev) == item:
-                ai_queue.append(dict(event_id=r["id"], kind=r["kind"], at=r["at"]))
+                ai_queue.append(dict(event_id=r["id"], kind=r["kind"], source=ev["payload"].get("source"), at=r["at"]))
         ask["ai_queue"] = ai_queue
         # 売り先への連絡の下書き（AI が作った・まだ送っていない。送るかは人が決める）
-        ask["drafts"] = [dict(draft_id=r["id"], customer=r["customer"], substitute=r["sub"], body=r["body"], reason=r["reason"], status=r["status"],
-                              created_at=r["created_at"], decided_by=r["decided_by"]) for r in con.execute(
-            "SELECT d.id, c.name AS customer, s.name AS sub, d.body, d.reason, d.status, d.created_at, d.decided_by FROM customer_draft d "
-            "JOIN customer c ON c.id = d.customer_id LEFT JOIN item s ON s.id = d.substitute_item_id WHERE d.item_id = ? ORDER BY d.id", (it["id"],))]
+        drafts = []
+        for r in con.execute("SELECT d.id, c.name AS customer, s.name AS sub, d.body, d.reason, d.status, d.created_at, d.decided_by, d.decided_at FROM customer_draft d "
+                             "JOIN customer c ON c.id = d.customer_id LEFT JOIN item s ON s.id = d.substitute_item_id WHERE d.item_id = ? ORDER BY d.id", (it["id"],)):
+            if not cut(r["created_at"]):
+                continue
+            decided = r["status"] != "draft" and cut(r["decided_at"]) if at is not None else True
+            drafts.append(dict(draft_id=r["id"], customer=r["customer"], substitute=r["sub"], body=r["body"], reason=r["reason"],
+                               status=r["status"] if decided else "draft", created_at=r["created_at"], decided_by=r["decided_by"] if decided else None))
+        ask["drafts"] = drafts
+        # 引当のない在庫（売り先の当てのない数量）と、その扱いの問い
+        ask["stock"] = _stock_lines(con, it, orders, unit, at)
+        ask["stock_question"], ask["stock_decision"] = _stock_question_at(con, it, at, cut)
         out = dict(owner=owner, item=dict(code=it["code"], name=it["name"], unit=unit), lines=lines, holds=hold_lines,
                    decision=dict(decision, text=consult.decision_text(decision, unit)) if decision else None, **ask)
     finally:
@@ -404,14 +472,103 @@ def current(owner: str, item: str, on_date: str = sc.DEMO_DATE) -> dict:
     return out
 
 
-def _live_holds(owner, item, on_date):
+CASE_RESULT = {"registered": "registered", "rejected": "rejected", "held": "held", "stale": "stale", "needs_president": "needs_president",
+               "incomplete": "incomplete"}
+
+
+def _case_at(con, it, on_date, at):
+    """表に出す案件。at を渡すと、その時刻に最新だった案件と、その時刻の状態・版を記録から組み直す。"""
+    if at is None:
+        r = con.execute("SELECT * FROM deal_case WHERE item_id = ? AND trade_date = ? ORDER BY updated_at DESC, id DESC LIMIT 1", (it["id"], on_date)).fetchone()
+        return dict(r) if r else None
+    cases = [dict(r) for r in con.execute("SELECT * FROM deal_case WHERE item_id = ? AND trade_date = ? ORDER BY id", (it["id"], on_date))
+             if _t(r["created_at"]) <= _t(at)]
+    if not cases:
+        return None
+    case = cases[-1]
+    evs = [(_t(t["at"]), 0, t["id"], "presented", t["version"]) for t in con.execute(
+        "SELECT id, at, version FROM workspace_turn WHERE case_id = ? AND source = 'present'", (case["id"],))]
+    evs += [(_t(d["at"]), 1, d["id"], CASE_RESULT[d["result"]], None) for d in con.execute(
+        "SELECT id, at, result FROM case_decision WHERE case_id = ?", (case["id"],)) if d["result"] in CASE_RESULT]
+    evs += [(_t(h["decided_at"]), 1, h["id"], "open", None) for h in con.execute(   # 相談の答え（数量・配分の変更）で案件は開き直る
+        "SELECT id, decided_at FROM human_decision WHERE case_id = ? AND source = 'consultation'", (case["id"],))]
+    evs = sorted(e for e in evs if e[0] <= _t(at))
+    case["status"] = evs[-1][3] if evs else "open"
+    case["version"] = max([e[4] for e in evs if e[4] is not None], default=0)
+    return case
+
+
+def _decision_at(con, case_id, at):
+    from agentdock import consult
+    if at is None:
+        return consult.latest_decision(con, case_id)
+    for r in con.execute("SELECT * FROM human_decision WHERE case_id = ? ORDER BY id DESC", (case_id,)):
+        if _t(r["decided_at"]) <= _t(at):
+            d = dict(r)
+            d["allocations"] = json.loads(d["allocations_json"]) if d["allocations_json"] else None
+            return d
+    return None
+
+
+def _stock_lines(con, it, orders, unit, at):
+    """引当のない在庫の状態の行（コードが決まった言い方で作る）。回すつもりの売り先ごとにまとめる。"""
+    from agentdock import stockwork
+    rows = stockwork.unallocated(con, it["id"]) if at is None else stockwork.unallocated_at(con, it["id"], at)
+    groups = {}
+    for r in rows:
+        groups[r["intended_customer"]] = groups.get(r["intended_customer"], 0) + r["quantity"]
+    out = []
+    for cust, n in groups.items():
+        if cust:
+            waiting_order = any(o["customer"] == cust and o["quantity"] > o["registered"] for o in orders)
+            text = (f"引当のない在庫 {n}{unit}：{cust}に回すつもりで仕入れました（" +
+                    (f"{cust}の注文に、まだ充てていません）" if waiting_order else f"{cust}の注文はまだありません）"))
+        else:
+            text = f"引当のない在庫 {n}{unit}：売り先が決まっていません"
+        out.append(dict(intended_customer=cust, quantity=n, state="spare", text=text))
+    return out
+
+
+def _stock_question_at(con, it, at, cut):
+    """開いている扱いの問い（無ければ None）と、最後の答え（人の決定）。"""
+    open_q = last = None
+    for q in con.execute("SELECT * FROM stock_question WHERE item_id = ? ORDER BY id", (it["id"],)):
+        if not cut(q["created_at"]):
+            continue
+        if q["status"] == "answered" and cut(q["answered_at"]):
+            labels = {c["code"]: c["label"] for c in json.loads(q["choices_json"])}
+            last = dict(question_id=q["id"], choice=q["answer"], label=labels.get(q["answer"]), answered_by=q["answered_by"], at=q["answered_at"],
+                        text=f"{consult_who(q['answered_by'])}の決定：引当のない在庫は「{labels.get(q['answer'])}」")
+            open_q = None
+            continue
+        if q["status"] in ("stale", "closed") and cut(q["closed_at"]):
+            open_q = None
+            continue
+        open_q = dict(question_id=q["id"], text=q["question"], quantity=q["quantity"], choices=json.loads(q["choices_json"]),
+                      recommended=q["recommended"], reason=q["reason"], at=q["created_at"])
+    return open_q, last
+
+
+def consult_who(role):
+    from agentdock import consult
+    return consult.WHO.get(role, role)
+
+
+def _live_holds(owner, item, on_date, at=None):
     now = _now_demo(on_date)
     m = db.connect(db.MARKET)
     try:
-        rows = [dict(r) for r in m.execute(
-            "SELECT t.id, t.seller, t.quantity, t.unit_price_yen, t.valid_until, t.message_id FROM offer_term t JOIN network_message n ON n.id = t.message_id "
-            "WHERE t.buyer = ? AND t.item_code = ? AND n.trade_date = ? AND t.status = 'offered' AND t.hold_ref IS NOT NULL AND t.valid_until > ? ORDER BY t.id",
-            (owner, item, on_date, now))]
+        if at is None:
+            rows = [dict(r) for r in m.execute(
+                "SELECT t.id, t.seller, t.quantity, t.unit_price_yen, t.valid_until, t.message_id FROM offer_term t JOIN network_message n ON n.id = t.message_id "
+                "WHERE t.buyer = ? AND t.item_code = ? AND n.trade_date = ? AND t.status = 'offered' AND t.hold_ref IS NOT NULL AND t.valid_until > ? ORDER BY t.id",
+                (owner, item, on_date, now))]
+        else:   # その時刻に出ていた条件（後で確定・取り消しになったものも、その時刻の前なら数える）
+            rows = [dict(r) for r in m.execute(
+                "SELECT t.id, t.seller, t.quantity, t.unit_price_yen, t.valid_until, t.message_id, t.status, t.created_at, t.updated_at FROM offer_term t "
+                "JOIN network_message n ON n.id = t.message_id WHERE t.buyer = ? AND t.item_code = ? AND n.trade_date = ? AND t.hold_ref IS NOT NULL "
+                "AND t.valid_until > ? ORDER BY t.id", (owner, item, on_date, now))
+                if _t(r["created_at"]) <= _t(at) and (r["status"] == "offered" or _t(r["updated_at"]) > _t(at))]
     finally:
         m.close()
     # 1つの返事の条件は二者択一（押さえは1件）。返事ごとに最も多い数量の条件を押さえとして数える
@@ -423,12 +580,18 @@ def _live_holds(owner, item, on_date):
                  unit_price_yen=r["unit_price_yen"], valid_until=r["valid_until"]) for r in best.values()]
 
 
-def _open_inquiries(owner, item, on_date) -> list[str]:
-    """返事の来ていない自社の問い合わせの宛先（組織の名前）。"""
+def _open_inquiries(owner, item, on_date, at=None) -> list[str]:
+    """返事の来ていない自社の問い合わせの宛先（組織の名前）。at を渡すと、その時刻に返事の来ていなかったもの。"""
     m = db.connect(db.MARKET)
     try:
-        rows = m.execute("SELECT q.to_owner FROM network_message q WHERE q.from_owner = ? AND q.kind = 'inquiry' AND q.item_code = ? AND q.trade_date = ? "
-                         "AND NOT EXISTS (SELECT 1 FROM network_message r WHERE r.in_reply_to = q.id) ORDER BY q.id", (owner, item, on_date)).fetchall()
+        if at is None:
+            rows = m.execute("SELECT q.to_owner FROM network_message q WHERE q.from_owner = ? AND q.kind = 'inquiry' AND q.item_code = ? AND q.trade_date = ? "
+                             "AND NOT EXISTS (SELECT 1 FROM network_message r WHERE r.in_reply_to = q.id) ORDER BY q.id", (owner, item, on_date)).fetchall()
+        else:
+            rows = [r for r in m.execute(
+                "SELECT q.to_owner, q.created_at, (SELECT min(r.created_at) FROM network_message r WHERE r.in_reply_to = q.id) AS replied FROM network_message q "
+                "WHERE q.from_owner = ? AND q.kind = 'inquiry' AND q.item_code = ? AND q.trade_date = ? ORDER BY q.id", (owner, item, on_date))
+                if _t(r["created_at"]) <= _t(at) and (r["replied"] is None or _t(r["replied"]) > _t(at))]
     finally:
         m.close()
     return list(dict.fromkeys(sc.OWNERS[r[0]]["name"] for r in rows))
@@ -436,9 +599,11 @@ def _open_inquiries(owner, item, on_date) -> list[str]:
 
 def _order_line(o, held, holds, unit, asking=()):
     q, reg = o["quantity"], o["registered"]
+    fs = o.get("from_stock", 0)
     secured = reg + held
     seller = holds[0]["seller_name"] if holds else ""
-    detail = "・".join(x for x in ((f"登録済み {reg}{unit}" if reg else ""), (f"{seller}が押さえ中 {held}{unit}" if held else "")) if x)
+    detail = "・".join(x for x in ((f"登録済み {reg - fs}{unit}" if reg - fs else ""), (f"在庫から {fs}{unit}" if fs else ""),
+                                   (f"{seller}が押さえ中 {held}{unit}" if held else "")) if x)
     if secured >= q:
         text = f"{o['customer']}の注文 {q}{unit}を確保しています（{detail}）"
         state = "secured"
@@ -453,12 +618,27 @@ def _order_line(o, held, holds, unit, asking=()):
                 state=state, text=text)
 
 
-def _ask(con, case, orders, unit):
+def _cons_at(con, case, at):
+    """案件の最新の相談。at を渡すと、その時刻に開いていた最新の相談と、その時刻の状態。"""
+    if at is None:
+        return con.execute("SELECT * FROM consultation WHERE case_id = ? ORDER BY id DESC LIMIT 1", (case["id"],)).fetchone()
+    for c in con.execute("SELECT c.*, d.status AS case_status, d.updated_at AS case_at FROM consultation c JOIN deal_case d ON d.id = c.case_id "
+                         "WHERE c.case_id = ? ORDER BY c.id DESC", (case["id"],)):
+        opened, hist = _cons_history(con, c)
+        past = [h for h in hist if h["at"] and _t(h["at"]) <= _t(at)]
+        if not past:
+            continue
+        return dict(dict(c), status=sorted(past, key=lambda h: _t(h["at"]))[-1]["state"])
+    return None
+
+
+def _ask(con, case, orders, unit, at=None):
     """人を待つこと：最新の版の問い（短い問い）と案（短い名前・コードの数字・根拠）。網谷さんを待つ間は担当者の操作を出さない。"""
     from agentdock import consult
     waiting_for = pending = None
-    cons = con.execute("SELECT * FROM consultation WHERE case_id = ? ORDER BY id DESC LIMIT 1", (case["id"],)).fetchone()
-    last = con.execute("SELECT * FROM case_decision WHERE case_id = ? ORDER BY id DESC LIMIT 1", (case["id"],)).fetchone()
+    cons = _cons_at(con, case, at)
+    last = next((r for r in con.execute("SELECT * FROM case_decision WHERE case_id = ? ORDER BY id DESC", (case["id"],))
+                 if at is None or _t(r["at"]) <= _t(at)), None)
     if case["status"] == "needs_president" and last is not None and last["result"] == "needs_president":
         waiting_for = "president"
         d = json.loads(last["detail"] or "{}")
@@ -484,8 +664,8 @@ def _ask(con, case, orders, unit):
                                              refs.get(code, []))] if refs.get(code) else []
         seen = {r["id"] for r in rows}
         return rows + [dict(id=v.get("id"), title=v.get("title"), author=v.get("author"), written_on=v.get("written_on")) for v in vault_cards if v.get("id") not in seen]
-    rows = [dict(r) for r in con.execute("SELECT * FROM board_option WHERE case_id = ? AND version = ? AND status = 'offered' ORDER BY code",
-                                         (case["id"], case["version"]))]
+    rows = [dict(r) for r in con.execute("SELECT * FROM board_option WHERE case_id = ? AND version = ? ORDER BY code", (case["id"], case["version"]))
+            if at is not None or r["status"] == "offered"]   # 記録の再生では、その版の案（後で下げた案も、その時刻には出ていた）
     nums = {r["id"]: json.loads(r["numbers_json"]) for r in rows}
     gp = lambda n: n["gross_profit_yen"] if n["gross_profit_yen"] is not None else n["gross_profit_without_unconfirmed_yen"]
     rec = next((r for r in rows if r["recommended"]), rows[0] if rows else None)
@@ -514,3 +694,40 @@ def _ask(con, case, orders, unit):
                 options=options, case=dict(id=case["id"], version=case["version"], status=case["status"]),
                 consultation=dict(id=cons["id"], status=cons["status"], version=cons["task_version"],
                                   change=json.loads(cons["change_json"]) if cons["change_json"] else None) if cons else None)
+
+# ── 記録の再生：今の状態が変わった時刻ごとの、今の状態（記録から組み直す）──────────────
+
+def _times(con, owner, item, on_date) -> list[str]:
+    v = view(owner, item, on_date)
+    ts = [h["at"] for x in v["items"] for h in x["history"]]
+    ts += [t for r in v["activity"] for t in (r["started_at"], r["ended_at"])]
+    for sql in ("SELECT at FROM biz_event", "SELECT created_at FROM deal_case", "SELECT at FROM case_decision", "SELECT decided_at FROM human_decision",
+                "SELECT created_at FROM customer_draft", "SELECT decided_at FROM customer_draft", "SELECT updated_at FROM stock",
+                "SELECT unallocated_at FROM stock", "SELECT created_at FROM stock_question", "SELECT answered_at FROM stock_question",
+                "SELECT closed_at FROM stock_question", "SELECT at FROM workspace_turn"):
+        ts += [r[0] for r in con.execute(sql)]
+    out, seen = [], set()
+    for t in sorted((t for t in ts if t), key=_t):
+        if _t(t) not in seen:
+            seen.add(_t(t))
+            out.append(t)
+    return out
+
+
+def timeline(owner: str, item: str, on_date: str = sc.DEMO_DATE) -> dict:
+    """記録の再生に使う今の状態の移り変わり。状態が変わった時刻だけを残す（同じ形が続く時刻は落とす）。"""
+    if owner not in db.OWNER_CODES:
+        raise ValueError(owner)
+    con = db.connect(owner)
+    try:
+        times = _times(con, owner, item, on_date)
+    finally:
+        con.close()
+    snaps, prev = [], None
+    for t in times:
+        cur = current(owner, item, on_date, at=t)
+        k = json.dumps(cur, ensure_ascii=False, sort_keys=True)
+        if k != prev:
+            snaps.append(dict(at=t, current=cur))
+            prev = k
+    return dict(owner=owner, item=item, snapshots=snaps)

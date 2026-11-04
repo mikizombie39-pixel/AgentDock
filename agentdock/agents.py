@@ -10,7 +10,7 @@
 import datetime
 import json
 
-from agentdock import authority, autonomy, criteria, db, market, network
+from agentdock import authority, autonomy, criteria, db, market, network, stockwork
 from agentdock.autonomy import Tool, ToolError
 from agentdock.seed import scenario as sc
 
@@ -85,15 +85,27 @@ def read_orders(ctx, inp):
         except LookupError:
             ceiling = None
         out.append(dict(order_id=r[0], customer=r[1], quantity=r[2], unit=_u(it), sell_price_yen=r[3],
-                        buy_ceiling_yen=ceiling, status=r[4]))
+                        buy_ceiling_yen=ceiling, status=r[4], remaining=r[2] - stockwork.filled(ctx.con, r[0])))
     pre = [dict(r) for r in ctx.con.execute(
         "SELECT id, side, quantity, max_unit_price_yen, min_unit_price_yen, spec, deliver_by, approved_by, valid_until FROM preapproval "
         "WHERE item_id = ? AND status = 'active'", (it["id"],))]
-    res = dict(item=it["name"], orders=out, note="buy_ceiling_yen は自社の仕入れの上限（売値 − 費用 − 欲しい利益）。相手に書かない")
+    res = dict(item=it["name"], orders=out, note="buy_ceiling_yen は自社の仕入れの上限（売値 − 費用 − 欲しい利益）。相手に書かない。"
+                                                 "remaining は注文のうち、まだ在庫を充てていない数")
     if pre:
         res["preapproved"] = pre
         res["preapproved_note"] = "担当者が事前に承認した条件。この範囲なら条件付きの合意ができる。超えれば担当者の承認待ちになる"
+    spare = _spare(ctx.con, it)
+    if spare:
+        res["unallocated_stock"] = spare
+        res["unallocated_note"] = ("引当のない在庫（どの注文にも充てていない手元の数）。新しい注文には、問い合わせる前に allocate_stock で充てる。"
+                                   "intended_customer は人が承認した案で回すと決めた売り先（その売り先の注文にだけ充てられる）")
     return _j(res)
+
+
+def _spare(con, it) -> list[dict]:
+    """引当のない在庫（売り先の当てのない数量）。"""
+    return [dict(quantity=r["quantity"], unit=_u(it), intended_customer=r["intended_customer"], unit_cost_yen=r["unit_cost_yen"])
+            for r in stockwork.unallocated(con, it["id"])]
 
 
 def _preapproval(con, item_id: int, side: str):
@@ -227,6 +239,11 @@ def read_stock(ctx, inp):
     if rule_floor is not None:
         out["floor_yen"] = rule_floor
         out["floor_note"] = "floor_yen は自社の今日の最低の値（明日の見込みで上げた分を含む）。相手に書かない。これより安い条件は出せない（コードが止める）"
+    resale = stockwork.resale_floor(ctx.con, it["id"])
+    if resale is not None:
+        out["resale_floor"] = resale
+        out["resale_note"] = ("resale_floor は引当のない在庫を譲る時の自社の最低の値（仕入れ値 purchase_unit_yen ＋ 費用 costs の合計）。"
+                              "相手に書かない。これより安い条件は出せない（コードが止める）")
     holds = [dict(hold_id=r[0], buyer=r[1], buyer_name=OWNER_NAMES.get(r[1], r[1]), quantity=r[2], unit_price_yen=r[3], expires_at=r[4]) for r in ctx.con.execute(
         "SELECT h.id, h.buyer, h.quantity, h.unit_price_yen, h.expires_at FROM stock_hold h JOIN stock s ON s.id = h.stock_id "
         "WHERE s.item_id = ? AND h.status = 'held' AND h.expires_at > ? ORDER BY h.id", (it["id"], demo_now(ctx.on_date)))]
@@ -309,13 +326,14 @@ def _check_reply_rules(ctx, q: dict, inp: dict):
         mine = [p for p in market.open_requests(it["code"], now) if p["owner"] == ctx.owner and p["side"] == "sell"]
         limit = authority.limit_for(ctx.con, "staff")   # 自社の担当者の権限（1件の上限・表から読む）
         rule_floor = _rule_floor(ctx.con, it["code"], ctx.on_date)   # 売り手の決まりの最低の値（明日の見込みで上げる分を含む）
+        resale = stockwork.resale_floor(ctx.con, it["id"])           # 引当のない在庫を譲る時の最低の値（仕入れ値 ＋ 費用）
         for t in terms:
             qty, price = t["quantity"], t["unit_price_yen"]
             if qty > avail:
                 raise ToolError(f"在庫の内で出せる数を超えています（出せるのは {avail}{_u(it)}）")
             if limit is not None and qty * price > limit:
                 raise ToolError("この条件の金額は、自社の担当者の権限（1件の上限）を超えます")
-            floors = [f for f in (_floor_for(ctx.con, it["id"], qty), rule_floor) if f is not None]
+            floors = [f for f in (_floor_for(ctx.con, it["id"], qty), rule_floor, resale and resale["floor_yen"]) if f is not None]
             floor = max(floors) if floors else None
             if floor is not None and price < floor:
                 raise ToolError(f"この数量では、その値は自社の最低の値を下回ります（{qty}{_u(it)} の最低は {floor}円）")
@@ -404,6 +422,8 @@ def post_request(ctx, inp):
         if pre is not None and (inp["quantity"] > pre["quantity"] or
                                 (pre["max_unit_price_yen"] is not None and inp["unit_price_yen"] > pre["max_unit_price_yen"])):
             raise ToolError("担当者が事前に承認した条件（数量・値の上限）を超えています")
+    else:
+        _check_sell_post(ctx, it, inp)
     from agentdock import disclosure
     valid_until = f"{ctx.on_date}T10:00:00+09:00"
     try:
@@ -412,6 +432,50 @@ def post_request(ctx, inp):
     except disclosure.DisclosureError as e:
         raise ToolError(f"文に出せない内容があります（{', '.join(e.reasons)}）。書き直してください") from None
     return f"掲示を出しました（番号 {rid}・期限 10:00）。ほかの組織に届きます。"
+
+
+def _check_sell_post(ctx, it, inp) -> None:
+    """譲りたい掲示：手元の在庫の内（仮押さえを引く）・自社の最低の値以上。人が登録した仕入れの残りを譲るかは人が決める（扱いの問いの答え）。"""
+    now = demo_now(ctx.on_date)
+    rows = stockwork.unallocated(ctx.con, it["id"], now)
+    avail = sum(max(0, r["free"]) for r in rows) + sum(
+        r[1] - ctx.con.execute("SELECT coalesce(sum(quantity), 0) FROM stock_hold WHERE stock_id = ? AND status = 'held' AND expires_at > ?",
+                               (r[0], now)).fetchone()[0]
+        for r in ctx.con.execute("SELECT id, quantity FROM stock WHERE item_id = ? AND status = 'for_sale'", (it["id"],)))
+    if inp["quantity"] <= 0 or inp["quantity"] > avail:
+        raise ToolError(f"手元の在庫の内で出せる数を超えています（出せるのは {avail}{_u(it)}）")
+    resale = stockwork.resale_floor(ctx.con, it["id"])
+    floors = [f for f in (_floor_for(ctx.con, it["id"], inp["quantity"]), _rule_floor(ctx.con, it["code"], ctx.on_date),
+                          resale and resale["floor_yen"]) if f is not None]
+    if floors and inp["unit_price_yen"] < max(floors):
+        raise ToolError(f"その値は自社の最低の値を下回ります（最低は {max(floors)}円）")
+    if any(r["trade_id"] for r in rows) and stockwork.latest_answer(ctx.con, it["id"]) != "offer_to_buyers":
+        raise ToolError("人が登録した仕入れの残りです。ほかの仲買に譲るかは担当者が決めます（ask_about_stock で問い、答えを待ってください）")
+
+
+def allocate_stock(ctx, inp):
+    """引当のない在庫を、今日の開いている注文に充てる（自社の中の引当・取引の登録ではない）。"""
+    try:
+        r = stockwork.allocate(ctx.con, inp["item_code"], inp["order_id"], inp["quantity"], ctx.run_id, ctx.on_date, demo_now(ctx.on_date))
+    except stockwork.StockError as e:
+        raise ToolError(str(e)) from None
+    u = _u(_item(ctx.con, inp["item_code"]))
+    return (f"引当のない在庫から、{r['customer']}の注文 {r['order_id']} に {r['quantity']}{u} を充てました。"
+            f"この注文の残りは {r['order_remaining']}{u}、引当のない在庫の残りは {r['unallocated_left']}{u} です。"
+            + ("残りを満たす仕入れ先に、残りの数だけ問い合わせてください。" if r["order_remaining"] else ""))
+
+
+def ask_about_stock(ctx, inp):
+    """引当のない在庫の扱いを担当者に問う（選択肢の名前はコードが決める）。答えは出来事として届く。"""
+    try:
+        r = stockwork.ask(ctx.con, inp["item_code"], inp["question"], inp["choices"], inp.get("recommended"), inp.get("reason"),
+                          inp.get("customer"), ctx.run_id)
+    except stockwork.StockError as e:
+        raise ToolError(str(e)) from None
+    ctx.summary = inp["question"]
+    u = _u(_item(ctx.con, inp["item_code"]))
+    return (f"担当者に問いました（問い {r['question_id']}・引当のない在庫 {r['quantity']}{u}）：" + "／".join(c["label"] for c in r["choices"])
+            + "。答えは出来事として届きます。")
 
 
 def present_options(ctx, inp):
@@ -613,10 +677,30 @@ DRAFT = Tool(
     draft_to_customer, strict=False)
 WAIT = Tool("wait_for_replies", "問い合わせの返事を待つ（この起動を終える）。", {"reason": STR}, wait_for_replies, ends="waiting")
 NOTHING = Tool("do_nothing", "何もしない（この出来事は自社に関係しない・動く必要がない）。", {"reason": STR}, finish, ends="nothing")
+# 引当のない在庫の道具（2026-11-04）。strict の道具を増やすと文法が大きすぎて呼べなくなるので、strict を外す
+ALLOCATE = Tool(
+    "allocate_stock",
+    "手元の引当のない在庫（read_orders の unallocated_stock）を、今日の開いている注文に充てる。新しい注文には、問い合わせる前にまずこれで充て、"
+    "足りない分だけ問い合わせる。数量（注文の残り・引当のない数の内）と、充ててよいか（人が回すと決めた売り先）はコードが確かめる。",
+    {"item_code": ITEM, "order_id": INT, "quantity": INT, "reason": REASON},
+    allocate_stock, strict=False)
+ASK_STOCK = Tool(
+    "ask_about_stock",
+    "引当のない在庫（売り先の当てのない数量）の扱いを、担当者に問う（この起動を終える）。choices から担当者に出す選択肢を選ぶ"
+    "（confirm_customer＝売り先に注文を確かめる・customer にその売り先の名前／offer_to_buyers＝ほかの仲買に譲る／keep＝そのまま持つ）。"
+    "選択肢の名前と数量はコードが書く。question は画面の中央に出す短い問い（40字まで）。答えは出来事として届く。",
+    {"item_code": ITEM, "question": STR, "choices": {"type": "array", "items": {"type": "string", "enum": list(stockwork.CHOICES)}},
+     "recommended": {"type": ["string", "null"]}, "customer": {"type": ["string", "null"]}, "reason": REASON},
+    ask_about_stock, ends="waiting", strict=False)
+OFFER_STOCK = Tool(
+    "post_request", "仲買どうしの掲示を出す（譲りたい・買いたい）。他の全ての組織に届く。文に自社の上限・最低の値・売り先の名前は書かない。"
+                    "引当のない在庫を譲る掲示は、担当者が「ほかの仲買に譲る」と答えた時だけ出せる（コードが確かめる）。",
+    {"side": {"type": "string", "enum": ["buy", "sell"]}, "item_code": ITEM, "quantity": INT, "min_qty": INT, "unit_price_yen": INT, "message": STR},
+    post_request, ends="done", strict=False)
 
 TOOLSETS = {
     "amiya": [READ_ORDERS, READ_MARKET, READ_MATERIAL, READ_VAULT, READ_CUSTOMERS, READ_POSTS, READ_THREAD,
-              SEND_INQUIRY, REPLY, WAIT, COMPARE, PRESENT, ANSWER, DRAFT, NOTHING],
+              SEND_INQUIRY, REPLY, WAIT, COMPARE, PRESENT, ANSWER, DRAFT, ALLOCATE, ASK_STOCK, OFFER_STOCK, NOTHING],
     "iwase": [READ_STOCK, READ_MY_MATERIAL, READ_MARKET, READ_THREAD, REPLY, NOTHING],
     "buyer_b": [READ_ORDERS, READ_STOCK, READ_MARKET, READ_MATERIAL, READ_VAULT, READ_POSTS, READ_THREAD, POST_REQUEST, REPLY, NOTHING],
     "buyer_c": [READ_STOCK, READ_MARKET, READ_THREAD, REPLY, NOTHING],
@@ -656,7 +740,9 @@ SYSTEMS = {
              "取引が登録された後も、満たしていない注文が残れば続けます（漁協やほかの仲買に問い合わせる・担当者に相談する）。"
              "問い合わせ・期限つきの仮押さえまでは、あなたが進めてよい予約です。登録・優先の変更は担当者が決めます。"
              "売り先（スーパー・料亭など）への連絡は draft_to_customer で下書きするだけです。送るかは担当者が決めます。"
-             "案の根拠に Vault の経験を使ったら、その番号を vault_refs に入れます。" + _COMMON,
+             "案の根拠に Vault の経験を使ったら、その番号を vault_refs に入れます。"
+             "引当のない在庫（売り先の当てのない数量）も残りの仕事です。新しい注文には、問い合わせる前に allocate_stock で手元の在庫を充て、足りない分だけ問い合わせます。"
+             "充てる注文が無ければ、ask_about_stock で担当者に扱いを問います（売り先に注文を確かめる・ほかの仲買に譲る・そのまま持つ）。" + _COMMON,
     "iwase": "あなたは岩瀬漁協（売り手）の Claude AI パートナーです（Agent Dock）。仲買からの問い合わせに、自社の在庫と数量ごとの最低の値を見て答えます。"
              "最低の値より安い条件は出せません。まとめて買えば値を下げられる場合は、その条件を示してかまいません。"
              "同じ仲買から条件を変えた問い合わせが届いたら、その問い合わせに、今の在庫と数量ごとの最低の値で答え直します（前の仮押さえは新しい返事に置き換わります）。" + _COMMON,
@@ -758,6 +844,22 @@ def _open_orders(owner: str, item: str) -> list[dict]:
         c.close()
 
 
+def _spare_lines(owner: str, item: str) -> str:
+    """引当のない在庫の文（コードが DB から書く）。無ければ空。"""
+    c = db.connect(owner)
+    try:
+        it = c.execute("SELECT id, unit FROM item WHERE code = ?", (item,)).fetchone()
+        rows = stockwork.unallocated(c, it["id"]) if it else []
+    finally:
+        c.close()
+    if not rows:
+        return ""
+    u = sc.unit_label(it["unit"])
+    parts = [f"{r['quantity']}{u}" + (f"（人が承認した案で{r['intended_customer']}に回すと決めた分・{r['intended_customer']}の注文はまだ無い）"
+                                      if r["intended_customer"] else "（売り先なし）") for r in rows]
+    return f"引当のない在庫（売り先の当てのない数量）：{'・'.join(parts)}。"
+
+
 def situation(owner: str, event: dict, on_date: str) -> tuple[str, str]:
     """状況の報告（Claude に渡す最初の文）と、品目のコードを返す。数字はコードが DB から出す。"""
     p = event["payload"]
@@ -772,8 +874,12 @@ def situation(owner: str, event: dict, on_date: str) -> tuple[str, str]:
         head = f"出来事：注文が入りました。{p['customer']}から {what}（注文の番号 {p['order_id']}）。"
         opened = _open_orders(owner, item)
         if len(opened) > 1:   # 作業の途中の注文：ほかの注文と合わせて足りるかを確かめる
-            head += ("\n今日のこの品目の注文（開いているもの）：" + "・".join(f"{o['customer']} {o['quantity']}{o['unit']}" for o in opened) +
+            head += ("\n今日のこの品目の注文（開いているもの）：" + "・".join(f"{o['customer']} {o['quantity']}{o['unit']}（残り {o['remaining']}{o['unit']}）"
+                                                                    for o in opened) +
                      "。前のやり取りと押さえは下のとおりです。合わせて足りるかを道具で確かめ、足りなければ問い合わせ直すか、担当者に優先を相談してください。")
+        spare = _spare_lines(owner, item)
+        if spare:   # 手元の在庫を先に充て、足りない分だけ問い合わせる
+            head += f"\n{spare}この注文には、問い合わせる前に allocate_stock で手元の在庫を充て、足りない分だけ問い合わせてください。"
     elif event["kind"] == "info_received" and p.get("source") == "deal_request":
         r = network.request_for(owner, p["request_id"])
         item = r["item_code"]
@@ -789,6 +895,14 @@ def situation(owner: str, event: dict, on_date: str) -> tuple[str, str]:
         head = f"出来事：{OWNER_NAMES[m['from_owner']]}から{what}が届きました（番号 {m['id']}・{m['kind']}）：「{m['body']}」{cond}"
     elif event["kind"] == "human_choice" and p.get("source") == "consultation":
         item, head = _change_situation(owner, p)
+    elif event["kind"] == "human_choice" and p.get("source") == "stock_question":
+        item = p["item"]
+        who = {"staff": "担当者", "president": "社長"}.get(p.get("answered_by"), p.get("answered_by"))
+        todo = {"confirm_customer": f"{p.get('customer')}への連絡（注文があるかを確かめる文）を draft_to_customer で下書きしてください。送るかは担当者が決めます。"
+                                    f"{p.get('customer')}から注文が入ったら、allocate_stock でこの在庫を充てます。",
+                "offer_to_buyers": "post_request（side は sell）で、ほかの仲買に譲る掲示を出してください。値は自社の最低の値（read_stock の resale_floor）以上です。",
+                "keep": "そのまま持ちます。do_nothing で終えてください。"}[p["choice"]]
+        head = (f"出来事：{who}が引当のない在庫の扱いを答えました（問い {p['question_id']}）：「{p['label']}」。\n" + _spare_lines(owner, item) + "\n" + todo)
     elif event["kind"] == "human_choice":
         item = _case_item(owner, p["case_id"])
         head =("出来事：担当者が選んだ案は、承認の時の再検証で確定できませんでした（案件 {}）。理由：{}。"
@@ -798,10 +912,12 @@ def situation(owner: str, event: dict, on_date: str) -> tuple[str, str]:
     elif event["kind"] == "trade_registered":
         item = p["item"]
         left = [o for o in _open_orders(owner, item) if o["remaining"] > 0]
+        spare = _spare_lines(owner, item)
         head = (f"出来事：取引を登録しました（案件 {p['case_id']}・{', '.join(p.get('trades') or [])}）。" +
                 ("満たしていない注文：" + "・".join(f"{o['customer']} {o['quantity']}{o['unit']}（注文 {o['order_id']}）のうち {o['remaining']}{o['unit']}" for o in left) +
                  "。残りを満たす仕入れ先を探すか（漁協・ほかの仲買への問い合わせ）、担当者に相談してください。売り先への連絡は下書きだけです。"
-                 if left else "満たしていない注文はありません。"))
+                 if left else "満たしていない注文はありません。") +
+                (f"\n{spare}これも残りの仕事です。充てられる注文が無ければ、ask_about_stock で担当者に扱いを問うてください。" if spare else ""))
     else:
         item = event_item(owner, event)
         head = f"出来事：{event['kind']}"

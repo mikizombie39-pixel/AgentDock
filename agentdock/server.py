@@ -21,6 +21,8 @@ GET  /api/verify?owner=amiya                         ← 技術の検証（Claud
 POST /api/start    {"variant", "item"}                ← 業務を始める（漁協の資料と品目の注文を入れる・1回だけ・item は aji か buri_xl）
 POST /api/order    {"owner", "customer", "item", "quantity", "idempotency_key"}  ← 作業の途中で売り先の注文が入る（実演の操作・売値は売り先の表から）
 POST /api/draft    {"owner", "draft_id", "action": "approve"|"discard", "role"}  ← 売り先への連絡の下書きを人が決める（送るのは人）
+POST /api/stock_answer {"owner", "question_id", "choice", "idempotency_key", "role"}  ← 引当のない在庫の扱いの問いに人が答える（出来事を書き、AI を起こす）
+GET  /api/current_timeline?owner=amiya&item=buri_xl  ← 記録の再生：今の状態が変わった時刻ごとの今の状態（記録から組み直す）
 POST /api/worker/resume                               ← 止まった実演の通しを再開する
 
   python -m agentdock.server --port 8792 --real --new-take   # 本物の Claude で通す（記録は AgentDock-local の takes フォルダの「日時-live」）
@@ -34,7 +36,7 @@ import sys
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
-from agentdock import agents, consult, db, deal, events, feed, live, scene, stage, work, workspace
+from agentdock import agents, consult, db, deal, events, feed, live, scene, stage, stockwork, work, workspace
 from agentdock.db import REPO
 from agentdock.seed import scenario as sc
 
@@ -104,6 +106,8 @@ class Handler(BaseHTTPRequestHandler):
             if u.path == "/api/current":
                 deal.expire(f"{sc.DEMO_DATE}T06:30:00+09:00")
                 return self._send(200, work.current(q["owner"], q["item"], q.get("date", sc.DEMO_DATE)))
+            if u.path == "/api/current_timeline":
+                return self._send(200, work.timeline(q["owner"], q["item"], q.get("date", sc.DEMO_DATE)))
             if u.path == "/api/work":
                 return self._send(200, work.view(q["owner"], q["item"], q.get("date", sc.DEMO_DATE)))
             if u.path == "/api/source":
@@ -139,6 +143,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._order()
         if u.path == "/api/draft":
             return self._draft()
+        if u.path == "/api/stock_answer":
+            return self._stock_answer()
         if u.path == "/api/worker/resume":
             if WORKER:
                 WORKER.resume()
@@ -234,6 +240,23 @@ class Handler(BaseHTTPRequestHandler):
             finally:
                 c.close()
         except consult.ConsultError as e:
+            return self._send(409, dict(error="rejected", detail=str(e)))
+        except (KeyError, ValueError, json.JSONDecodeError) as e:
+            return self._send(400, dict(error=f"bad request: {e}"))
+
+    def _stock_answer(self):
+        """引当のない在庫の扱いの問いに、人が答える。答えと出来事は同じトランザクションで書く（AI が起きて続ける）。"""
+        try:
+            b = self._body()
+            if b["owner"] not in db.OWNER_CODES:
+                raise ValueError("owner")
+            c = db.connect(b["owner"])
+            try:
+                return self._send(200, stockwork.answer(c, int(b["question_id"]), str(b["choice"]), str(b["idempotency_key"]),
+                                                        str(b.get("role") or "staff")))
+            finally:
+                c.close()
+        except stockwork.StockError as e:
             return self._send(409, dict(error="rejected", detail=str(e)))
         except (KeyError, ValueError, json.JSONDecodeError) as e:
             return self._send(400, dict(error=f"bad request: {e}"))

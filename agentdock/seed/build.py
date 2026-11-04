@@ -90,8 +90,11 @@ def _fill_autonomy(con, code: str, item: dict, cust: dict, now: str) -> None:
     """本編（自律の場面）の種：数量ごとの最低の値・在庫・案内してよい売り先・売れ方・Vault。"""
     con.executemany("INSERT INTO quote_rule (item_id, min_qty, floor_yen, valid_from) VALUES (?, ?, ?, ?)",
                     [(item[i], q, f, sc.HISTORY_FROM) for i, q, f in sc.QUOTE_RULES.get(code, [])])
-    con.executemany("INSERT INTO stock (item_id, quantity, status, lot_no, stock_date, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
-                    [(item[i], q, s, n, sc.DEMO_DATE, now) for i, q, s, n in sc.STOCK.get(code, [])])
+    con.executemany("INSERT INTO stock (item_id, quantity, status, lot_no, stock_date, updated_at, unit_cost_yen, unallocated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                    [(item[i], q, s, n, sc.DEMO_DATE, now, sc.STOCK_UNIT_COST.get(n), now if s == "unallocated" else None)
+                     for i, q, s, n in sc.STOCK.get(code, [])])
+    con.executemany("INSERT INTO resale_cost (item_id, name, cost_yen_per_unit, valid_from) VALUES (?, ?, ?, ?)",
+                    [(item[i], n, c, sc.HISTORY_FROM) for i, n, c in sc.RESALE_COSTS.get(code, [])])
     con.executemany("UPDATE customer SET allow_contact = 1 WHERE name = ?", [(c,) for c in sc.CONTACT_OK.get(code, [])])
     con.executemany("INSERT INTO process_step (item_id, name, cost_yen_per_unit, valid_from) VALUES (?, ?, ?, ?)",
                     [(item[i], n, c, sc.HISTORY_FROM) for i, n, c in sc.PROCESS_STEPS.get(code, [])])

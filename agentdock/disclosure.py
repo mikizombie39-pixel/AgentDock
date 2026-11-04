@@ -11,7 +11,7 @@
 import re
 import unicodedata
 
-from agentdock import criteria, db
+from agentdock import criteria, db, stockwork
 
 WORDS = ("上限", "下限", "原価", "利益", "採算", "予算", "承認済み", "帳面")
 MIN_YEN = 100   # これより小さい数（箱数など）は金額として見ない
@@ -50,6 +50,9 @@ def secrets(con, item_code: str, on_date: str) -> dict[int, str]:
         out[criteria.floor_yen(con, item_code, on_date)[0]] = "floor"
     for r in con.execute("SELECT floor_yen FROM quote_rule WHERE item_id = ?", (iid,)):
         out[r[0]] = "quote_floor"
+    rf = stockwork.resale_floor(con, iid)   # 引当のない在庫を譲る時の最低の値（仕入れ値 ＋ 費用）
+    if rf:
+        out[rf["floor_yen"]] = "resale_floor"
     for r in con.execute("SELECT max_unit_price_yen, min_unit_price_yen FROM plan WHERE item_id = ? AND status = 'approved'", (iid,)):
         if r[0]:
             out[r[0]] = "plan_max"

@@ -136,8 +136,14 @@ SCENE_ORDERS = {
 # 15kg × 1,500円 ＝ 22,500円（担当者の権限 500,000円の内）。追加の 5kg は料亭へ回す当てがあるかが判断の分かれ目
 QUOTE_RULES = {
     "iwase": [("aji", 1, 1700), ("aji", 15, 1500)],   # (item, この数量以上なら, 最低の値/kg)
-    # B社の引当のない ブリは、せりの仕入れ値 18,200円を割って譲らない（転売は加工しないので加工費は入れない・模擬の前提）
-    "buyer_b": [("buri_xl", 1, 18200)],
+}
+
+# 引当のない在庫をほかの仲買に譲る時にかかる費用（1単位・項目ごと）：(item, 項目, 円)
+# 譲る時の最低の値 ＝ 在庫の仕入れ値（unit_cost_yen）＋ この費用の合計。コードが DB から計算する（2026-11-04 デイブ）
+# B社のブリ：せりの仕入れ値 18,200円 ＋ 運搬 200円 ＝ 18,400円。網谷水産のスーパー向けの上限 18,500円の内側（模擬）
+# 転売は加工しないので、加工費（下処理と箱詰め 2,000円）は入れない
+RESALE_COSTS = {
+    "buyer_b": [("buri_xl", "運搬（受け渡し先まで）", 200)],
 }
 
 # 在庫：(item, quantity, status, lot_no)
@@ -146,6 +152,10 @@ STOCK = {
     "iwase": [("aji", 15, "for_sale", "S-aji-1"), ("buri_xl", 6, "for_sale", "S-buri_xl-1")],
     "buyer_c": [("aji", 8, "unallocated", "C-aji-1")],   # C社の引当のない分（相対で譲りに出す）
     "buyer_b": [("buri_xl", 2, "unallocated", "B-buri_xl-1")],   # せりで 4本を落札・料亭の注文 2本に充てた残り（模擬）
+}
+# 在庫の仕入れ値（1単位）：ロットの番号 → 円。B社のブリはせりの落札値（TODAY_AUCTION）から取る
+STOCK_UNIT_COST = {
+    "B-buri_xl-1": next(p for b, p, _ in TODAY_AUCTION["sales"] if b == "buyer_b"),
 }
 
 # 他の仲買からの相対の申し込み（Agent Network の掲示）：(owner, side, item, quantity, min_qty, unit_price, message)
