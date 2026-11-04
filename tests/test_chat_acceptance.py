@@ -32,12 +32,13 @@ class AcceptanceTest(ChatBase):
         self.consult()
         a = self.ask(Q1)["answer"]
         self.assertEqual(a["conclusion"], f"社長から「{SUPER}の分は落とすなよ」と指示されています。今日は{SUPER}の 4本を確保する方針です。")   # 最初は短く
-        self.assertEqual(a["next_action"], f"案1なら、{SUPER} 4本を守り、{RYOTEI}にも 4本を回せます。{RYOTEI}は 2本不足します。配分を確認しますか？")
+        self.assertEqual(a["next_action"], f"案1なら{SUPER} 4本、{RYOTEI} 4本を確保できます。{RYOTEI}は 2本不足します。配分を確認しますか？")
         self.assertEqual(a["deadline"], "仮押さえの期限：B社 07:00・岩瀬漁協 07:00")                        # 期限はコードが別に添える
         self.assertEqual(a["kind"], "question")                                                               # 下見・質問のまま（実行しない）
         refs = [e["ref"] for e in a["evidence"]]
-        self.assertEqual(refs[:3], ["directive:1", "AM-R-005", "calc:compare"])                               # 指示 → ルール → 計算 → 注文
-        self.assertTrue(all(r.startswith("order_book:") for r in refs[4:]))
+        self.assertEqual([(e["ref"], e["supports"]) for e in a["evidence"]][:2], [("directive:1", "conclusion"), ("calc:option:1", "next_action")])
+        self.assertEqual(refs[2:4], ["AM-R-005", "calc:compare"])                                             # 詳しい説明の根拠は後ろ
+        self.assertNotIn("authority", refs)                                                                   # 権限の表は、進められる理由を説明する時だけ
         d = a["evidence"][0]
         self.assertEqual(d["refs"], ["directive:1", "AM-D-20261102-01"])                                      # 同じ指示は1つ・識別子は両方
         self.assertEqual(d["validity"], "今有効")
@@ -93,10 +94,11 @@ class AcceptanceTest(ChatBase):
 
     def test_3_a_question_with_no_record_is_not_answered_with_made_up_facts(self):
         self.consult()
-        for q in (Q3, "代わりの魚ではだめ？"):
-            a = self.ask(q)["answer"]
-            self.assertEqual(a["conclusion"], chat.UNKNOWN, q)
-            self.assertFalse([e for e in a["evidence"] if e["type"] in ("directive", "rule") and q == Q3])
+        a = self.ask(Q3)["answer"]
+        self.assertEqual((a["conclusion"], a["evidence"]), (chat.UNKNOWN, []))
+        a = self.ask("代わりの魚ではだめ？")["answer"]                                     # 関係する知識はある：分かっていることから答える
+        self.assertTrue(a["conclusion"].startswith("代わりの魚を提案することはできます"))
+        self.assertIn("記録では確認できません", a["next_action"])
 
     def test_4_other_companies_private_records_are_not_fetched(self):
         self.consult()
@@ -136,8 +138,8 @@ class AcceptanceTest(ChatBase):
         before = snapshot()
         a = self.ask("では、その案で買っておいて")["answer"]
         self.assertEqual((a["kind"], a["kind_label"], a["request"]), ("unsupported", "未対応", None))
-        self.assertEqual(a["conclusion"], chat.RUN_OFF_CONCLUSION)
-        self.assertTrue(a["next_action"].startswith("進める時は、画面の［"))
+        self.assertEqual((a["conclusion"], a["next_action"]), (chat.RUN_OFF_BUY, chat.RUN_OFF_NEXT))
+        self.assertEqual((a["evidence"], a["entry"]), ([], dict(kind="why", label="配分を確認する")))     # 業務の根拠は並べない・見るだけの入口
         self.assertEqual(snapshot(), before)
 
 
@@ -190,8 +192,8 @@ class NumberCheckTest(ChatBase):
 
     def test_only_the_sentence_with_a_wrong_number_is_removed(self):
         self.consult()
-        mc = MockClient([call("list_vault", {}), answer_reply(conclusion="案1が答えです。", evidence=[dict(ref="calc:tally", quote=None)],
-                                                               detail="注文は合わせて 10本です。漁協は 9本を出せます。足りない分は照会します。")])
+        bad = answer_reply(conclusion="案1が答えです。", evidence=[dict(ref="calc:tally", quote=None)], detail="注文は合わせて 10本です。漁協は 9本を出せます。足りない分は照会します。")
+        mc = MockClient([call("list_vault", {}), *[bad] * (chat.ANSWER_RETRIES + 1)])
         a = chat.ask(mc, "amiya", "buri_xl", "数は？", "n1")["answer"]
         self.assertEqual(a["detail"], "注文は合わせて 10本です。足りない分は照会します。")
 
@@ -201,3 +203,30 @@ class NumberCheckTest(ChatBase):
         shown = next(x["at_shown"] for x in s["facts"] if x["ref"] == "order_book:3")
         mc = MockClient([call("list_vault", {}), answer_reply(conclusion=f"順風満帆の注文は {shown} に受けました。", evidence=[dict(ref="order_book:3", quote=None)])])
         self.assertEqual(chat.ask(mc, "amiya", "buri_xl", "いつ？", "n2")["answer"]["conclusion"], f"順風満帆の注文は {shown} に受けました。")
+
+
+class AnswerRewriteTest(ChatBase):
+    """answer の時点で検査し、直せる所は Claude に書き直してもらう（文を外すと意味や導線が抜けるため）。"""
+
+    def test_a_long_next_step_and_the_word_mamoru_are_sent_back_for_a_rewrite(self):
+        self.consult()
+        first = answer_reply(conclusion="魚廣を守ります。", next_action="案1なら魚廣 4本を守り、順風満帆にも 4本を回せます。案1は一番不足が少ない案で、ほかの案より不足が少なく確保できます。配分を確認しますか？",
+                             evidence=[dict(ref="calc:option:1", quote=None, supports="next_action")])
+        fixed = answer_reply(conclusion="魚廣の 4本を確保します。", next_action="案1なら魚廣 4本、順風満帆 4本を確保できます。配分を確認しますか？",
+                             evidence=[dict(ref="calc:option:1", quote=None, supports="next_action")])
+        mc = MockClient([call("list_vault", {}), first, fixed])
+        r = chat.ask(mc, "amiya", "buri_xl", "どうする？", "rw1")
+        self.assertEqual((r["answer"]["conclusion"], r["answer"]["next_action"]), ("魚廣の 4本を確保します。", "案1なら魚廣 4本、順風満帆 4本を確保できます。配分を確認しますか？"))
+        rej = chat.turn("amiya", r["turn_id"])["dropped"]["rejected"]
+        self.assertEqual(len(rej), 1)
+        self.assertTrue(any("守る" in x for x in rej[0]["problems"]))
+        self.assertTrue(any("70字" in x for x in rej[0]["problems"]))
+        self.assertTrue(any("一番・最も" in x for x in rej[0]["problems"]))
+
+    def test_a_comparison_left_in_the_next_step_moves_to_the_detail(self):
+        self.consult()
+        a = answer_reply(conclusion="案1にします。", next_action="案1が最も不足が少ない。配分を確認しますか？",
+                         evidence=[dict(ref="calc:compare", quote=None, supports="next_action")])
+        r = chat.ask(MockClient([call("list_vault", {}), *[a] * (chat.ANSWER_RETRIES + 1)]), "amiya", "buri_xl", "どれ？", "rw2")["answer"]
+        self.assertEqual(r["next_action"], "配分を確認しますか？")
+        self.assertEqual(r["detail"], "案1は、担当者が選べる案の中で、計算上、不足が最も少ない案です。")

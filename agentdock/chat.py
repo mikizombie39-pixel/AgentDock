@@ -39,8 +39,13 @@ TYPE_LABEL = {"directive": "社長の指示", "rule": "会社のルール", "kno
 ORIGIN_LABEL = {"fact": "記録にある事実", "calc": "コードの計算", "ai": "AI の解釈"}
 UNKNOWN = "記録にはありません。確認が必要です。"
 MAX_CONCLUSION = 90
+MAX_NEXT = 70
+ANSWER_RETRIES = 2   # answer の検査で書き直しを求める回数（超えたら最後の検査で文を外す）
+SUPPORTS = ("conclusion", "next_action", "detail", "interpretation")
 SUPERLATIVE = re.compile(r"一番|いちばん|最も|もっとも|最小|最善|最良|ベスト")
-RUN_OFF_CONCLUSION = "チャットからは、まだ仕事を実行できません。何も実行していません。"
+RUN_OFF_CONCLUSION = "このチャットからは、まだ実行できません。何も実行していません。"
+RUN_OFF_BUY = "このチャットからは、まだ購入できません。何も実行していません。"
+RUN_OFF_NEXT = "配分を確認して進める場合は、こちらを開いてください。"
 NUMBERS_REPLACED = "この文の数字を、コードの値と照合できませんでした。数字は根拠の記録で確かめてください。"
 RUNNING_STALE_SEC = 180
 
@@ -198,6 +203,7 @@ class Turn:
         self.steps: list[dict] = []
         self.answer = None
         self.state = None
+        self.rejects, self.rejected = 0, []
 
     def take(self, ref, typ, text, at=None, dates=(), src=None, validity=None, origin="fact", title=None):
         self.fetched[ref] = dict(ref=ref, type=typ, text=text, at=at, dates=list(dates), src=src, validity=validity, origin=origin, title=title,
@@ -281,8 +287,34 @@ def tool_answer(t: Turn, inp):
         raise ToolError(f"conclusion は短く（{MAX_CONCLUSION}字まで）。注文の時刻・ルールの詳しい中身・期限切れの指示は detail に書く")
     if not isinstance(inp.get("evidence"), list):
         raise ToolError("evidence は配列です（読んだ記録の ref）")
+    problems = answer_problems(t, inp)
+    if problems and t.rejects < ANSWER_RETRIES:
+        t.rejects += 1
+        t.rejected.append(dict(answer=inp, problems=problems))
+        raise ToolError("答えを直して、もう一度 answer を呼んでください：" + "／".join(problems))
     t.answer = inp
     return "答えました。"
+
+
+def answer_problems(t: Turn, inp) -> list[str]:
+    """answer の時点の検査（直せる所は、Claude に書き直してもらう。文を外すと意味や導線が抜けるため）。"""
+    out = []
+    if inp.get("kind") in ("question", "preview"):
+        if len(inp["next_action"]) > MAX_NEXT:
+            out.append(f"next_action は {MAX_NEXT}字までにする（案どうしの比較は detail へ）")
+        for k in ("conclusion", "next_action"):
+            if SUPERLATIVE.search(inp.get(k) or ""):
+                out.append(f"{k} に案を比べる言い方（一番・最も など）を書かない。比べるなら detail に calc:compare を根拠にして書く")
+    for k in ("conclusion", "next_action"):
+        if re.search(r"守[らりるれろっ]", inp.get(k) or ""):
+            out.append(f"{k} で「守る」を使わない。「確保する」と書く")
+    allowed, dates = _allowed(t)
+    for k in ("conclusion", "next_action", "detail", "interpretation"):
+        for sen in _sentences(inp.get(k) or ""):
+            bad = check_text(sen, allowed, dates)
+            if bad:
+                out.append(f"{k} の「{sen.strip()[:40]}」：" + "・".join(bad) + "（数は道具の結果の値だけを使う。単位の無い数は書かない）")
+    return out
 
 
 RO = {"type": ["string", "null"]}
@@ -299,9 +331,11 @@ TOOLS = [
       "next_action": {"type": "string", "description": "担当者が次にすること（1文）"},
       "detail": {"type": ["string", "null"], "description": "詳しい説明（聞かれた時だけ・無ければ null）"},
       "interpretation": {"type": ["string", "null"], "description": "記録から AI が考えたこと（事実と分けて書く・無ければ null）"},
-      "evidence": {"type": "array", "items": {"type": "object", "additionalProperties": False, "required": ["ref", "quote"],
+      "evidence": {"type": "array", "items": {"type": "object", "additionalProperties": False, "required": ["ref", "quote", "supports"],
                                                "properties": {"ref": {"type": "string", "description": "道具の結果の ref か Vault の識別子"},
-                                                              "quote": {"type": ["string", "null"], "description": "記録の中の該当の文（記録の文のまま）"}}}},
+                                                              "quote": {"type": ["string", "null"], "description": "記録の中の該当の文（記録の文のまま）"},
+                                                              "supports": {"type": "string", "enum": list(SUPPORTS),
+                                                                           "description": "この根拠が支える答えの部分"}}}},
       "request": {"type": ["object", "null"], "additionalProperties": False, "required": ["action_id", "confirm_text"],
                   "properties": {"action_id": RO, "confirm_text": {"type": "string", "description": "対象の仕事・相手・数量・条件を整理した確認の文"}},
                   "description": "kind が request の時だけ。action_id は今の画面の操作の id（曖昧なら null にして聞き返す）"}},
@@ -321,14 +355,19 @@ SYSTEM = (
     f"- conclusion は浜の新人に向けた短い答え（1〜2文・{MAX_CONCLUSION}字まで）。根拠の中心と、今日の方針（何をどれだけ）だけを書く。"
     "例：社長から「魚廣の分は落とすなよ」と指示されています。今日は魚廣の 4本を確保する方針です。\n"
     "- 注文を受けた時刻・会社のルールの詳しい中身・期限切れの指示との違いは conclusion に書かず、detail に書く（担当者が開いた時に読む）\n"
-    "- next_action は、担当者が選べる具体的な案と、その結果（守れる注文・回せる数・足りない数）を示し、確認の問いで終える。"
-    "例：案1なら、魚廣 4本を守り、順風満帆にも 4本を回せます。順風満帆は 2本不足します。配分を確認しますか？　"
-    "仮押さえの期限は書かない（サーバーが業務の記録から別に添える）。質問と下見の答えでは、何も実行していないことを保つ\n"
-    "- 「一番」「最も」など案を比べる言い方は、calc:compare（全部の案の比較）を evidence に挙げた時だけ使い、その計算どおりに書く"
+    f"- next_action は短く（{MAX_NEXT}字まで）。担当者が選べる具体的な案と、その結果（確保できる数・足りない数）を示し、確認の問いで終える。"
+    "例：案1なら魚廣 4本、順風満帆 4本を確保できます。順風満帆は 2本不足します。配分を確認しますか？　"
+    "案どうしの比較・仮押さえの期限は next_action に書かない（比較は detail へ・期限はサーバーが業務の記録から別に添える）。質問と下見の答えでは、何も実行していないことを保つ\n"
+    "- 「守る」「守れる」は使わない。注文の数をそろえることは「確保する」と書く\n"
+    "- 「一番」「最も」など案を比べる言い方は detail か interpretation だけで使い、calc:compare（全部の案の比較）を evidence に挙げ、その計算どおりに書く"
     "（担当者が選べる案の中で、計算上、不足が最も少ない案です）。同じ不足の案が複数ある時は、全部を挙げる\n"
-    "- evidence は質問に答える順に並べる（例：なぜ優先？ → 今日の社長の指示 → 会社のルール → 配分と不足の計算 → 注文の詳細）。期限切れの指示は最後\n"
+    "- evidence は質問に答える順に並べ、各根拠に supports（その根拠が支える部分：conclusion・next_action・detail・interpretation）を付ける。答えに使った根拠だけを挙げる"
+    "（例：なぜ優先？ → 今日の社長の指示（conclusion）→ 配分と不足の計算（next_action）→ 会社のルール・注文の詳細（detail））。期限切れの指示は最後\n"
+    "- 権限の表（authority）は、担当者がその案を自分で進められる理由を説明する時だけ根拠に挙げる\n"
     "- 根拠（evidence）は、この回に道具で読んだ記録だけを ref で挙げる（業務の状態は ref、Vault は識別子）。quote は記録の文のまま\n"
-    f"- 記録にないこと（会社の方針・相手の返事・売り先の好みなど）は推測で作らない。conclusion を「{UNKNOWN}」で始め、何を誰に確かめるかを next_action に書く\n"
+    "- 記録にないこと（会社の方針・相手の返事・売り先の好みなど）は推測で作らない。関係する知識やルールが記録にある時は、分かっていることから答え、"
+    "確かめていないことを「〜は、記録では確認できません」と分けて書く（例：代わりの魚を提案することはできます。ただし、売り先の了承が必要です。順風満帆が何を受け入れられるかは、記録では確認できません。）。"
+    f"関係する記録が1つも無い時だけ、conclusion を「{UNKNOWN}」で始める。何を誰に確かめるかを next_action に書く\n"
     "- 今の在庫・値・相手の回答・期限・数量は、業務の状態（read_work_state）からだけ答える。Vault の過去の経験の数字を、今の在庫や値として答えない\n"
     "- 今有効な社長の指示・会社のルールと、期限切れの指示や過去の経験が食い違う時は、その違いを説明する（従うのは今有効なもの）\n"
     "- 数字は道具の結果の値をそのまま使う。配分を変えた時の数は preview_allocation で計算する\n"
@@ -516,7 +555,8 @@ def finish(t: Turn, ask_text: str, run_enabled: bool = False) -> tuple[dict, dic
             if quote:
                 dropped["replaced"].append(dict(field=f"evidence:{ref}:quote", text=quote, reason="記録の文に無い引用なので、記録の文に替えました"))
             q, qsrc = got["text"], "record"
-        ev.append(dict(ref=ref, type=got["type"], type_label=TYPE_LABEL[got["type"]], quote=q, quote_from=qsrc, text=got["text"], title=got["title"],
+        sup = (e or {}).get("supports") if (e or {}).get("supports") in SUPPORTS else "detail"
+        ev.append(dict(ref=ref, supports=sup, type=got["type"], type_label=TYPE_LABEL[got["type"]], quote=q, quote_from=qsrc, text=got["text"], title=got["title"],
                        origin=got["origin"], origin_label=ORIGIN_LABEL[got["origin"]], at=got["at"], dates=got["dates"], validity=got["validity"],
                        checked_at=got["checked_at"], src=got["src"]))
     allowed, dates = _allowed(t)
@@ -524,6 +564,13 @@ def finish(t: Turn, ask_text: str, run_enabled: bool = False) -> tuple[dict, dic
                detail=(a.get("detail") or None), interpretation=(a.get("interpretation") or None), evidence=ev, notes=[], request=None)
     compare, unit = (t.state or {}).get("compare"), ((t.state or {}).get("item") or {}).get("unit", "")
     cited = any(e["ref"] == "calc:compare" for e in ev)
+    dropped["rejected"] = t.rejected
+    if out["next_action"] and SUPERLATIVE.search(out["next_action"]):   # 案どうしの比較は、開いた先（detail）へ移す
+        sens = _sentences(out["next_action"])
+        moved = "".join(x for x in sens if SUPERLATIVE.search(x))
+        out["next_action"] = "".join(x for x in sens if not SUPERLATIVE.search(x)).strip() or "配分を確認して進める場合は、こちらを開いてください。"
+        out["detail"] = ((out["detail"] or "") + moved).strip()
+        dropped["replaced"].append(dict(field="next_action", text=moved, reason="案どうしの比較は詳しい説明へ移しました"))
     for k in ("conclusion", "next_action", "detail", "interpretation"):
         if not out[k]:
             continue
@@ -557,19 +604,26 @@ def finish(t: Turn, ask_text: str, run_enabled: bool = False) -> tuple[dict, dic
         out["notes"].append("期限の切れた記録は、今は効力がありません：" + "・".join(f"{e['ref']}（{e['validity']}）" for e in old_dir) +
                             ("。今有効なのは " + "・".join(e["ref"] for e in cur_dir) if cur_dir else ""))
     ev = _merge_directives(ev, out)
-    ev = [e for e in ev if e["type"] != "not_current"] + [dict(e, past=True) for e in ev if e["type"] == "not_current"]   # 期限切れは最後（過去との違いを見る時に開く）
+    main = [e for e in ev if e["type"] != "not_current" and e["supports"] in ("conclusion", "next_action")]
+    more = [e for e in ev if e["type"] != "not_current" and e["supports"] not in ("conclusion", "next_action")]
+    ev = main + more + [dict(e, past=True) for e in ev if e["type"] == "not_current"]   # 答えに使った順・詳しい説明の根拠・期限切れは最後
     out["evidence"] = ev
     out["deadline"] = (t.state or {}).get("deadline")
     if out["kind"] == "request" and not run_enabled:   # 段2：チャットからは実行しない。押す画面のボタンを案内する
         r = a.get("request") or {}
         full = {x["id"]: x for x in mate.view(t.owner, t.item, t.on_date).get("actions") or []}
         act = full.get(r.get("action_id")) if r.get("action_id") else None
-        dropped["request"] = dict(action_id=r.get("action_id"), confirm_text=r.get("confirm_text"), reason="チャットからの実行は止めてある（段2）")
-        out.update(kind="unsupported", kind_label=KIND_LABEL["unsupported"], conclusion=RUN_OFF_CONCLUSION, detail=None, interpretation=None, request=None,
-                   next_action=(f"進める時は、画面の［{act['label']}］を押してください。" if act and act.get("api") else "進める時は、画面のボタンから選んでください。"),
-                   suggested_action=(dict(id=act["id"], label=act["label"], president=bool(act.get("president"))) if act and act.get("api") else None))
-        out["notes"].append("チャットからの実行は、まだ使えません（何も実行していません）")
-        return out, dropped
+        dropped["request"] = dict(action_id=r.get("action_id"), confirm_text=r.get("confirm_text"), reason="チャットからの実行は止めてある（段2）",
+                                  action_label=act["label"] if act else None)
+        buy = bool(act and str(act.get("id", "")).startswith("opt"))
+        out.update(kind="unsupported", kind_label=KIND_LABEL["unsupported"], conclusion=RUN_OFF_BUY if buy else RUN_OFF_CONCLUSION,
+                   next_action=RUN_OFF_NEXT, detail=None, interpretation=None, request=None, entry=dict(kind="why", label="配分を確認する"))
+        out["notes"] = []
+    if out["kind"] == "unsupported":   # 未対応の答えに業務の根拠は並べない（取得した記録は検証の記録に残る）
+        dropped["evidence_hidden"] = [e["ref"] for e in out["evidence"]]
+        out["evidence"] = []
+        if out.get("entry"):
+            return out, dropped
     if out["kind"] == "request":
         r = a.get("request") or {}
         acts = {x["id"]: x for x in (work_state(t.owner, t.item, t.on_date)["actions"])}

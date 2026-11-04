@@ -2,6 +2,7 @@
 
   python -m agentdock.chatreal "なぜ魚廣を優先するの？"     # 1往復
   python -m agentdock.chatreal --set sal2                   # SAL の追加検証（同じ会話で続ける・途中で注文が増える）
+  python -m agentdock.chatreal --set sal3                   # 修正後の短い会話（代わりの魚 → その案で買っておいて）
 
 - 業務の場面（料亭＝順風満帆の追加注文で、AI が相談を出し、担当者の判断待ち）は、試験と同じ手順で模擬の作業役が作る。
   本物の Claude を呼ぶのはチャットだけ（chat.ask・道具は読むだけ・チャットからの実行は止めたまま）
@@ -21,6 +22,7 @@ from pathlib import Path
 TAKES = Path(r"C:\Users\mikiz\AgentDock-local\takes")
 MAX_CALLS = 8
 SETS = {
+    "sal3": [("ask", "代わりの魚ではだめ？"), ("ask", "では、その案で買っておいて")],
     "sal2": [
         ("ask", "なぜ魚廣を優先するの？"),
         ("ask", "この配分では何本足りない？"),
@@ -111,10 +113,11 @@ def _md_step(i, s):
          f"- 呼び出し {len(s['usage'])}回・入力 {sum(u['input_tokens'] for u in s['usage']):,}・出力 {sum(u['output_tokens'] for u in s['usage']):,} トークン・{s['cost_usd']} ドル",
          f"- 種類：{a.get('kind_label')}", f"- 結論：{a.get('conclusion')}", f"- 次の行動：{a.get('next_action')}",
          f"- 期限（コード）：{a.get('deadline')}", f"- 詳しい説明：{a.get('detail')}", f"- AI の解釈：{a.get('interpretation')}",
-         f"- サーバーの検査：{'／'.join(a.get('notes') or []) or 'なし'}", f"- 押すボタンの案内：{a.get('suggested_action')}", "", "根拠（表示の順）："]
+         f"- サーバーの検査：{'／'.join(a.get('notes') or []) or 'なし'}", f"- 入口：{a.get('entry')}",
+         f"- 書き直しの求め：{len(((s.get('turn') or {}).get('dropped') or {}).get('rejected') or [])}回", "", "根拠（表示の順・支える部分）："]
     for e in a.get("evidence") or []:
         L.append(f"- `{'・'.join(e.get('refs') or [e['ref']])}`（{e['type_label']}" + (f"・{e['validity']}" if e.get("validity") else "") +
-                 ("・過去" if e.get("past") else "") + ("・食い違い" if e.get("conflict") else "") + f"）引用（{e['quote_from']}）：{e['quote']}")
+                 (f"・{e.get('supports')}" if e.get("supports") else "") + ("・過去" if e.get("past") else "") + ("・食い違い" if e.get("conflict") else "") + f"）引用（{e['quote_from']}）：{e['quote']}")
     L += ["", "道具：" + " → ".join(f"{x['tool']}{json.dumps(x['input'], ensure_ascii=False) if x['input'] else ''}" for x in (s.get("turn") or {}).get("steps") or []),
           "", "捨てた物・替えた文：" + json.dumps((s.get("turn") or {}).get("dropped"), ensure_ascii=False),
           "", f"- 前：{s['before']['sha256'][:16]}…（{s['before']['rows']}行）{s['before']['view']}",
@@ -130,7 +133,7 @@ def main(argv=None) -> int:
     elif len(argv) == 1 and argv[0].strip() and not argv[0].startswith("--"):
         steps, name = [("ask", argv[0].strip())], "one"
     else:
-        print('usage: python -m agentdock.chatreal "質問"  |  python -m agentdock.chatreal --set sal2')
+        print('usage: python -m agentdock.chatreal "質問"  |  python -m agentdock.chatreal --set sal2|sal3')
         return 2
     stamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
     out_dir = TAKES / f"{stamp}-chat-real-{name}"

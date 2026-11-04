@@ -78,8 +78,8 @@ class DaveQuestionsTest(ChatBase):
         a = self.ask("なぜ魚廣を優先するの？")["answer"]
         self.assertEqual(a["kind"], "question")
         self.assertEqual(a["conclusion"], f"社長から「{SUPER}の分は落とすなよ」と指示されています。今日は{SUPER}の 4本を確保する方針です。")
-        self.assertEqual([(e["ref"], e["type_label"]) for e in a["evidence"]][:3],
-                         [("directive:1", "社長の指示"), ("AM-R-005", "会社のルール"), ("calc:compare", "コードの計算")])
+        self.assertEqual([(e["ref"], e["type_label"], e["supports"]) for e in a["evidence"]][:3],      # 結論と次の行動を支える根拠が先
+                         [("directive:1", "社長の指示", "conclusion"), ("calc:option:1", "コードの計算", "next_action"), ("AM-R-005", "会社のルール", "detail")])
         self.assertEqual((a["evidence"][0]["refs"], a["evidence"][0]["validity"]), (["directive:1", "AM-D-20261102-01"], "今有効"))
         self.assertEqual(a["interpretation"], "案1は、担当者が選べる案の中で、計算上、不足が最も少ない案です。")   # AI の解釈は事実と分ける
 
@@ -95,10 +95,11 @@ class DaveQuestionsTest(ChatBase):
         self.assertEqual([e["type_label"] for e in a["evidence"]], ["コードの計算", "コードの計算"])
         self.assertEqual(a["detail"], self.v()["tally"]["line"])                    # 数はコードの計算（画面と同じ）
 
-        a = self.ask("代わりの魚ではだめ？")["answer"]
-        self.assertEqual(a["conclusion"], chat.UNKNOWN)
-        self.assertEqual([e["ref"] for e in a["evidence"]], ["AM-S-011", "AM-S-003"])
-        self.assertEqual(a["evidence"][0]["quote"], "代わりの魚の好みは記録していない。")
+        a = self.ask("代わりの魚ではだめ？")["answer"]                                     # 分かっていることから答え、確かめていないことを分ける
+        self.assertEqual(a["conclusion"], "代わりの魚を提案することはできます。ただし、売り先の了承が必要です。")
+        self.assertEqual(a["next_action"], f"{RYOTEI}が何を受け入れられるかは、記録では確認できません。{RYOTEI}に確かめますか？")
+        self.assertEqual([e["ref"] for e in a["evidence"]], ["AM-S-003", "AM-S-011"])
+        self.assertEqual(a["evidence"][1]["quote"], "代わりの魚の好みは記録していない。")
 
         a = self.ask("いま漁協との話はどうなっている？")["answer"]
         self.assertEqual(a["conclusion"], "岩瀬漁協が 6本を 1本 17,500円で仮押さえ（期限 07:00）。")
@@ -202,7 +203,8 @@ class ServerCheckTest(ChatBase):
     """サーバーの検査（模擬の Claude がわざと誤った答えを出す）。"""
 
     def scripted(self, *answers, reads=()):
-        return MockClient([call("list_vault", {}), *[call(n, x) for n, x in reads], *answers])
+        """同じ答えを、書き直しの求め（chat.ANSWER_RETRIES 回）の後まで出し続ける（最後の検査を試す）。"""
+        return MockClient([call("list_vault", {}), *[call(n, x) for n, x in reads], *[a for a in answers for _ in range(chat.ANSWER_RETRIES + 1)]])
 
     def test_evidence_not_fetched_this_turn_is_dropped(self):
         self.consult()
@@ -351,9 +353,8 @@ class RequestTest(ChatBase):
         server.CHAT_RUN = False                                                             # 段2：質問と下見だけ
         self.consult()
         st, r = self.http("POST", "/api/chat", dict(owner="amiya", item="buri_xl", text="その案で進めて", idempotency_key="off1"))
-        self.assertEqual((st, r["run_enabled"], r["answer"]["kind"]), (200, False, "unsupported"))   # 段2：実行しないと答え、押すボタンを案内する
-        self.assertEqual(r["answer"]["conclusion"], chat.RUN_OFF_CONCLUSION)
-        self.assertTrue(r["answer"]["suggested_action"]["label"])
+        self.assertEqual((st, r["run_enabled"], r["answer"]["kind"]), (200, False, "unsupported"))   # 段2：実行しないと答え、配分を見る入口を出す
+        self.assertEqual((r["answer"]["conclusion"], r["answer"]["entry"]["kind"], r["answer"]["evidence"]), (chat.RUN_OFF_BUY, "why", []))
         before = snapshot()
         st, out = self.run_turn(r["turn_id"], "offx")
         self.assertEqual((st, out["error"]), (403, "not_enabled"))
@@ -411,7 +412,7 @@ class RealClaudeWiringTest(ChatBase):
             self.assertEqual(sorted(t["input_schema"]["required"]), sorted(t["input_schema"]["properties"]))
         ans = next(t for t in chat.schemas() if t["name"] == "answer")["input_schema"]["properties"]
         self.assertEqual(ans["kind"]["enum"], ["question", "preview", "request", "unsupported"])
-        self.assertEqual(sorted(ans["evidence"]["items"]["required"]), ["quote", "ref"])
+        self.assertEqual(sorted(ans["evidence"]["items"]["required"]), ["quote", "ref", "supports"])
         self.assertNotIn("send", " ".join(names))                                          # 送る・登録する道具は無い
 
     def test_the_request_to_claude(self):

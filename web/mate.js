@@ -234,6 +234,8 @@
       ask = V.ask ? `<b>${esc(V.ask.text)}</b>` : "";
       if (V.ask && V.ask.origin === "ai") ask = `<b>どれで進めるか、選んでください。</b><small class="ai">${esc(V.ask.text)}</small>`;
       if (V.exec === "your_turn" || V.exec === "running") ask += V.exec === "running" ? `<small>判断が要る時は、私から声をかけます。</small>` : "";
+      if (V.exec === "your_turn" && (V.actions || []).some((a) => String(a.id).startsWith("opt")))
+        ask += `<small class="actnote">案を押すと、その配分で登録します（買い付けを確定）。押す前に中身を見る時は［なぜ？］を開いてください。</small>`;
       acts = (V.actions || []).map((a) => `<button class="dbtn ${a.president ? "pres" : a.kind === "primary" ? "" : "alt"}" data-act="${esc(a.id)}" ${a.disabled ? "disabled" : ""} title="${esc(a.note || "")}">
         ${icon(a.president ? "user-round" : a.kind === "primary" ? "arrow-up-right" : "arrow-right")}<span>${esc(a.label)}${a.note ? `<small>${esc(a.note)}</small>` : ""}</span></button>`).join("");
     }
@@ -430,9 +432,11 @@
     if (e.type === "not_current") return (e.src && e.src.category === "社長の指示") ? "期限切れの指示" : "今は効力のない記録";
     return e.type_label;
   }
-  function evGroups(a) {
+  // 根拠の束：main＝結論と次の行動を支える根拠（最初に見せる）／more＝詳しい説明を支える根拠（「詳しく」の中）
+  const isMain = (e) => !e.past && (e.supports === "conclusion" || e.supports === "next_action" || !e.supports);
+  function evGroups(a, which) {
     const g = [];
-    a.evidence.filter((e) => !e.past).forEach((e) => { const l = evLabel(e); let x = g.find((y) => y.label === l); if (!x) { x = { label: l, type: e.type, items: [] }; g.push(x); } x.items.push(e); });
+    a.evidence.filter((e) => !e.past && (which === "more" ? !isMain(e) : isMain(e))).forEach((e) => { const l = evLabel(e); let x = g.find((y) => y.label === l); if (!x) { x = { label: l, type: e.type, items: [] }; g.push(x); } x.items.push(e); });
     return g;
   }
   // 根拠を開く：該当の文・日付・確認の時刻・出所（記録にある事実／コードの計算／AI の解釈）
@@ -465,11 +469,14 @@
       <span class="kind ${esc(a.kind)}">${esc(a.kind_label)}</span>${chatKind === "mock" ? `<span class="mock">模擬の AI の答え</span>` : ""}
       <div class="con">${esc(a.conclusion)}</div><div class="nx">${icon("arrow-right")}${esc(a.next_action)}</div>` +
       (a.deadline ? `<div class="dl">${icon("clock")}${esc(a.deadline)}</div>` : "");
-    if (latest && (a.detail || a.interpretation)) h += `<div class="det" hidden>${a.detail ? `<div>${esc(a.detail)}</div>` : ""}${a.interpretation ? `<div class="ai">${esc(a.interpretation)}</div>` : ""}</div>`;
+    const moreG = evGroups(a, "more");
+    if (latest && (a.detail || a.interpretation || moreG.length)) h += `<div class="det" hidden>${a.detail ? `<div>${esc(a.detail)}</div>` : ""}${a.interpretation ? `<div class="ai">${esc(a.interpretation)}</div>` : ""}` +
+      (moreG.length ? `<div class="row2">` + moreG.map((g, i) => `<button class="evchip ${esc(g.type)}" data-evmore="${i}">${icon(EV_ICON[g.type] || "file-search")}${esc(g.label)}${g.items.length > 1 ? `<small>${g.items.length}件</small>` : ""}</button>`).join("") + `</div>` : "") + `</div>`;
+    if (latest && a.entry && a.entry.kind === "why") h += `<div class="row2"><button class="pbtn" data-entry="why">${icon("circle-help")}${esc(a.entry.label)}</button></div>`;
     if (latest && a.notes && a.notes.length) h += `<div class="notes">${a.notes.map(esc).join("<br>")}</div>`;
     if (latest) {
       h += `<div class="row2">` + evGroups(a).map((g, i) => `<button class="evchip ${esc(g.type)}" data-ev="${i}">${icon(EV_ICON[g.type] || "file-search")}${esc(g.label)}${g.items.length > 1 ? `<small>${g.items.length}件</small>` : ""}</button>`).join("") +
-        (a.detail || a.interpretation ? `<button class="linkbtn" data-det="1">${icon("chevron-down")}詳しく</button>` : "") +
+        (a.detail || a.interpretation || moreG.length ? `<button class="linkbtn" data-det="1">${icon("chevron-down")}詳しく</button>` : "") +
         (a.evidence.length ? `<button class="linkbtn" data-evall="1">${icon("file-search")}根拠を全部開く</button>` : "") +
         (a.evidence.some((e) => e.past) ? `<button class="linkbtn" data-past="1">${icon("notebook-text")}過去の指示との違い</button>` : "") + `</div>`;
       const r = a.request;
@@ -539,6 +546,9 @@
     const a = t.answer;
     const ev = e.target.closest("[data-ev]");
     if (ev) return openPop(ev, evCard(a, evGroups(a)[+ev.dataset.ev]));
+    const evm = e.target.closest("[data-evmore]");
+    if (evm) return openPop(evm, evCard(a, evGroups(a, "more")[+evm.dataset.evmore]));
+    if (e.target.closest("[data-entry]") && V) return openPop(e.target.closest("[data-entry]"), V.why);   // 見るだけ（配分の比較・何も実行しない）
     if (e.target.closest("[data-evall]")) return openPop(e.target.closest("[data-evall]"), evCard(a, null));
     if (e.target.closest("[data-past]")) return openPop(e.target.closest("[data-past]"), evCard(a, { items: a.evidence.filter((x) => x.past) }));
     if (e.target.closest("[data-det]")) { const d = $("chatlog").querySelector(".det"); if (d) d.hidden = !d.hidden; return; }
