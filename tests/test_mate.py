@@ -112,7 +112,7 @@ class StanceTest(Base):
         self.assertEqual((v["headline"]["origin"], v["headline"]["ref"]["table"]), ("ai", "workspace_turn"))
         self.assertEqual(v["why"]["lead"], f"{SUPER}を優先するのは、社長の朝の指示があるためです。{RYOTEI}を優先するには、社長への確認が必要です。")
         self.assertEqual([s["title"] for s in v["why"]["sections"]][:3], ["足りない数と注文", "社長の指示と権限", "相手の回答と値"])
-        a = self.option(v, SUPER)                                            # 指示どおり：魚廣 4本・料亭 2本 → 担当者が決められる
+        a = self.option(v, f"岩瀬漁協 6本：{SUPER}")                           # 指示どおり（漁協の分だけ）：魚廣 4本・順風満帆 2本 → 担当者が決められる
         self.assertFalse(a["president"])
         time.sleep(1.05)                                                     # 人の判断の記録は秒まで
         self.assertEqual(self.decide(a, "s1")["result"], "registered")
@@ -224,18 +224,17 @@ class NumbersTest(Base):
         self.assertIn(line, rows)                                                            # 理由の1枚
         self.assertIn(f"仮押さえ（相手が期限つきで押さえた分・どの注文に回すかは未定）：{held}", rows)
         a = next(x for x in v["actions"] if x.get("recommended"))
-        self.assertEqual(a["label"], f"岩瀬漁協 6本：{SUPER} 4本・{RYOTEI} 2本")              # 案のボタン（案の配分から）
-        self.assertEqual(a["short_after"], [dict(shop=RYOTEI, quantity=4)])
-        self.assertIn(f"この案では足りない：{RYOTEI} 4本", a["note"])
-        self.assertTrue(any(r.startswith(f"案1：岩瀬漁協 6本：{SUPER} 4本・{RYOTEI} 2本") and f"この案では足りない：{RYOTEI} 4本" in r for r in rows))
-        opts = next(s for s in v["why"]["sections"] if s["title"] == "案（コードの計算）")["rows"]
-        self.assertEqual([r["text"][:2] for r in opts], ["案1", "案2", "案3"])                  # 画面では続き番号（AI の記号 A・B・E は出さない）
-        # B社の 2本（仮押さえ）は、1つの案で仕入れる相手が1つだけの作りなので、どの案にも入らない。その理由を一文で出す
-        unused = "B社の 2本（仮押さえ）は、どの案にも入っていません。今の作りでは、1つの案で仕入れる相手は1つだけです。"
-        self.assertEqual(t["unused_text"], unused)
-        self.assertIn(unused, [s["text"] for s in v["sub"]])
-        sec = [s["title"] for s in v["why"]["sections"]]
-        self.assertLess(sec.index("どの案にも入っていない仮押さえ"), sec.index("案（コードの計算）"))
+        combo = f"岩瀬漁協 6本＋B社 2本：{SUPER} 4本・{RYOTEI} 4本"                         # 2つの相手の条件をまとめた案（案B）
+        self.assertEqual(a["label"], combo)                                                   # 案のボタン（案の配分から）
+        self.assertEqual(a["short_after"], [dict(shop=RYOTEI, quantity=2)])
+        self.assertIn(f"この案では足りない：{RYOTEI} 2本", a["note"])
+        self.assertTrue(any(r.startswith(f"案1：{combo}（仕入れ 141,800円）") and f"この案では足りない：{RYOTEI} 2本" in r for r in rows))
+        self.assertIn("案1の行：岩瀬漁協 6本 × 17,500円（期限 07:00・条件 2）", rows)          # 行ごとの値・期限・出所
+        self.assertIn("案1の行：B社 2本 × 18,400円（期限 07:00・条件 3）", rows)
+        opts = [r for r in next(s for s in v["why"]["sections"] if s["title"] == "案（コードの計算）")["rows"] if "の行：" not in r["text"]]
+        self.assertEqual([r["text"][:2] for r in opts], ["案1", "案2", "案3", "案4"])          # 画面では続き番号（AI の記号 A・B・E は出さない）
+        self.assertIsNone(t["unused_text"])                                                   # 仮押さえは全部、案1に入っている
+        self.assertNotIn("どの案にも入っていない仮押さえ", [s["title"] for s in v["why"]["sections"]])
         b = next(x for x in v["actions"] if x.get("president"))
         self.assertEqual(b["label"], f"社長に確かめる：岩瀬漁協 6本：{RYOTEI} 6本")
         texts = [v["headline"]["text"]] + [s["text"] for s in v["sub"]] + [x["label"] for x in v["actions"]] + [x.get("note") or "" for x in v["actions"]] + rows
@@ -250,17 +249,33 @@ class NumbersTest(Base):
         self.assertEqual(v["headline"]["origin"], "ai")                                      # 数字の無い AI の文は使う（出所つき）
         self.assertIsNone(v["why"]["speech_origin"]["replaced"])
 
-    def test_no_unused_hold_line_once_every_hold_is_in_an_option(self):
-        v = self.consult()
-        a = next(x for x in v["actions"] if x.get("recommended"))
-        time.sleep(1.05)
-        self.assertEqual(self.decide(a, "u1")["result"], "registered")
-        self.run_all()                                                                         # 登録の後：B社の 2本を順風満帆へ回す案を相談する
+    def test_when_the_ai_leaves_a_hold_out_the_code_records_it_and_tells_the_ai(self):
+        orig = mockdock.Policy._present
+
+        def no_combo(policy, item, orders, terms):   # 模擬の AI が、組み合わせの案を出さない
+            name, inp = orig(policy, item, orders, terms)
+            inp = dict(inp, options=[o for o in inp["options"] if not o.get("buy_term_ids")])
+            inp["recommended"], inp["alternative"] = inp["options"][0]["code"], inp["options"][1]["code"]
+            return name, inp
+        mockdock.Policy._present = no_combo
+        try:
+            self.start()
+            self.worker.step()
+            self.add_ryotei()
+            self.run_all()
+        finally:
+            mockdock.Policy._present = orig
         v = self.v()
-        self.assertEqual(v["exec"], "your_turn")
-        self.assertEqual(v["tally"]["held_total"], 2)
-        self.assertIsNone(v["tally"]["unused_text"])
-        self.assertEqual(next(x for x in v["actions"] if x.get("recommended"))["label"], f"B社 2本：{RYOTEI} 2本")
+        self.assertEqual(len(v["actions"]), 3)                                                # コードは案を足さない
+        unused = "B社の 2本（仮押さえ）は、どの案にも入っていません。仮押さえを全部使う案が無いことを、AI に伝えました。"
+        self.assertEqual(v["tally"]["unused_text"], unused)
+        self.assertIn(unused, [s["text"] for s in v["sub"]])
+        c = db.connect("amiya")
+        try:
+            told = [r[0] for r in c.execute("SELECT result_text FROM agent_step WHERE tool = 'present_options' ORDER BY id")]
+        finally:
+            c.close()
+        self.assertIn("全部使う案がありません", told[-1])                                     # AI への返事にも書く
 
     def test_an_ai_text_with_numbers_that_do_not_match_is_replaced_by_the_code(self):
         v = self.consult(lie=True)

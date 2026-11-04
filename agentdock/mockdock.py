@@ -65,7 +65,8 @@ class Policy:
             o["remaining"] = o["quantity"] - _q("amiya", "SELECT coalesce(sum(quantity), 0) AS n FROM stock WHERE order_id = ? AND status = 'allocated'", (o["id"],))[0]["n"]
         need = sum(o["remaining"] for o in orders)
         asked = {m["to_owner"] for m in msgs if m["from_owner"] == "amiya" and m["kind"] == "inquiry"}
-        live_terms = [t for m in msgs if m["to_owner"] == "amiya" and m["kind"] == "offer" for t in m["term_list"] if t["status"] == "offered"]
+        live_terms = [dict(t, message_id=m["message_id"], seller=m["from_owner"]) for m in msgs if m["to_owner"] == "amiya" and m["kind"] == "offer"
+                      for t in m["term_list"] if t["status"] == "offered"]
         if "出来事：注文が入りました" in prompt and not asked:            # 朝の注文：漁協と B社に照会する（別の仕入先がある）
             return [ [("read_orders", B), ("read_thread", B)],
                     [("send_inquiry", dict(to_owner="iwase", side="buy", item_code=item, quantity=need, unit_price_yen=17500, request_id=None,
@@ -84,7 +85,15 @@ class Policy:
                     [("send_inquiry", dict(to_owner="buyer_b", side="buy", item_code=item, quantity=min(need, 2), unit_price_yen=18000, request_id=None,
                                            message=f"ブリを {min(need, 2)}本、譲っていただけますか。", reason="注文が増えたため"))],
                     [("wait_for_replies", dict(reason="返事を待つ"))] ]
-        if not live_terms:                                                  # 当てが無い：断られた
+        if not live_terms:                                                  # 当てが無い：断られた。欠品の見込みを売り先に伝える下書きを作る
+            short_o = next((o for o in orders if o["remaining"] > 0), None)
+            has_draft = _q("amiya", "SELECT count(*) AS n FROM customer_draft")[0]["n"]
+            if short_o and not has_draft:
+                return [ [("read_thread", B), ("read_vault", B)],
+                        [("draft_to_customer", dict(customer=short_o["customer"], item_code=item, substitute_item_code="aji",
+                                                    message=f"本日のブリは {short_o['remaining']}本足りない見込みです。代わりにアジをご用意できます。",
+                                                    reason="当たれる先の返事が断りでした"))],
+                        [("do_nothing", dict(reason="下書きを担当者に見てもらう"))] ]
             return [ [("read_thread", B)], [("do_nothing", dict(reason="当たれる先の返事が断りでした。次に当たる先を担当者と相談します"))] ]
         last_present = _q("amiya", "SELECT max(t.at) AS at FROM workspace_turn t WHERE t.source = 'present'")[0]["at"]
         newest = max([m["created_at"] for m in msgs] + [o["received_at"] for o in orders if o.get("received_at")])
@@ -99,26 +108,42 @@ class Policy:
         fit = [t for t in terms if t["quantity"] <= need]   # 注文より多くは仕入れない（余りの出る条件は選ばない）
         big = max(fit or terms, key=lambda t: (t["quantity"], -t["unit_price_yen"]))
         name = lambda o: o["shop_name"] or o["customer"]   # noqa: E731
-        opts, n = [], big["quantity"]
-        alloc_a, left = [], n
-        for o in ([keep] if keep and keep["remaining"] > 0 else []) + rest:
-            k = min(left, o["remaining"])
-            if k > 0:
-                alloc_a.append(dict(kind="order", ref_id=o["id"], customer=None, quantity=k))
-                left -= k
-        lbl = "・".join(f"{name(o)}{a['quantity']}" for a in alloc_a for o in orders if o["id"] == a["ref_id"])
-        opts.append(dict(code="A", label=f"漁協から {n}本（{lbl}）", short_label=lbl[:16], buy_term_id=big["term_id"], allocations=alloc_a,
-                         reason="社長の朝の指示の売り先を先にそろえる", risk="ほかの注文が足りない時は、残りを別の仕入先で探す",
+
+        def fill(n):   # 社長の指示の売り先を先に、残りをほかの注文へ
+            out, left = [], n
+            for o in ([keep] if keep and keep["remaining"] > 0 else []) + rest:
+                k = min(left, o["remaining"])
+                if k > 0:
+                    out.append(dict(kind="order", ref_id=o["id"], customer=None, quantity=k))
+                    left -= k
+            return out
+        # 返事ごとに1件（最も多い数量の条件）。2つ以上の相手が押さえてくれていれば、全部を使う案を先に出す（案B・2026-11-04）
+        best = {}
+        for t in terms:
+            if t["message_id"] not in best or t["quantity"] > best[t["message_id"]]["quantity"]:
+                best[t["message_id"]] = t
+        per_msg = sorted(best.values(), key=lambda t: t["term_id"])
+        combo = [t for t in per_msg if t.get("hold_ref")]
+        opts, codes = [], iter("ABCD")
+        n_all = sum(t["quantity"] for t in combo)
+        if len({t["seller"] for t in combo}) >= 2 and n_all <= need:
+            opts.append(dict(code=next(codes), label="押さえてもらった分を全部使う", short_label="全部の押さえを使う", buy_term_id=None,
+                             buy_term_ids=[t["term_id"] for t in combo], allocations=fill(n_all),
+                             reason="2つの相手が押さえてくれた分を合わせ、社長の朝の指示の売り先を先にそろえる", risk="ほかの注文の足りない分は、別に探す",
+                             differs_from_decision=False, vault_refs=[]))
+        n = big["quantity"]
+        opts.append(dict(code=next(codes), label=f"漁協の条件だけで仕入れる", short_label="漁協の分だけ", buy_term_id=big["term_id"], buy_term_ids=[],
+                         allocations=fill(n), reason="社長の朝の指示の売り先を先にそろえる", risk="ほかの注文が足りない時は、残りを別の仕入先で探す",
                          differs_from_decision=False, vault_refs=[]))
-        short_after = sum(o["remaining"] for o in orders) - n
-        if rest and keep and keep["remaining"] > 0 and short_after > 0:
+        short_after = need - max(n, n_all if len(opts) > 1 else n)
+        if rest and keep and keep["remaining"] > 0 and need - n > 0:
             r = rest[0]
             k = min(n, r["remaining"])
-            opts.append(dict(code="B", label=f"漁協から {n}本（{name(r)}に{k}）", short_label=f"{name(r)}に{k}本"[:16], buy_term_id=big["term_id"],
+            opts.append(dict(code=next(codes), label="追加の注文を先にそろえる", short_label="追加の注文を先に", buy_term_id=big["term_id"], buy_term_ids=[],
                              allocations=[dict(kind="order", ref_id=r["id"], customer=None, quantity=k)],
                              reason="追加の注文を先にそろえる", risk="社長の指示の売り先が欠ける（社長の確認が要る）", differs_from_decision=False, vault_refs=[]))
-        opts.append(dict(code="E", label="見送る", short_label="見送る", buy_term_id=None, allocations=[], reason="条件が合わない", risk="注文を落とす",
-                         differs_from_decision=False, vault_refs=[]))
+        opts.append(dict(code="E", label="見送る", short_label="見送る", buy_term_id=None, buy_term_ids=[], allocations=[], reason="条件が合わない",
+                         risk="注文を落とす", differs_from_decision=False, vault_refs=[]))
         if short_after > 0 and rest:
             sq = f"{name(rest[0])}の追加で足りなくなりました。どう分けますか"[:40]   # 数はコードが画面に出す（文に数字を書かない）
             head = "注文が増え、今の当てでは足りません"
@@ -127,7 +152,7 @@ class Policy:
             head = "注文の分がそろいます"
         return ("present_options", dict(item_code=item, summary=head, headline=head, short_question=sq, ask_human=sq,
                                         cards=[dict(card_type="order", ref_id=o["id"], note=None) for o in orders][:4],
-                                        options=opts, recommended="A", alternative="B" if len(opts) > 2 else None,
+                                        options=opts, recommended="A", alternative=opts[1]["code"] if len(opts) > 2 else None,
                                         actions=["approve", "compare", "ask"], suggested_questions=[]))
 
     # ── 岩瀬漁協 ──

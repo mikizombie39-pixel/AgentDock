@@ -55,8 +55,10 @@ def compute(con, owner: str, item_code: str, option: dict, now: str) -> dict:
     item = con.execute("SELECT id, code, name, unit FROM item WHERE code = ?", (item_code,)).fetchone()
     errors, lines = [], []
     purchase = None
-    tid = option.get("buy_term_id")
-    if tid is not None:
+    # 仕入れの行：1つの相手なら buy_term_id、2つ以上の相手をまとめる案は buy_term_ids（2026-11-04 デイブ・案B）
+    tids = term_ids(option)
+    purchases = []
+    for tid in tids:
         try:
             t = network.term(tid)
         except network.NetworkError:
@@ -64,11 +66,20 @@ def compute(con, owner: str, item_code: str, option: dict, now: str) -> dict:
             errors.append(f"条件 {tid} がありません")
         if t:
             errors += _term_state(t, owner, now)
-            purchase = dict(term_id=t["id"], seller=t["seller"], seller_name=sc.OWNERS[t["seller"]]["name"], quantity=t["quantity"],
-                            unit_price_yen=t["unit_price_yen"], amount_yen=t["quantity"] * t["unit_price_yen"],
-                            valid_until=t["valid_until"], hold_ref=t["hold_ref"])
+            purchases.append(dict(term_id=t["id"], seller=t["seller"], seller_name=sc.OWNERS[t["seller"]]["name"], quantity=t["quantity"],
+                                  unit_price_yen=t["unit_price_yen"], amount_yen=t["quantity"] * t["unit_price_yen"],
+                                  valid_until=t["valid_until"], hold_ref=t["hold_ref"]))
             if t["hold_ref"] is None:
                 errors.append(f"条件 {t['id']} に売り手の仮押さえがない")
+    multi = len(tids) > 1
+    if multi and len({p["seller"] for p in purchases}) != len(purchases):
+        errors.append("1つの案に、同じ相手の条件は1つだけ入れられます（同じ返事の条件はどちらか一方）")
+    if len(purchases) == 1:
+        purchase = purchases[0]
+    elif purchases:   # 案全体の仕入れ（行の合計）。行ごとの値は purchases に持つ
+        purchase = dict(term_id=None, seller=None, seller_name="＋".join(p["seller_name"] for p in purchases),
+                        quantity=sum(p["quantity"] for p in purchases), unit_price_yen=None,
+                        amount_yen=sum(p["amount_yen"] for p in purchases), valid_until=min(p["valid_until"] for p in purchases), hold_ref=None)
     allocated = 0
     ceilings = []
     for a in option.get("allocations", []):
@@ -126,7 +137,13 @@ def compute(con, owner: str, item_code: str, option: dict, now: str) -> dict:
             lines.append(dict(kind="unallocated", ref_id=None, to="売り先なし", quantity=qty, unit_price_yen=0, revenue_yen=0,
                               certainty="none", process=dict(status="none", per_unit=0, step=None, note=None)))
     # 仕入れ値の上限は網谷水産の決まり（強制）：注文に充てる仕入れの値が上限を超える案は実行できない（2026-11-03 SAL・デイブ）
-    if purchase:
+    supply = _supply(purchases, lines, ceilings) if multi else None
+    if multi:
+        for s in supply:
+            if s["ceiling_yen"] is not None and s["unit_price_yen"] > s["ceiling_yen"]:
+                errors.append(f"{s['seller_name']}の仕入れ値 {s['unit_price_yen']:,}円／{item['unit']} は、網谷水産の決まりの仕入れ値の上限 "
+                              f"{s['ceiling_yen']:,}円／{item['unit']}（{s['to']}の注文）を超えます。現在の条件では実行できません")
+    elif purchase:
         for lim in ceilings:
             if lim["ceiling_yen"] is not None and purchase["unit_price_yen"] > lim["ceiling_yen"]:
                 errors.append(f"仕入れ値 {purchase['unit_price_yen']:,}円／{item['unit']} は、網谷水産の決まりの仕入れ値の上限 "
@@ -146,7 +163,7 @@ def compute(con, owner: str, item_code: str, option: dict, now: str) -> dict:
     profit = revenue - purchase_yen - cost_confirmed
     unsold = sum(l["quantity"] for l in lines if l["kind"] == "unallocated")
     uncertain = sum(l["quantity"] for l in lines if l["certainty"] in ("conditional", "needs_staff", "lead"))
-    per_unit_buy = purchase["unit_price_yen"] if purchase else 0
+    per_unit_buy = (purchase["unit_price_yen"] or max(p["unit_price_yen"] for p in purchases)) if purchase else 0
     numbers = dict(
         purchase=purchase, lines=lines, revenue_yen=revenue, purchase_yen=purchase_yen,
         process_cost_yen=cost_confirmed, gross_profit_yen=profit if not unconfirmed else None,
@@ -158,7 +175,59 @@ def compute(con, owner: str, item_code: str, option: dict, now: str) -> dict:
         unsold_loss_yen=unsold * (per_unit_buy + 0) if unsold else 0,
         limits=dict(buy_ceiling=ceilings, authority=_authority(con, purchase_yen)),
         errors=errors, executable=not errors)
+    if multi:   # 2つ以上の相手の案だけに足す（1つの相手の案の照合番号は今までと同じ）
+        numbers["purchases"] = purchases
+        numbers["supply"] = supply
     return numbers
+
+
+def live_held_terms(owner: str, item_code: str, on_date: str, now: str) -> list[dict]:
+    """今押さえてもらっている条件（返事ごとに1件・最も多い数量の条件）。"""
+    m = market._con()
+    try:
+        rows = [dict(r) for r in m.execute(
+            "SELECT t.* FROM offer_term t JOIN network_message n ON n.id = t.message_id WHERE t.buyer = ? AND t.item_code = ? AND n.trade_date = ? "
+            "AND t.status = 'offered' AND t.hold_ref IS NOT NULL AND t.valid_until > ? ORDER BY t.id", (owner, item_code, on_date, now))]
+    finally:
+        m.close()
+    best = {}
+    for r in rows:
+        if r["message_id"] not in best or r["quantity"] > best[r["message_id"]]["quantity"]:
+            best[r["message_id"]] = r
+    return list(best.values())
+
+
+def term_ids(option: dict) -> list[int]:
+    """案の仕入れの条件の番号（1つの相手なら1件）。"""
+    ids = [t for t in option.get("buy_term_ids") or [] if t is not None]
+    if len(ids) > 1:
+        return list(dict.fromkeys(ids))
+    return [option["buy_term_id"]] if option.get("buy_term_id") is not None else ids
+
+
+def _supply(purchases: list[dict], lines: list[dict], ceilings: list[dict]) -> list[dict]:
+    """どの相手の魚を、どの配分の行に充てるか（コードが決める）。安い仕入れから、上限の低い注文の行へ順に充てる。
+    注文の後に、合意・未打診の売り先・売り先なしの行へ残りを充てる。登録の時は、この充て方で在庫の行を作る（行ごとの仕入れ値）。"""
+    cap = {c["customer"]: c["ceiling_yen"] for c in ceilings}
+    units = []
+    for p in sorted(purchases, key=lambda p: (p["unit_price_yen"], p["term_id"])):
+        units.append([p, p["quantity"]])
+    idx = sorted(range(len(lines)), key=lambda i: (lines[i]["kind"] != "order", cap.get(lines[i]["to"]) if cap.get(lines[i]["to"]) is not None else 10 ** 9, i))
+    out = []
+    for i in idx:
+        need = lines[i]["quantity"]
+        for u in units:
+            if need <= 0:
+                break
+            take = min(need, u[1])
+            if take <= 0:
+                continue
+            u[1] -= take
+            need -= take
+            out.append(dict(term_id=u[0]["term_id"], seller=u[0]["seller"], seller_name=u[0]["seller_name"], unit_price_yen=u[0]["unit_price_yen"],
+                            line=i, kind=lines[i]["kind"], ref_id=lines[i]["ref_id"], to=lines[i]["to"], quantity=take,
+                            ceiling_yen=cap.get(lines[i]["to"]) if lines[i]["kind"] == "order" else None))
+    return out
 
 
 def _buy_ceiling(con, item, customer: str) -> dict:
@@ -196,8 +265,10 @@ def _amounts_allowed(con, owner: str, item_code: str, computed: list[dict], on_d
         for k in ("revenue_yen", "purchase_yen", "process_cost_yen", "gross_profit_yen", "gross_profit_without_unconfirmed_yen", "unsold_loss_yen"):
             if n.get(k):
                 out.add(abs(n[k]))
+        for p in n.get("purchases") or ([n["purchase"]] if n["purchase"] else []):
+            out |= {p["unit_price_yen"], p["amount_yen"]}
         if n["purchase"]:
-            out |= {n["purchase"]["unit_price_yen"], n["purchase"]["amount_yen"]}
+            out.add(n["purchase"]["amount_yen"])
         for l in n["lines"]:
             out |= {l["unit_price_yen"], l["revenue_yen"]}
             if l["process"]["per_unit"]:
@@ -312,8 +383,11 @@ def build(con, owner: str, item_code: str, on_date: str, payload: dict, run_id: 
     unit = sc.unit_label(con.execute("SELECT unit FROM item WHERE id = ?", (item_id,)).fetchone()[0])
     computed = []
     for o in payload["options"]:
-        plan = dict(buy_term_id=o["buy_term_id"], allocations=o["allocations"])
-        diff = consult.against_decision(con, decision, o["allocations"]) if o["buy_term_id"] is not None else []
+        ids = term_ids(o)
+        plan = dict(buy_term_id=ids[0] if ids else None, allocations=o["allocations"])
+        if len(ids) > 1:   # 2つ以上の相手の条件をまとめる案
+            plan["buy_term_ids"] = ids
+        diff = consult.against_decision(con, decision, o["allocations"]) if ids else []
         if diff and not o.get("differs_from_decision"):
             errs.append(f"案 {o['code']} は人の決定と違います（{'・'.join(diff)}）。{consult.decision_text(decision, unit)}。"
                         "決定に沿った案にするか、決定と違う案だと differs_from_decision: true で示してください"
@@ -340,6 +414,10 @@ def build(con, owner: str, item_code: str, on_date: str, payload: dict, run_id: 
     layout["short_question"] = sq
     layout["short_labels"] = {o["code"]: o["short_label"].strip() for o in payload["options"] if o.get("short_label")}
     layout["vault_refs"] = {o["code"]: list(dict.fromkeys(o.get("vault_refs") or [])) for o in payload["options"] if o.get("vault_refs")}
+    # 仮押さえを全部使う案があるか（コードが確かめる・案は足さない）。無ければ記録し、AI に伝える
+    held = live_held_terms(owner, item_code, on_date, now)
+    if len({t["seller"] for t in held}) >= 2 and not any(set(t["id"] for t in held) <= set(term_ids(o)) for o in payload["options"]):
+        layout["all_holds_missing"] = dict(terms=[t["id"] for t in held], sellers=[sc.OWNERS[t["seller"]]["name"] for t in held])
     now_iso = db.now_iso()
     with con:
         if case is None:
@@ -366,14 +444,15 @@ def build(con, owner: str, item_code: str, on_date: str, payload: dict, run_id: 
         con.execute("INSERT INTO audit_event (at, actor, event, detail) VALUES (?, 'companion', 'board_presented', ?)",
                     (now_iso, json.dumps(dict(case_id=cid, version=version, run_id=run_id, summary=payload["summary"]), ensure_ascii=False)))
     return dict(case_id=cid, version=version, consultation_id=consult_id,
-                options=[(o["code"], n["executable"], n["errors"]) for o, _, n in computed])
+                options=[(o["code"], n["executable"], n["errors"]) for o, _, n in computed],
+                all_holds_missing=layout.get("all_holds_missing"))
 
 
 def _case_for(con, orders: list, oid: int, item_id: int, on_date: str):
     """案件の行（id, version）。案の注文の並びが変わっても（例：料亭だけに回す案）、同じ品目の開いた案件を使う。無ければ None。"""
     case = None
-    for o in orders or [oid]:   # 登録・見送りで閉じた案件は使わない（残った注文は新しい案件で続ける）
-        case = case or con.execute("SELECT id, version FROM deal_case WHERE order_id = ? AND status NOT IN ('registered', 'rejected') "
+    for o in orders or [oid]:   # 登録・見送り・一部登録で閉じた案件は使わない（残った注文は新しい案件で続ける）
+        case = case or con.execute("SELECT id, version FROM deal_case WHERE order_id = ? AND status NOT IN ('registered', 'rejected', 'partial') "
                                    "ORDER BY id DESC LIMIT 1", (o,)).fetchone()
     if case is None:
         case = con.execute("SELECT id, version FROM deal_case WHERE item_id = ? AND trade_date = ? AND status IN (?, ?, ?, ?, ?) "

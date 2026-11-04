@@ -512,6 +512,10 @@ def present_options(ctx, inp):
     ctx.data["board"] = r
     ctx.summary = inp["summary"]
     lines = [f"{code}：{'実行できる' if ok else '実行できない（' + '・'.join(errs) + '）'}" for code, ok, errs in r["options"]]
+    if r.get("all_holds_missing"):   # コードは案を足さない。AI に伝え、画面の理由の1枚にも出す
+        m = r["all_holds_missing"]
+        lines.append(f"押さえてもらった条件（{'・'.join(m['sellers'])}・条件 {', '.join(str(t) for t in m['terms'])}）を全部使う案がありません。"
+                     "組み合わせる方がよければ、buy_term_ids で相手ごとの条件をまとめた案を出し直してください。")
     return "磁石ボードに出しました（案件 {}・版 {}）。金額はコードが計算して表示します。\n".format(r["case_id"], r["version"]) + "\n".join(lines)
 
 
@@ -546,8 +550,8 @@ def compare_options(ctx, inp):
         item_code = inp.get("item_code") or event_item(ctx.owner, ctx.event)
         if item_code is None:
             raise ToolError("item_code（品目のコード）が要ります")
-        n = workspace.compute(ctx.con, ctx.owner, item_code, dict(buy_term_id=o["buy_term_id"], allocations=o["allocations"]),
-                              demo_now(ctx.on_date))
+        n = workspace.compute(ctx.con, ctx.owner, item_code, dict(buy_term_id=o["buy_term_id"], buy_term_ids=o.get("buy_term_ids") or [],
+                                                                   allocations=o["allocations"]), demo_now(ctx.on_date))
         out.append(dict(code=o["code"], executable=n["executable"], errors=n["errors"],
                         revenue_yen=n["revenue_yen"], purchase_yen=n["purchase_yen"], process_cost_yen=n["process_cost_yen"],
                         gross_profit_yen=n["gross_profit_yen"], gross_profit_without_unconfirmed_yen=n["gross_profit_without_unconfirmed_yen"],
@@ -635,12 +639,15 @@ _ALLOC = {"type": "object", "additionalProperties": False, "required": ["kind", 
                                                  "customer_lead＝まだ打診していない売り先（customer に名前）／unallocated＝売り先なし"},
                          "ref_id": NULL_INT, "customer": {"type": ["string", "null"]}, "quantity": INT}}
 _OPTION = {"type": "object", "additionalProperties": False,
-           "required": ["code", "label", "short_label", "buy_term_id", "allocations", "reason", "risk", "differs_from_decision", "vault_refs"],
+           "required": ["code", "label", "short_label", "buy_term_id", "buy_term_ids", "allocations", "reason", "risk", "differs_from_decision", "vault_refs"],
            "properties": {"code": {"type": "string", "enum": ["A", "B", "C", "D", "E"]}, "label": STR,
                           "short_label": {"type": "string", "description": "担当者の画面の大きなボタンに出す案の名前（16字まで。例：料亭に 6本）"},
                           "differs_from_decision": {"type": "boolean", "description": "人の決定（担当者・社長が相談で決めた配分）と違う案なら true。その案は決定した人か網谷さんだけが承認できる"},
                           "vault_refs": {"type": "array", "items": INT, "description": "この案の根拠に引いた Vault の番号（read_vault の id・引かなければ空）"},
                           "buy_term_id": {"type": ["integer", "null"], "description": "仕入れる条件の番号（届いた条件の番号）。仕入れない案は null"},
+                          "buy_term_ids": {"type": "array", "items": INT,
+                                           "description": "2つ以上の相手の条件を1つの案にまとめる時の条件の番号（相手ごとに1つ・例：漁協の条件と B社の条件）。"
+                                                          "1つの相手だけの案は空にする。どの魚をどの注文に充てるか・金額・不足はコードが計算する"},
                           "allocations": {"type": "array", "items": _ALLOC}, "reason": STR, "risk": STR}}
 _CARD = {"type": "object", "additionalProperties": False, "required": ["card_type", "ref_id", "note"],
          "properties": {"card_type": {"type": "string", "enum": ["order", "quote", "agreement", "vault", "customer", "post", "market", "risk", "note"]},
@@ -683,7 +690,8 @@ COMPARE = Tool(
     {"item_code": ITEM, "options": {"type": "array", "items": {
         "type": "object", "additionalProperties": False, "required": ["code", "buy_term_id", "allocations"],
         "properties": {"code": {"type": "string", "enum": ["A", "B", "C", "D", "E"]},
-                       "buy_term_id": {"type": ["integer", "null"]}, "allocations": {"type": "array", "items": _ALLOC}}}}},
+                       "buy_term_id": {"type": ["integer", "null"]}, "buy_term_ids": {"type": "array", "items": INT},
+                       "allocations": {"type": "array", "items": _ALLOC}}}}},
     compare_options, strict=False)
 DRAFT = Tool(
     "draft_to_customer",
@@ -932,7 +940,10 @@ def situation(owner: str, event: dict, on_date: str) -> tuple[str, str]:
         item = p["item"]
         left = [o for o in _open_orders(owner, item) if o["remaining"] > 0]
         spare = _spare_lines(owner, item)
+        failed = p.get("failed") or []
         head = (f"出来事：取引を登録しました（案件 {p['case_id']}・{', '.join(p.get('trades') or [])}）。" +
+                ("登録できなかった行：" + "・".join(f"{f['seller_name']} {f['quantity']}（{f['reason']}）" for f in failed) +
+                 "。この行の分は足りないままです。" if failed else "") +
                 ("満たしていない注文：" + "・".join(f"{o['customer']} {o['quantity']}{o['unit']}（注文 {o['order_id']}）のうち {o['remaining']}{o['unit']}" for o in left) +
                  "。残りを満たす仕入れ先を探すか（漁協・ほかの仲買への問い合わせ）、担当者に相談してください。売り先への連絡は下書きだけです。"
                  if left else "満たしていない注文はありません。") +

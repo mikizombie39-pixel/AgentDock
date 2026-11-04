@@ -180,7 +180,8 @@ def _last_decline(f):
     d = incoming[-1]
     later = [x for x in f["messages"] if x["from_owner"] == f["owner"] and x["kind"] == "inquiry" and x["id"] > d["id"]]
     presented = [p for p in f["presents"] if _t(p["at"]) > _t(d["created_at"])]
-    return None if later or presented else d
+    drafted = [x for x in f["cur"].get("drafts") or [] if _t(x["created_at"]) > _t(d["created_at"])]   # 売り先への連絡の下書きも、次の手
+    return None if later or presented or drafted else d
 
 
 def _short_total(f) -> int:
@@ -199,7 +200,10 @@ def option_needs_president(owner: str, case_id: int, option_id: int) -> dict:
             return dict(needs=False, priority_change=False, over_limit=False)
         allocs = [dict(order_id=l["ref_id"] if l["kind"] == "order" else None, quantity=l["quantity"]) for l in n["lines"]]
         priority = consult.changes_priority(con, case, dict(quantity=pu["quantity"], allocations=allocs))
-        a = authority.check(con, "staff", pu["seller"], case["item_id"], case["trade_date"], pu["amount_yen"])
+        # 権限は相手ごと（同じ相手・同じ品目・同じ取引日の合計）。どれか1つでも上を超えれば社長の確認（承認の時と同じ）
+        rows = n.get("purchases") or [pu]
+        checks = [authority.check(con, "staff", r["seller"], case["item_id"], case["trade_date"], r["amount_yen"]) for r in rows]
+        a = next((x for x in checks if not x["allowed"]), checks[0])
         decision = consult.latest_decision(con, case_id)
         settled = decision is not None and authority.may_change_priority(con, decision["decided_by"]) and not consult.against_decision(
             con, decision, json.loads(con.execute("SELECT plan_json FROM board_option WHERE id = ?", (option_id,)).fetchone()[0])["allocations"])
@@ -329,7 +333,10 @@ def _allowed(f, tl) -> dict:
         n = o["numbers"]
         if n["purchase"]:
             qty.add(n["purchase"]["quantity"])
-            yen.update((n["purchase"]["unit_price_yen"], n["purchase_yen"]))
+            yen.update(x for x in (n["purchase"]["unit_price_yen"], n["purchase_yen"]) if x)
+        for r in n.get("rows") or []:
+            qty.add(r["quantity"])
+            yen.update((r["unit_price_yen"], r["amount_yen"]))
         qty.update(l["quantity"] for l in n["lines"])
         for a in o["after"]:
             qty.update((a["short_after"], a["secured_after"]))
@@ -457,27 +464,31 @@ def tally(f) -> dict:
     ids = [o["option_id"] for o in f["cur"].get("options") or []]
     con = db.connect(f["owner"])
     try:   # 案が仕入れる条件の番号（案の計画の記録から）
-        used_terms = {json.loads(r[0]).get("buy_term_id") for r in con.execute(
-            f"SELECT plan_json FROM board_option WHERE id IN ({','.join('?' * len(ids))})", ids)} if ids else set()
+        plans = [json.loads(r[0]) for r in con.execute(f"SELECT plan_json FROM board_option WHERE id IN ({','.join('?' * len(ids))})", ids)] if ids else []
     finally:
         con.close()
-    # どの案にも入っていない仮押さえ：1つの案で仕入れる条件は1つだけの作り（present_options の buy_term_id は1件・登録も1件）
+    used_terms = {t for pl in plans for t in (pl.get("buy_term_ids") or [pl.get("buy_term_id")])}
+    # どの案にも入っていない仮押さえ（AI が組み合わせの案を出さなかった時。コードは案を足さず、理由の1枚と AI への返事に記録する）
     unused = [h for h in held if h["term_id"] not in used_terms] if f["cur"].get("options") else []
     for no, o in enumerate(f["cur"].get("options") or [], 1):
         n = o["numbers"]
-        if n["purchase"]:
+        to = "・".join(f"{shops.get(l['to'], l['to'])} {l['quantity']}{u}" for l in n["lines"])
+        if n.get("rows"):   # 2つ以上の相手の案：相手ごとの行を「＋」でつなぐ
+            label = "＋".join(f"{r['seller']} {r['quantity']}{u}" for r in n["rows"]) + "：" + to
+        elif n["purchase"]:
             p = n["purchase"]
-            label = f"{p['seller']} {p['quantity']}{u}：" + "・".join(f"{shops.get(l['to'], l['to'])} {l['quantity']}{u}" for l in n["lines"])
+            label = f"{p['seller']} {p['quantity']}{u}：" + to
         else:
             label = "見送る（仕入れない）"
         short_after = [dict(shop=shops.get(a["customer"], a["customer"]), quantity=a["short_after"]) for a in o["after"] if a["short_after"] > 0]
-        options.append(dict(option_id=o["option_id"], code=o["code"], no=no, label=label, short_after=short_after,
+        options.append(dict(option_id=o["option_id"], code=o["code"], no=no, label=label, short_after=short_after, rows=n.get("rows") or [],
                             note=("この案では足りない：" + "・".join(f"{s['shop']} {s['quantity']}{u}" for s in short_after)) if short_after else "全部の注文がそろう"))
     held_text = "・".join(f"{h['name']} {h['quantity']}{u}" for h in held)
     line = (f"注文は合わせて {total}{u}。登録済み {registered}{u}・仮押さえ {held_total}{u}" + (f"（{held_text}）" if held else "") +
             (f"で、あと {left}{u}足りません。" if left else "で、数はそろっています。"))
-    unused_text = ("・".join(f"{h['name']}の {h['quantity']}{u}" for h in unused) + "（仮押さえ）は、どの案にも入っていません。"
-                   "今の作りでは、1つの案で仕入れる相手は1つだけです。") if unused else None
+    told = bool(f["presents"]) and bool(json.loads(f["presents"][-1]["layout_json"] or "{}").get("all_holds_missing"))
+    unused_text = ("・".join(f"{h['name']}の {h['quantity']}{u}" for h in unused) + "（仮押さえ）は、どの案にも入っていません。" +
+                   ("仮押さえを全部使う案が無いことを、AI に伝えました。" if told else "")) if unused else None
     return dict(total=total, registered=registered, held=held, held_total=held_total, reply_only=reply_only, left=left,
                 options=options, line=line, unit=u, unused_holds=unused, unused_text=unused_text)
 
@@ -562,6 +573,11 @@ def view(owner: str, item: str, on_date: str = sc.DEMO_DATE, worker_error: str |
     elif ex == "registered":
         head = _said(f"{name}はそろいました。")
         sub = [_said(f"{_orders_phrase(f)}を登録しました。")]
+    elif ex == "your_turn" and not cur.get("waiting_for") and not cur.get("stock_question"):   # 売り先への連絡の下書き
+        d = next(d for d in cur.get("drafts") or [] if d["status"] == "draft")
+        head = _said(f"{sc.shop(owner, d['customer'])}に、足りない見込みを伝えますか。")
+        sub.append(_said(tl["line"], "calc"))
+        sub.append(_said("下書きは AI が作りました。伝えるかどうかは、あなたが決めます。"))
     elif ex == "your_turn":
         head = aiq or _said("どう進めるか、決めてください。")
         if cur.get("waiting_for") == "staff":
@@ -659,7 +675,11 @@ def _choices(f, tl):
     d = next(d for d in cur.get("drafts") or [] if d["status"] == "draft")
     acts = [dict(id=f"dr{d['draft_id']}a", label="この文で伝える", kind="primary", api=dict(path="/api/draft", body=dict(draft_id=d["draft_id"], action="approve", role="staff"))),
             dict(id=f"dr{d['draft_id']}d", label="使わない", kind="secondary", api=dict(path="/api/draft", body=dict(draft_id=d["draft_id"], action="discard", role="staff")))]
-    return acts, _said(f"{d['customer']}への連絡の下書きです（AI が作成・まだ送っていません）：{d['body']}", "ai", dict(db="owner", table="customer_draft", id=d["draft_id"]))
+    shop = sc.shop(f["owner"], d["customer"])
+    said, _ = _ai_text(f, tl, d["body"], dict(db="owner", table="customer_draft", id=d["draft_id"]))   # 下書きの文の数も照合する
+    if said:
+        said = dict(said, text=f"{shop}への連絡の下書きです（AI が作成・まだ送っていません）：{d['body']}")
+    return acts, said or _said(f"{shop}への連絡の下書きがあります（AI が作成・まだ送っていません）。数が合わないので、なぜ？で確かめてください。", "calc")
 
 
 # ── 理由の1枚（仲間に触れる・「なぜ？」で開く。判断に要る順）────────────────
@@ -726,6 +746,9 @@ def why_card(f, st, ex, head, tl=None, replaced=None) -> dict:
     by_id = {x["option_id"]: x for x in tl["options"]}
     for o in cur.get("options") or []:
         n, c = o["numbers"], by_id[o["option_id"]]
+        for r in c["rows"]:   # 2つ以上の相手の案：行ごとの値・期限・出所（相手から届いた条件）
+            opts.append(_row(f"案{c['no']}の行：{r['seller']} {r['quantity']}{u} × {_yen(r['unit_price_yen'])}（期限 {r['valid_until'][11:16]}・条件 {r['term_id']}）",
+                             "reply", None, dict(db="market", table="offer_term", id=r["term_id"])))
         opts.append(_row(f"案{c['no']}：{c['label']}" + (f"（仕入れ {_yen(n['purchase_yen'])}）" if n["purchase"] else "") + f"・{c['note']}" +
                          ("" if o["executable"] else "（実行できません）"), "calc"))
     vault = [_row(f"{v['title']}（{v['author']}・{v['written_on']}）", "vault", None, dict(db="owner", table="vault_note", id=v["id"])) for v in f["vault"]]
@@ -808,6 +831,19 @@ def receipt(f) -> dict | None:
         if k == "registered":
             got = [o for o in f["orders"] if o["registered"]]
             text = f"受け取りました。{_orders_phrase(f, [dict(o, quantity=o['registered']) for o in got])}で登録しました。" + rest
+        elif k == "partial":   # 2つ以上の相手の案で、登録できた行とできなかった行がある（何が済んで何が残ったかを一文で）
+            cid = json.loads(last["detail"] or "{}").get("case_id")
+            con = db.connect(f["owner"])
+            try:
+                rows = [dict(r) for r in con.execute("SELECT counterparty, quantity, status, fail_reason FROM proposal WHERE case_id = ? AND side = 'buy' ORDER BY id",
+                                                     (cid,))]
+            finally:
+                con.close()
+            ok = "・".join(f"{sc.OWNERS[r['counterparty']]['name']} {r['quantity']}{u}" for r in rows if r["status"] == "registered")
+            ng = "・".join(f"{sc.OWNERS[r['counterparty']]['name']} {r['quantity']}{u}は{fail_reason_short(r['fail_reason'])}ので登録していません"
+                           for r in rows if r["status"] == "failed")
+            text = (f"受け取りました。{ok}は登録しました。{ng}。" +
+                    (("残りの " + "・".join(f"{o['shop']} {o['short']}{u}" for o in short) + "を、私が相談し直します。") if short else ""))
         elif k == "needs_president":
             text = f"受け取りました。{PRESIDENT}に確認を送りました。答えが来たら続けます。"
         elif k == "rejected":
@@ -827,13 +863,29 @@ def receipt(f) -> dict | None:
             text = "受け取りました。答えの扱いで続けます。"
         else:
             text = "受け取りました。"
-        out = dict(at=last["at"], text=text, ref=dict(db="owner", table="case_decision" if k in ("registered", "needs_president", "rejected", "stale") else
+        out = dict(at=last["at"], text=text, ref=dict(db="owner", table="case_decision" if k in ("registered", "partial", "needs_president", "rejected", "stale") else
                                                        ("human_decision" if k == "decision" else "stock_question"), id=last["id"]))
     after = [r for r in f["runs"] if r["ended_at"] and _t(r["started_at"]) >= _t(out["at"]) and r["summary"] and r["outcome"] not in STOP_OUTCOMES]
     if after:
         out["ai"] = _said(after[-1]["summary"], "ai", dict(db="owner", table="agent_run", id=after[-1]["id"]))
     out["at_shown"] = shown_time(out["at"], f["clock"])
     return out
+
+
+def fail_reason_short(reason: str | None) -> str:
+    """登録できなかった理由（コードが書いた長い文）を、画面の一文に入る短い言い方にする。"""
+    r = reason or ""
+    if "期限" in r or "expired" in r:
+        return "期限が切れた"
+    if "仮押さえが無い" in r:
+        return "相手が押さえを下ろした"
+    if "在庫" in r:
+        return "相手の在庫が足りなくなった"
+    if "権限" in r:
+        return "相手の担当者の権限の外だった"
+    if "帳簿" in r:
+        return "帳簿に登録できなかった"
+    return "相手の確認が通らなかった"
 
 
 def _fresh_receipt(f):

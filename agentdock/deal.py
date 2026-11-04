@@ -164,7 +164,7 @@ def _set_case(owner: str, case_id: int, status: str) -> None:
     try:
         with c:
             c.execute("UPDATE deal_case SET status = ?, updated_at = ? WHERE id = ?", (status, db.now_iso(), case_id))
-            if status in ("registered", "rejected"):   # 案件が閉じたら、その相談も閉じる（答えを待たない）
+            if status in ("registered", "rejected", "partial"):   # 案件が閉じたら、その相談も閉じる（答えを待たない）
                 c.execute("UPDATE consultation SET status = 'closed' WHERE case_id = ? AND status IN ('open', 'needs_president')", (case_id,))
     finally:
         c.close()
@@ -188,8 +188,10 @@ def _case_terms(owner: str, case: dict) -> tuple[list[dict], list[dict]]:
     return terms, ags
 
 
-def _release_all(owner: str, case_id: int, reason: str, keep_term: int | None = None, keep_agreements=()) -> dict:
-    """選ばれなかった条件と仮押さえ・合意を取り消し、合意の相手には取り消しを知らせる。"""
+def _release_all(owner: str, case_id: int, reason: str, keep_term: int | None = None, keep_agreements=(), keep_terms=()) -> dict:
+    """選ばれなかった条件と仮押さえ・合意を取り消し、合意の相手には取り消しを知らせる。keep_terms は2つ以上の相手の案で残す条件。"""
+    if keep_terms:
+        return _release_except(owner, case_id, reason, set(keep_terms), keep_agreements)
     c = db.connect(owner)
     try:
         case = dict(_q1(c, "SELECT * FROM deal_case WHERE id = ?", (case_id,)))
@@ -230,6 +232,40 @@ def _release_all(owner: str, case_id: int, reason: str, keep_term: int | None = 
     return dict(terms=released_terms, holds=sorted(released_holds), agreements=[a["id"] for a in cancelled])
 
 
+def _release_except(owner: str, case_id: int, reason: str, keep: set, keep_agreements=()) -> dict:
+    """2つ以上の相手の案：登録した条件（keep）と、その仮押さえ以外を下ろす。合意の扱いは _release_all と同じ。"""
+    c = db.connect(owner)
+    try:
+        case = dict(_q1(c, "SELECT * FROM deal_case WHERE id = ?", (case_id,)))
+    finally:
+        c.close()
+    terms, ags = _case_terms(owner, case)
+    keep_holds = {(t["seller"], t["hold_ref"]) for t in terms if t["id"] in keep}   # 押さえの番号は相手の DB ごと
+    released, holds = [], set()
+    m = db.connect(db.MARKET)
+    try:
+        with m:
+            for t in terms:
+                if t["id"] not in keep and t["status"] == "offered":
+                    m.execute("UPDATE offer_term SET status = 'released', updated_at = ? WHERE id = ?", (db.now_iso(), t["id"]))
+                    released.append(t["id"])
+            for a in ags:
+                if a["id"] not in keep_agreements and a["status"] in ("conditional", "needs_staff"):
+                    m.execute("UPDATE agreement SET status = 'cancelled', updated_at = ? WHERE id = ?", (db.now_iso(), a["id"]))
+    finally:
+        m.close()
+    for t in terms:
+        if t["hold_ref"] and (t["seller"], t["hold_ref"]) not in keep_holds and (t["seller"], t["hold_ref"]) not in holds:
+            s = db.connect(t["seller"])
+            try:
+                with s:
+                    s.execute("UPDATE stock_hold SET status = 'released', updated_at = ? WHERE id = ? AND status = 'held'", (db.now_iso(), t["hold_ref"]))
+            finally:
+                s.close()
+            holds.add((t["seller"], t["hold_ref"]))
+    return dict(terms=released, holds=sorted(h for _, h in holds), agreements=[])
+
+
 def _q1_market(sql, args):
     m = db.connect(db.MARKET)
     try:
@@ -240,6 +276,8 @@ def _q1_market(sql, args):
 
 def _approve(owner: str, case, opt, shown_fp: str, actor: str, now: str, fail_at: str | None) -> dict:
     case, opt = dict(case), dict(opt)
+    if case["status"] == "partial":   # 一部登録した案件をもう一度承認しても、二重に登録しない（登録済みは下の再検証で古い案になる）
+        return dict(result="partial", case_id=case["id"], repeated=True)
     if opt["status"] != "offered" or opt["version"] != case["version"]:
         return dict(result="stale", case_id=case["id"], reasons=["この案は最新の版ではありません"])
     if not opt["executable"]:   # 表示の時に実行できない案（決まりの上限を超える等）は、承認しても確定しない
@@ -258,10 +296,16 @@ def _approve(owner: str, case, opt, shown_fp: str, actor: str, now: str, fail_at
     if fp != opt["fingerprint"]:
         reasons.append("表示した時から条件が変わりました（値・数量・状態）")
     purchase = numbers["purchase"]
-    term = network.term(purchase["term_id"]) if purchase else None
+    purchases = numbers.get("purchases") or ([purchase] if purchase else [])
+    multi = len(purchases) > 1
+    term = network.term(purchase["term_id"]) if purchase and not multi else None
     ags = [network.agreement(l["ref_id"]) for l in numbers["lines"] if l["kind"] == "agreement"]
     if term:
         reasons += _verify_seller(term, now)
+    if multi:   # 相手ごとの再検証は登録の時に行ごとにする。全部の行が通らない時だけ、案全体を古い案として止める
+        row_errs = [_verify_seller(network.term(p["term_id"]), now) for p in purchases]
+        if all(row_errs):
+            reasons += [e for errs in row_errs for e in errs]
     for ag in ags:
         reasons += _verify_buyer(ag, now)
     if reasons:
@@ -274,7 +318,11 @@ def _approve(owner: str, case, opt, shown_fp: str, actor: str, now: str, fail_at
         return dict(result="rejected", case_id=case["id"], released=rel)
     c = db.connect(owner)
     try:
-        auth = authority.check(c, actor, term["seller"], case["item_id"], case["trade_date"], purchase["amount_yen"])
+        # 権限の「1件」（同じ相手・同じ品目・同じ取引日の合計）は相手ごとに当てる。どれか1つでも上を超えれば、案全体が社長の確認へ
+        auths = [authority.check(c, actor, p["seller"], case["item_id"], case["trade_date"], p["amount_yen"]) for p in purchases]
+        auth = next((a for a in auths if not a["allowed"]), auths[0])
+        if multi:
+            auth = dict(auth, rows=[dict(seller=p["seller"], **a) for p, a in zip(purchases, auths)])
         # 顧客の間の優先（どの売り先の注文を欠くか）を決める案は、表で許された役割だけが確定できる（相談の答えと同じ判定）
         allocs = [dict(order_id=l["ref_id"] if l["kind"] == "order" else None, quantity=l["quantity"]) for l in numbers["lines"]]
         priority = consult.changes_priority(c, case, dict(quantity=purchase["quantity"], allocations=allocs))
@@ -294,8 +342,8 @@ def _approve(owner: str, case, opt, shown_fp: str, actor: str, now: str, fail_at
         return dict(result="needs_president", case_id=case["id"], authority=auth, priority_change=priority, differs_from_decision=differs)
     _book_proposals(owner, case, opt, numbers, actor)
     _set_case(owner, case["id"], "incomplete")
-    out = _run_steps(owner, case["id"], fail_at)
-    if out["result"] == "registered":
+    out = _run_steps(owner, case["id"], fail_at, now=now)
+    if out["result"] in ("registered", "partial"):
         _record_approval(owner, case, opt, plan, purchase, priority, actor)
     return out
 
@@ -335,7 +383,15 @@ def _book_proposals(owner: str, case, opt, numbers, actor) -> None:
             if c.execute("SELECT 1 FROM proposal WHERE case_id = ?", (case["id"],)).fetchone():
                 return
             p = numbers["purchase"]
-            c.execute("INSERT INTO proposal (case_id, option_id, side, item_id, counterparty, trade_date, quantity, unit_price_yen, trade_id, status, decided_by, decided_at) "
+            for r in numbers.get("purchases") or []:   # 2つ以上の相手の案：相手ごとの仕入れの行（取引の番号は案件と条件から決まる＝再送でも同じ）
+                c.execute("INSERT INTO proposal (case_id, option_id, side, item_id, counterparty, trade_date, quantity, unit_price_yen, trade_id, status, "
+                          "decided_by, decided_at, term_id) VALUES (?, ?, 'buy', ?, ?, ?, ?, ?, ?, 'approved', ?, ?, ?)",
+                          (case["id"], opt["id"], case["item_id"], r["seller"], case["trade_date"], r["quantity"], r["unit_price_yen"],
+                           f"case{case['id']}-buy-{r['term_id']}", actor, db.now_iso(), r["term_id"]))
+            if numbers.get("purchases"):
+                p = None
+            if p:
+                c.execute("INSERT INTO proposal (case_id, option_id, side, item_id, counterparty, trade_date, quantity, unit_price_yen, trade_id, status, decided_by, decided_at) "
                       "VALUES (?, ?, 'buy', ?, ?, ?, ?, ?, ?, 'approved', ?, ?)",
                       (case["id"], opt["id"], case["item_id"], p["seller"], case["trade_date"], p["quantity"], p["unit_price_yen"],
                        f"case{case['id']}-buy", actor, db.now_iso()))
@@ -386,7 +442,7 @@ def _step_audit(owner: str, case_id: int, step: str) -> None:
     _audit(owner, "system", "case_step", dict(case_id=case_id, step=step))
 
 
-def _run_steps(owner: str, case_id: int, fail_at: str | None = None) -> dict:
+def _run_steps(owner: str, case_id: int, fail_at: str | None = None, now: str | None = None) -> dict:
     """確定の手順を順に進める。各手順は何度呼んでも結果が同じ（途中で止まっても resume で続けられる）。"""
     c = db.connect(owner)
     try:
@@ -398,6 +454,8 @@ def _run_steps(owner: str, case_id: int, fail_at: str | None = None) -> dict:
         c.close()
     plan = json.loads(opt["plan_json"])
     numbers = json.loads(opt["numbers_json"])
+    if numbers.get("purchases"):   # 2つ以上の相手の案：相手ごとに再検証して登録する
+        return _run_steps_multi(owner, case, props, item_code, numbers, fail_at, now or f"{case['trade_date']}T06:30:00+09:00")
     buy = next(p for p in props if p["side"] == "buy")
     sells = [p for p in props if p["side"] == "sell"]
     term = network.term(plan["buy_term_id"])
@@ -462,6 +520,123 @@ def _run_steps(owner: str, case_id: int, fail_at: str | None = None) -> dict:
         c.close()
     return dict(result="registered", case_id=case_id, trades=[p["trade_id"] for p in props], done=done,
                 gross_profit_expected_yen=numbers["gross_profit_yen"])
+
+
+def _run_steps_multi(owner: str, case: dict, props: list[dict], item_code: str, numbers: dict, fail_at: str | None, now: str) -> dict:
+    """2つ以上の相手の案の登録（2026-11-04 デイブ・案B）。人の承認は案全体に1回。その後、相手ごとに：
+      1. 相手の組織の決まりで再検証（仮押さえ・期限・在庫・相手の担当者の権限）。通らない行は登録しない（failed・理由を残す）
+      2. 市場に取引を登録 → 相手の在庫 → 条件の確定 → 自社の在庫（その相手の魚を、コードが決めた充て方で注文に充てる）
+    登録できた行は登録のまま残す。登録できなかった行があれば案件は partial（一部登録）にし、AI が残りの不足で相談し直す。
+    取引の番号は案件と条件から決まるので、再送・再開でも同じ行を二重に登録しない。途中で止まれば incomplete のまま、resume で続きから進める。
+    試験用の fail_at：'ledger:<相手>'＝その行の帳簿の登録が断られる（failed）／'stop:<相手>'＝その行の前で処理が止まる（incomplete）"""
+    case_id = case["id"]
+    buys = [p for p in props if p["side"] == "buy"]
+    done, failed = [], []
+    try:
+        for p in buys:
+            if p["status"] == "registered":
+                done.append(f"row:{p['counterparty']}")
+                continue
+            if p["status"] == "failed":
+                failed.append(p)
+                continue
+            if fail_at == f"stop:{p['counterparty']}":
+                raise DealError(f"test: stopped before the row of {p['counterparty']}")
+            term = network.term(p["term_id"])
+            errs = _verify_seller(term, now)
+            if not errs and fail_at == f"ledger:{p['counterparty']}":
+                errs = [f"{sc.OWNERS[p['counterparty']]['name']}との取引を帳簿に登録できませんでした"]
+            if errs:
+                _fail_row(owner, case_id, p, term, errs[0])
+                failed.append(dict(p, fail_reason=errs[0]))
+                continue
+            seller_kind = "coop" if sc.OWNERS[term["seller"]]["role"] == "seller" else "buyer"
+            calls = _register_trade(p["trade_id"], f"T{term['id']}", item_code, term["seller"], seller_kind, owner, p["quantity"], p["unit_price_yen"],
+                                    case["trade_date"])
+            _api_audit(owner, case_id, p["trade_id"], calls)
+            _seller_stock(term, p)
+            m = db.connect(db.MARKET)
+            try:
+                with m:
+                    m.execute("UPDATE offer_term SET status = 'confirmed', updated_at = ? WHERE id = ?", (db.now_iso(), term["id"]))
+            finally:
+                m.close()
+            _own_row(owner, case, numbers, p)
+            done.append(f"row:{p['counterparty']}")
+            _step_audit(owner, case_id, f"row:{p['counterparty']}")
+        kept = {p["term_id"] for p in buys if p["status"] == "registered" or f"row:{p['counterparty']}" in done}
+        _release_all(owner, case_id, "別の条件で確定しました", keep_terms=kept)
+    except Exception as e:
+        _audit(owner, "system", "case_incomplete", dict(case_id=case_id, done=done, error=str(e)))
+        return dict(result="incomplete", case_id=case_id, done=done, error=str(e))
+    registered = [p for p in buys if f"row:{p['counterparty']}" in done]
+    fails = [dict(seller=f["counterparty"], seller_name=sc.OWNERS[f["counterparty"]]["name"], quantity=f["quantity"], term_id=f["term_id"],
+                  reason=f["fail_reason"]) for f in failed]
+    if not registered:   # どの行も登録できなかった：案全体を古い案として止め、AI に出し直してもらう
+        _set_case(owner, case_id, "stale")
+        _wake_for_new_board(owner, case_id, [f["reason"] for f in fails])
+        return dict(result="stale", case_id=case_id, reasons=[f["reason"] for f in fails], failed=fails)
+    status = "partial" if fails else "registered"
+    _set_case(owner, case_id, status)
+    trades = [p["trade_id"] for p in registered]
+    _audit(owner, "system", f"case_{status}", dict(case_id=case_id, trades=trades, failed=fails))
+    c = db.connect(owner)
+    try:   # 登録は業務の出来事：AI が起き、登録できなかった行の分も含めて残りを読んで続ける
+        events.emit(c, "trade_registered", dict(case_id=case_id, item=item_code, trades=trades, failed=fails))
+    finally:
+        c.close()
+    return dict(result=status, case_id=case_id, trades=trades, failed=fails, done=done)
+
+
+def _fail_row(owner: str, case_id: int, p: dict, term: dict, reason: str) -> None:
+    """登録できなかった行：理由を残し、その条件と相手の仮押さえを下ろす。"""
+    c = db.connect(owner)
+    try:
+        with c:
+            c.execute("UPDATE proposal SET status = 'failed', fail_reason = ? WHERE id = ?", (reason, p["id"]))
+    finally:
+        c.close()
+    m = db.connect(db.MARKET)
+    try:
+        with m:
+            m.execute("UPDATE offer_term SET status = 'released', updated_at = ? WHERE id = ? AND status = 'offered'", (db.now_iso(), term["id"]))
+    finally:
+        m.close()
+    if term["hold_ref"]:
+        s = db.connect(term["seller"])
+        try:
+            with s:
+                s.execute("UPDATE stock_hold SET status = 'released', updated_at = ? WHERE id = ? AND status = 'held'", (db.now_iso(), term["hold_ref"]))
+        finally:
+            s.close()
+    _audit(owner, "system", "case_row_failed", dict(case_id=case_id, seller=p["counterparty"], quantity=p["quantity"], term_id=term["id"], reason=reason))
+
+
+def _own_row(owner: str, case: dict, numbers: dict, p: dict) -> None:
+    """1つの相手の行の自社の帳面：その相手の魚を、コードが決めた充て方（supply）で注文に充てる。二重にしない。"""
+    c = db.connect(owner)
+    try:
+        if _q1(c, "SELECT 1 FROM stock WHERE trade_id = ?", (p["trade_id"],)):
+            c.execute("UPDATE proposal SET status = 'registered' WHERE id = ?", (p["id"],))
+            c.commit()
+            return
+        now = db.now_iso()
+        with c:
+            for s in numbers["supply"]:
+                if s["term_id"] != p["term_id"]:
+                    continue
+                if s["kind"] == "order":
+                    c.execute("INSERT INTO stock (item_id, quantity, status, order_id, trade_id, stock_date, updated_at, unit_cost_yen) VALUES (?, ?, 'allocated', ?, ?, ?, ?, ?)",
+                              (case["item_id"], s["quantity"], s["ref_id"], p["trade_id"], case["trade_date"], now, p["unit_price_yen"]))
+                    stockwork.set_order_status(c, s["ref_id"])
+                else:   # 注文の無い行は、引当のない在庫として持つ（売れたことにしない）
+                    c.execute("INSERT INTO stock (item_id, quantity, status, trade_id, stock_date, updated_at, unit_cost_yen, intended_customer_id, unallocated_at) "
+                              "VALUES (?, ?, 'unallocated', ?, ?, ?, ?, ?, ?)",
+                              (case["item_id"], s["quantity"], p["trade_id"], case["trade_date"], now, p["unit_price_yen"],
+                               s["ref_id"] if s["kind"] == "customer_lead" else None, now))
+            c.execute("UPDATE proposal SET status = 'registered' WHERE id = ?", (p["id"],))
+    finally:
+        c.close()
 
 
 def _seller_stock(term: dict, buy: dict) -> None:
@@ -541,8 +716,8 @@ def resume(owner: str, case_id: int) -> dict:
         st = _q1(c, "SELECT status FROM deal_case WHERE id = ?", (case_id,))[0]
     finally:
         c.close()
-    if st == "registered":
-        return dict(result="registered", case_id=case_id, repeated=True)
+    if st in ("registered", "partial"):
+        return dict(result=st, case_id=case_id, repeated=True)
     if st != "incomplete":
         raise DealError(f"case {case_id} is {st}")
     return _run_steps(owner, case_id)

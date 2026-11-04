@@ -24,7 +24,7 @@ from agentdock import agents, db
 from agentdock.seed import scenario as sc
 
 SECTIONS = ("waiting", "read", "done", "network", "left")
-CLOSED_CASE = ("registered", "rejected")
+CLOSED_CASE = ("registered", "rejected", "partial")
 
 
 def _t(s) -> int:
@@ -284,7 +284,7 @@ def _approvals(con, it, on_date):
 
 def _left(con, it, on_date):
     """案件が閉じた（登録・見送り）後に、まだ満たしていない注文。"""
-    closed = con.execute("SELECT max(updated_at) FROM deal_case WHERE item_id = ? AND trade_date = ? AND status IN ('registered', 'rejected')",
+    closed = con.execute("SELECT max(updated_at) FROM deal_case WHERE item_id = ? AND trade_date = ? AND status IN ('registered', 'rejected', 'partial')",
                          (it["id"], on_date)).fetchone()[0]
     if closed is None:
         return []
@@ -472,7 +472,7 @@ def current(owner: str, item: str, on_date: str = sc.DEMO_DATE, at: str | None =
     return out
 
 
-CASE_RESULT = {"registered": "registered", "rejected": "rejected", "held": "held", "stale": "stale", "needs_president": "needs_president",
+CASE_RESULT = {"registered": "registered", "rejected": "rejected", "partial": "partial", "held": "held", "stale": "stale", "needs_president": "needs_president",
                "incomplete": "incomplete"}
 
 
@@ -686,7 +686,11 @@ def _ask(con, case, orders, unit, at=None):
             numbers=dict(purchase=n["purchase"] and dict(seller=n["purchase"]["seller_name"], quantity=n["purchase"]["quantity"],
                                                          unit_price_yen=n["purchase"]["unit_price_yen"]),
                          purchase_yen=n["purchase_yen"], revenue_yen=n["revenue_yen"], process_cost_yen=n["process_cost_yen"], gross_profit_yen=gp(n),
-                         lines=[dict(to=l["to"], quantity=l["quantity"]) for l in n["lines"]], errors=n["errors"]),
+                         lines=[dict(to=l["to"], quantity=l["quantity"]) for l in n["lines"]], errors=n["errors"],
+                         # 2つ以上の相手の案：相手ごとの仕入れの行（値・期限・条件の番号）と、どの魚をどの売り先に充てるか
+                         rows=[dict(term_id=p["term_id"], seller=p["seller_name"], quantity=p["quantity"], unit_price_yen=p["unit_price_yen"],
+                                    amount_yen=p["amount_yen"], valid_until=p["valid_until"]) for p in n.get("purchases") or []],
+                         supply=[dict(seller=s["seller_name"], to=s["to"], quantity=s["quantity"]) for s in n.get("supply") or []]),
             gross_profit_diff_yen=gp(n) - base,
             grounds=dict(reason=r["reason"], risk=r["risk"], vault=vault_for(r["code"]))))
     question = (layout.get("short_question") or layout.get("ask_human") or layout.get("headline")) if t else None
