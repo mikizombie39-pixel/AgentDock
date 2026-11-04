@@ -264,6 +264,9 @@
     if ($("headline").textContent !== head) {
       $("headline").textContent = head;
       if (!REDUCED) $("headline").animate([{ opacity: 0, transform: "translateY(6px)" }, { opacity: 1, transform: "none" }], { duration: 380, easing: "ease-out" });
+      // 状況が変わった：枠が一度ふくらんで光る（目を問題へ向ける）
+      if (!REDUCED) $("focus").animate([{ boxShadow: "0 0 0 0 rgba(201,162,74,0)" }, { boxShadow: "0 0 0 10px rgba(201,162,74,.28)", offset: .35 }, { boxShadow: "0 0 0 0 rgba(201,162,74,0)" }],
+        { duration: 1100, easing: "ease-out" });
     }
     let subs = isPres ? presSubs() : V.sub.map((s) => `<p class="${s.origin === "reply" ? "reply" : ""}">${esc(s.text)}</p>`).join("");
     if (V.tender) subs += `<div class="tenderrows">${V.tender.rows.map((r) => `<div><b>${esc(r.label)}</b><span class="${r.connected ? "" : "nc"}">${esc(r.text)}</span></div>`).join("")}</div>`;
@@ -272,6 +275,8 @@
       : V.exec === "unconnected" ? `<div class="stopline nc">${icon("octagon-pause")}未接続：${esc(V.stop)}</div>`
       : V.exec === "president" && !isPres ? `<div class="waitline">${icon("hourglass")}社長確認中：社長の答えが来るまで、この案は進めません</div>` : "");
     setHTML("execmark", `${icon(EXEC_ICON[V.exec] || "eye")}${esc(V.exec_label)}`);
+    const fc = "focus " + V.exec;
+    if ($("focus").className !== fc) $("focus").className = fc;
     $("execmark").className = "execmark " + V.exec;
     drawNet();
     drawAsk(isPres);

@@ -95,7 +95,7 @@ hr.rule { border: 0; border-top: 1px solid var(--line); margin: 0 0 18px; }
 .crow.dir .ic { color: var(--warm); }
 
 /* ── the conversation (sample 1) ── */
-.subject { display: flex; gap: 8px; align-items: center; font-size: 15px; color: var(--mute); margin: 26px 0 18px; }
+.subject { display: flex; gap: 8px; align-items: center; font-size: 15px; color: var(--mute); margin: 0 0 18px; }
 .subject .ic { color: var(--slate); }
 .talk { display: grid; grid-template-columns: 230px 1fr; gap: 6px 36px; align-items: center; min-height: 250px; position: relative; }
 .whyslot { position: absolute; left: 0; top: 100%; width: 230px; text-align: center; margin-top: 8px; }
@@ -417,3 +417,22 @@ hr.rule { border: 0; border-top: 1px solid var(--line); margin: 0 0 18px; }
 @media (prefers-reduced-motion: reduce) {
   .band .comet, .band .ahead i, .bstep .dot, .bstep .dot::after, .bstep .dot .ic, .bandothers .pip { animation: none !important; }
 }
+
+/* ── 今直面している問題の枠（2026-11-04 デイブ）：角の丸い枠で囲み、光が枠を一周し続ける。光の色は実行の状態
+   （判断待ち＝暖色・実行中＝青緑・社長確認中＝灰青）。停止と未接続は赤の枠で光を止める。状況が変わると一度ふくらんで光る ── */
+@property --ang { syntax: "<angle>"; inherits: false; initial-value: 0deg; }
+.focus { --fc: var(--teal); position: relative; border: 2.5px solid #6B6F6A; border-radius: 34px; padding: 16px 24px 66px; margin: 22px -12px 0; }
+.focus::before { content: ""; position: absolute; inset: -4px; border-radius: 36px; padding: 5px; pointer-events: none;
+  background: conic-gradient(from var(--ang), transparent 0deg 230deg, var(--fc) 290deg, #FFFDF5 322deg, var(--fc) 340deg, transparent 360deg);
+  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0); -webkit-mask-composite: xor; mask-composite: exclude;
+  animation: trace 4.2s linear infinite; }
+.focus.your_turn { --fc: #E0A526; border-color: #8A6A2E; }
+.focus.your_turn::before { animation-duration: 3s; }
+.focus.president { --fc: var(--slate); }
+.focus.president::before { animation-duration: 6s; }
+.focus.idle::before, .focus.registered::before { animation-duration: 7s; }
+.focus.stopped, .focus.unconnected { border-color: var(--stop); }
+.focus.stopped::before, .focus.unconnected::before { animation: none; display: none; }
+.focus.unconnected { border-style: dashed; }
+@keyframes trace { to { --ang: 360deg; } }
+@media (prefers-reduced-motion: reduce) { .focus::before { animation: none; display: none; } }
