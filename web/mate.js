@@ -178,10 +178,12 @@
   function mountMini() { const h = $("mini"); if (h) { mini = window.MateFigure.create(h); mini.set(null); } }
 
   function drawGreeting() {
-    $("mmain").innerHTML = miniAgent() + `<div class="propose"><div class="k">${icon("message-circle")}今朝の始まり</div>
+    // 挨拶の枠の中で、仲間の顔と言葉を一緒に見せる（SAL 2026-11-04）
+    $("mmain").innerHTML = `<div class="propose greet"><div class="gface"><div class="gmini" id="mini"></div><span>あなたの仲間<br>網谷水産のAI</span></div>
+      <div class="gtext"><div class="k">${icon("message-circle")}今朝の始まり</div>
       <h2>${esc(V.headline.text)}</h2>
       ${V.sub.map((s) => `<p>${esc(s.text)}</p>`).join("")}
-      <div class="btnrow" style="margin-top:20px"><button class="pbtn" id="go-check">${icon("clipboard-list")}一緒に確認する</button></div></div>`;
+      <div class="btnrow" style="margin-top:20px"><button class="pbtn" id="go-check">${icon("clipboard-list")}一緒に確認する</button></div></div></div>`;
     mountMini();
     $("go-check").onclick = () => { phase = "check"; drawMorning(); };
     $("youcan").hidden = true;
@@ -216,9 +218,11 @@
     const byShop = {};
     c.orders.forEach((o) => (byShop[o.shop] = byShop[o.shop] || []).push(`${o.item} ${o.quantity}${o.unit}`));
     const phrase = Object.entries(byShop).map(([s, xs]) => `${s}の${xs.join("と")}`).join("、");
+    // 進めると言うのは、つながっている仕事だけ（未接続の入札は言わない・SAL 2026-11-04）
+    const acts = [...new Set(c.orders.filter((o) => !o.tender || o.connected).map((o) => (o.tender ? `${o.item}の入札` : `${o.item}の漁協への照会`)))];
     $("mmain").innerHTML = miniAgent() + `<div class="propose"><div class="k">${icon("message-circle")}まず、私に任せてください</div>
       <h2>買い付けは、私が進めましょうか？</h2>
-      <p>今朝は、${esc(phrase)}ですね。</p><p>注文と採算を確認して、入札と漁協への照会を進めます。</p>
+      <p>今朝は、${esc(phrase)}ですね。</p><p>注文と採算を確認して、${acts.length ? esc(acts.join("と")) + "を進めます。" : "配分と購入の判断を相談します。"}</p>
       <div class="chips">${c.orders.map((o) => `<span class="chip ${o.tender && !o.connected ? "nc" : ""}">${icon(o.tender ? "package" : "fish")}${esc(o.item)} → ${o.tender ? "条件内で入札" : "漁協に照会"}${o.tender && !o.connected ? "<small>（未接続）</small>" : ""}</span>`).join("")}</div>
       <div class="hint">${icon("hand")}この範囲で任せると、買い付けを始めます。</div>
       <div class="btnrow"><button class="pbtn" id="go-dele">${icon("arrow-up-right")}この範囲で任せる</button><button class="sbtn" id="go-cond">${icon("shield-check")}任せる条件を確認</button></div>

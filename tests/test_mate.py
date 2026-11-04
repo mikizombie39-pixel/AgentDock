@@ -371,16 +371,34 @@ class MorningTest(Base):
     def test_before_start_greets_and_lists_todays_work_by_the_rule(self):
         v = self.v()
         self.assertEqual((v["exec"], v["stance"], v["who"]), ("before_start", None, "you"))
-        self.assertEqual(v["headline"]["text"], "おはようございます。今日は注文が増えています。")   # 今日 9 ＞ ふだん（直近 30日の平均）
+        # 品目ごとに比べる（本と箱を足さない）：ブリ 4本 ＞ 3.6本・シロエビ 5箱 ＞ 4.6箱（直近 30日の平均）
+        self.assertEqual(v["headline"]["text"], "おはようございます。今日はブリとシロエビの注文が、ふだんより多めです。")
+        self.assertEqual(v["sub"][0]["text"], "今朝はブリ 4本・シロエビ 5箱です。直近 30日の平均は、ブリ 3.6本・シロエビ 4.6箱です。")
+        # できる範囲だけを約束する（シロエビの入札は未接続）
+        self.assertEqual(v["sub"][1]["text"], "まず注文と社長の指示を確認しましょう。その後、ブリの照会は私が進めます。配分と購入の判断は、必要な時に相談します。")
         vol = mate.order_volume("amiya", D)
-        self.assertTrue(vol["today"] > vol["usual"])
+        self.assertEqual([(x["item"], x["today"], x["usual"], x["more"]) for x in vol["items"]], [("ブリ", 4, 3.6, True), ("シロエビ", 5, 4.6, True)])
         m = mate.morning("amiya")
-        self.assertEqual([j["key"] for j in m["jobs"]], ["check", "buy:buri_xl", "tender:shiroebi"])   # あなたが決める → AI に任せてよい
+        self.assertEqual([j["key"] for j in m["jobs"]], ["check", "buy:buri_xl", "tender:shiroebi"])   # 一緒に確認 → AI に任せてよい
         self.assertTrue(all(j["count"] > 0 for j in m["jobs"]))
-        self.assertEqual(m["jobs"][0]["who"], "you")
+        self.assertEqual((m["jobs"][0]["who"], m["jobs"][0]["who_label"]), ("together", "一緒に確認"))
         t = next(j for j in m["jobs"] if j["key"] == "tender:shiroebi")
         self.assertFalse(t["connected"])
         self.assertEqual([j["step"] for j in m["jobs"]], ["注文の確認", "不足分の手配", "入札"])   # 工程の名前は帯と同じ
+
+    def test_an_item_without_sales_history_is_not_called_more(self):
+        # 売れ方の記録の無い売り先がある品目は、ふだんを 0 と数えて「多い」と言わない
+        c = db.connect("amiya")
+        try:
+            with c:
+                c.execute("DELETE FROM sales_history WHERE item_id = (SELECT id FROM item WHERE code = 'shiroebi')")
+        finally:
+            c.close()
+        vol = mate.order_volume("amiya", D)
+        self.assertEqual([(x["item"], x["known"], x["more"]) for x in vol["items"]], [("ブリ", True, True), ("シロエビ", False, False)])
+        v = self.v()
+        self.assertEqual(v["headline"]["text"], "おはようございます。今日はブリの注文が、ふだんより多めです。")
+        self.assertEqual(v["sub"][0]["text"], "今朝はブリ 4本・シロエビ 5箱です。直近 30日の平均は、ブリ 3.6本です。")
 
     def test_president_wait_goes_below_ai_work_and_your_turn_goes_first(self):
         self.start()
@@ -491,7 +509,7 @@ class BandTest(Base):
     def test_the_mate_view_and_the_morning_carry_the_bands(self):
         v = self.v()
         self.assertEqual(v["band"]["item"], "buri_xl")
-        self.assertEqual([o["summary"] for o in v["band_others"]], ["シロエビ：注文の確認（一緒に確かめる前）"])
+        self.assertEqual([o["summary"] for o in v["band_others"]], ["シロエビ：注文の確認（担当者の確認待ち）"])
         m = mate.morning("amiya")
         self.assertEqual([b["item"] for b in m["bands"]], ["buri_xl", "shiroebi"])
         self.assertEqual(mate.tender_view("amiya", "shiroebi")["band"]["item"], "shiroebi")

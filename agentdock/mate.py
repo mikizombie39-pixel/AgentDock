@@ -606,8 +606,10 @@ def view(owner: str, item: str, on_date: str = sc.DEMO_DATE, worker_error: str |
 
     if ex == "before_start":
         vol = order_volume(owner, on_date)
-        head = _said("おはようございます。" + ("今日は注文が増えています。" if vol["more"] else "今日の注文を確かめました。"))
-        sub = [_said("まず注文と社長の指示を確認しましょう。その後の入札と照会は私が進めます。配分と購入の判断は、必要な時に相談します。")]
+        head = _said("おはようございます。" + (f"今日は{'と'.join(vol['more'])}の注文が、ふだんより多めです。" if vol["more"] else "今朝の注文が届いています。"))
+        can = ai_can_proceed(owner, on_date)
+        sub = [_said(_volume_words(vol)),
+               _said("まず注文と社長の指示を確認しましょう。" + (f"その後、{'と'.join(can)}は私が進めます。" if can else "") + "配分と購入の判断は、必要な時に相談します。")]
         actions = [dict(id="check", label="一緒に確認する", kind="primary")]
         ask = _said("今朝の注文と社長の指示を、一緒に確かめます。")
     elif ex == "stopped":
@@ -908,9 +910,12 @@ def why_card(f, st, ex, head, tl=None, replaced=None) -> dict:
     lead = None
     others_short = [o for o in f["orders"] if o["short"] > 0 and o["shop"] != ds]
     if ex == "before_start":
-        lead = "今朝の注文と社長の指示を確かめてから、照会と入札を私が進めます。"
+        can = ai_can_proceed(f["owner"], f["on_date"])
+        lead = "今朝の注文と社長の指示を確かめてから、" + ("・".join(can) + "を私が進めます。" if can else "配分と購入の判断を相談します。")
         vol = order_volume(f["owner"], f["on_date"])
-        orders = orders + [_row(f"今朝の注文の数量 {vol['today']}（同じ売り先・品目のふだん {vol['usual']}・直近 30日の平均）", "calc")]
+        orders = orders + [_row(f"今朝の{v['item']} {v['today']}{v['unit']}（同じ売り先のふだん {v['usual']:g}{v['unit']}・直近 30日の平均）" if v["known"]
+                                else f"今朝の{v['item']} {v['today']}{v['unit']}（売れ方の記録の無い売り先を含むため、ふだんとは比べていません）", "calc")
+                           for v in vol["items"]]
         sections = [("今朝の注文", orders), ("社長の指示と権限", dir_rows), ("任せる範囲", [_row("AI に任せる：" + "・".join(sc.DELEGATION_SCOPES.values()), "code"),
                                                                                     _row(f"{PRESIDENT}に確かめる：得意先の優先・権限の外の承認", "code"),
                                                                                     _row("あなたが決める：購入の承認（権限の内）・配分", "code")])]
@@ -1263,7 +1268,7 @@ def band(owner: str, code: str, on_date: str = sc.DEMO_DATE, worker_error: str |
         S["注文の確認"]["note"] = f"注文 {len(t['orders'])}件"
         mode = "before"
         if dele is None:
-            S["注文の確認"].update(state="current", note="一緒に確かめる前")
+            S["注文の確認"].update(state="current", note="担当者の確認待ち")
         else:
             S["注文の確認"]["state"] = "done"
             S["入札"].update(state="current", note="未接続" if not t["connected"] else t["status"])
@@ -1280,7 +1285,7 @@ def band(owner: str, code: str, on_date: str = sc.DEMO_DATE, worker_error: str |
         S["注文の確認"]["note"] = f"注文 {len(f['orders'])}件"
         mode = "before"
         if ex == "before_start":
-            S["注文の確認"].update(state="current", note="一緒に確かめる前")
+            S["注文の確認"].update(state="current", note="担当者の確認待ち")
         else:
             S["注文の確認"]["state"] = "done"
             if got:
@@ -1334,19 +1339,41 @@ def band(owner: str, code: str, on_date: str = sc.DEMO_DATE, worker_error: str |
 # ── 今日の仕事の流れ（今日の記録から、コードの決まりで並べる）──────────────────
 
 def order_volume(owner, on_date) -> dict:
-    """今日の注文の数量と、同じ売り先・品目のふだんの数量（直近 30日に注文のあった日の平均・売れ方の記録から）。"""
+    """今日の注文の数量と、同じ売り先・品目のふだんの数量（直近 30日に注文のあった日の平均・売れ方の記録から）。
+    品目ごとに比べる（本と箱を足さない）。売れ方の記録の無い売り先がある品目は比べない（ふだんを 0 と数えると、必ず「多い」になるため）。"""
     con = db.connect(owner)
     try:
         start = (datetime.date.fromisoformat(on_date) - datetime.timedelta(days=30)).isoformat()
-        today, usual = 0, 0.0
-        for r in con.execute("SELECT customer_id, item_id, sum(quantity) FROM order_book WHERE order_date = ? GROUP BY 1, 2", (on_date,)):
-            today += r[2]
+        rows = {}
+        for r in con.execute("SELECT o.customer_id, o.item_id, i.name, i.unit, sum(o.quantity) FROM order_book o JOIN item i ON i.id = o.item_id "
+                             "WHERE o.order_date = ? GROUP BY 1, 2 ORDER BY o.item_id", (on_date,)):
             a = con.execute("SELECT avg(ordered_qty) FROM sales_history WHERE customer_id = ? AND item_id = ? AND sale_date >= ? AND sale_date < ?",
                             (r[0], r[1], start, on_date)).fetchone()[0]
-            usual += a or 0
+            v = rows.setdefault(r[1], dict(item=_short_name(r[2]), unit=sc.unit_label(r[3]), today=0, usual=0.0, known=True))
+            v["today"] += r[4]
+            v["usual"] += a or 0
+            v["known"] = v["known"] and a is not None
     finally:
         con.close()
-    return dict(today=today, usual=round(usual, 1), more=today > usual)
+    items = [dict(v, usual=round(v["usual"], 1), more=v["known"] and v["today"] > v["usual"]) for v in rows.values()]
+    return dict(items=items, more=[v["item"] for v in items if v["more"]])
+
+
+def _volume_words(vol) -> str:
+    """「今朝はブリ 4本・シロエビ 5箱です。直近 30日の平均は、ブリ 3.6本・シロエビ 4.6箱です。」（比べられない品目は平均を言わない）"""
+    s = "今朝は" + "・".join(f"{v['item']} {v['today']}{v['unit']}" for v in vol["items"]) + "です。"
+    known = [v for v in vol["items"] if v["known"]]
+    return s + ("直近 30日の平均は、" + "・".join(f"{v['item']} {v['usual']:g}{v['unit']}" for v in known) + "です。" if known else "")
+
+
+def ai_can_proceed(owner, on_date) -> list:
+    """朝に AI が進められる仕事（つながっている入札と、漁協への照会だけ・品目の順）。未接続の入札は言わない（SAL 2026-11-04）。"""
+    out = []
+    for o in check_sheet(owner, on_date)["orders"]:
+        w = (f"{o['item']}の入札" if o.get("connected") else None) if o["tender"] else f"{o['item']}の照会"
+        if w and w not in out:
+            out.append(w)
+    return out
 
 
 def morning(owner: str, on_date: str = sc.DEMO_DATE) -> dict:
@@ -1370,9 +1397,10 @@ def morning(owner: str, on_date: str = sc.DEMO_DATE) -> dict:
         if count <= 0:
             return
         jobs.append(dict(key=key, step=step, rank=STEP_RANK[step] if rank is None else rank, title=title, count=count, reason=reason, who=who,
-                         who_label={"you": "あなたが決める", "ai": "AI に任せてよい", "president": "社長を待つ"}[who],
+                         who_label={"together": "一緒に確認", "you": "あなたが決める", "ai": "AI に任せてよい", "president": "社長を待つ"}[who],
                          dest=dest, deadline=deadline, directive=directive, connected=connected, done=done))
-    add("check", "注文の確認", "今朝の注文と社長の指示を確かめる", n_orders + len(dirs), f"注文 {n_orders}件・社長の指示 {len(dirs)}件", "you", "check",
+    # 注文と指示の確認は「一緒に確認」（配分の判断＝あなたが決める、と分ける・SAL 2026-11-04）
+    add("check", "注文の確認", "今朝の注文と社長の指示を確かめる", n_orders + len(dirs), f"注文 {n_orders}件・社長の指示 {len(dirs)}件", "together", "check",
         done=dele is not None)
     for it in items:
         name, u = _short_name(it["name"]), sc.unit_label(it["unit"])
@@ -1399,7 +1427,7 @@ def morning(owner: str, on_date: str = sc.DEMO_DATE) -> dict:
             "you" if f["cur"].get("stock_question") else "ai", it["code"])
         reg = sum(o["registered"] for o in f["orders"])
         add(f"sort:{it['code']}", "振分け・承認", f"{name} {reg}{u}を注文ごとに分ける", reg, "登録した仕入れ（振分けの処理は未接続）", "ai", it["code"], connected=False)
-    cls = {"you": 0, "ai": 1, "president": 2}
+    cls = {"together": 0, "you": 0, "ai": 1, "president": 2}
 
     def key(j):
         c = cls[j["who"]]

@@ -71,6 +71,13 @@ hr.rule { border: 0; border-top: 1px solid var(--line); margin: 0 0 18px; }
 .propose .k { font-size: 14px; color: var(--teal); display: flex; gap: 8px; align-items: center; }
 .propose h2 { font-size: 29px; margin: 14px 0 16px; }
 .propose p { font-size: 15px; color: var(--mute); margin: 6px 0; line-height: 1.6; }
+/* 朝の挨拶：枠の中で仲間の顔（大きく）と言葉を一緒に見せる */
+.propose.greet { display: grid; grid-template-columns: 168px 1fr; gap: 28px; align-items: start; }
+.gface { text-align: center; }
+.gface .gmini { width: 168px; height: 168px; margin: 0 auto 6px; }
+.gface .gmini .mate-svg { width: 168px; height: 168px; }
+.gface span { font-size: 13px; color: var(--mute); line-height: 1.5; }
+.job .who2.together { border-color: var(--teal); color: var(--teal); }
 .chips { display: flex; gap: 12px; margin: 18px 0 16px; flex-wrap: wrap; }
 .chip { background: var(--tealb); border-radius: 12px; padding: 13px 18px; font-size: 15px; display: inline-flex; gap: 8px; align-items: center; }
 .chip.nc { background: #F4E7E3; }
