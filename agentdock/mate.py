@@ -521,6 +521,7 @@ def view(owner: str, item: str, on_date: str = sc.DEMO_DATE, worker_error: str |
     sup = _suppliers(f)
     tl = tally(f)
     aiq, replaced = _ai_question(f, tl)
+    part = partial(f)
 
     if ex == "before_start":
         vol = order_volume(owner, on_date)
@@ -540,6 +541,10 @@ def view(owner: str, item: str, on_date: str = sc.DEMO_DATE, worker_error: str |
         head = _said(f"{PRESIDENT}に確認しています。")
         sub = [_said("・".join(why) + "。" if why else "社長の判断が要る案です。"), _said("答えが来たら続けます。待つ間、ほかの仕事を進めてかまいません。")]
         ask = _said("今は、あなたが答える仕事ではありません。")
+    elif ex in ("running", "idle") and part:   # 一部登録の後（AI が次の相談を出すまで）：何が済んで何が残ったか（態度の文より先）
+        head = _said(part["done"])
+        sub = [_said(part["rest"])] if part["rest"] else []
+        sub.append(_said("あなたは魚を見てきてください。判断が必要になったら声をかけます。"))
     elif st == "careful":
         if ex == "your_turn":   # 相談の見出しはコードの文。数字を含まない AI の文だけを使う
             head = aiq or _said(f"{'・'.join(o['shop'] for o in mid)}の追加注文で、魚が足りません。どう分けますか" if mid else "条件が変わりました。どう進めますか")
@@ -610,6 +615,12 @@ def view(owner: str, item: str, on_date: str = sc.DEMO_DATE, worker_error: str |
         o = x["to_owner"] if x["from_owner"] == owner else x["from_owner"]
         orgs[o] = dict(code=o, name=sc.OWNERS[o]["name"],
                        state="asked" if x["from_owner"] == owner and x["kind"] == "inquiry" else ("declined" if x["kind"] == "decline" else "replied"))
+    for fr in (partial_rows(f) if f["acts"] and f["acts"][-1]["kind"] == "partial" else []):
+        if fr["status"] != "failed" or fr["counterparty"] not in orgs:
+            continue
+        last = [x for x in f["messages"] if owner in (x["from_owner"], x["to_owner"]) and fr["counterparty"] in (x["from_owner"], x["to_owner"])][-1]
+        if any(t["id"] == fr["term_id"] for t in last["terms"]):   # その相手との最後のやり取りが、登録できなかった条件
+            orgs[fr["counterparty"]]["state"] = "expired" if fail_reason_short(fr["fail_reason"]) == "期限が切れた" else "failed"
     net = [dict(id=x["id"], frm=x["from_owner"], to=x["to_owner"], kind=x["kind"], at=x["created_at"]) for x in f["messages"]]
     pres = None   # 社長の画面（別の窓）で答える中身：担当者が送った確認と、その案
     if ex == "president":
@@ -832,18 +843,8 @@ def receipt(f) -> dict | None:
             got = [o for o in f["orders"] if o["registered"]]
             text = f"受け取りました。{_orders_phrase(f, [dict(o, quantity=o['registered']) for o in got])}で登録しました。" + rest
         elif k == "partial":   # 2つ以上の相手の案で、登録できた行とできなかった行がある（何が済んで何が残ったかを一文で）
-            cid = json.loads(last["detail"] or "{}").get("case_id")
-            con = db.connect(f["owner"])
-            try:
-                rows = [dict(r) for r in con.execute("SELECT counterparty, quantity, status, fail_reason FROM proposal WHERE case_id = ? AND side = 'buy' ORDER BY id",
-                                                     (cid,))]
-            finally:
-                con.close()
-            ok = "・".join(f"{sc.OWNERS[r['counterparty']]['name']} {r['quantity']}{u}" for r in rows if r["status"] == "registered")
-            ng = "・".join(f"{sc.OWNERS[r['counterparty']]['name']} {r['quantity']}{u}は{fail_reason_short(r['fail_reason'])}ので登録していません"
-                           for r in rows if r["status"] == "failed")
-            text = (f"受け取りました。{ok}は登録しました。{ng}。" +
-                    (("残りの " + "・".join(f"{o['shop']} {o['short']}{u}" for o in short) + "を、私が相談し直します。") if short else ""))
+            pt = _partial_text(f)
+            text = f"受け取りました。{pt['done']}" + pt["rest"]
         elif k == "needs_president":
             text = f"受け取りました。{PRESIDENT}に確認を送りました。答えが来たら続けます。"
         elif k == "rejected":
@@ -870,6 +871,39 @@ def receipt(f) -> dict | None:
         out["ai"] = _said(after[-1]["summary"], "ai", dict(db="owner", table="agent_run", id=after[-1]["id"]))
     out["at_shown"] = shown_time(out["at"], f["clock"])
     return out
+
+
+def partial_rows(f) -> list[dict]:
+    """最後の人の判断が一部登録の時の、案件の仕入れの行（登録できた行・できなかった行と理由）。"""
+    last = f["acts"][-1] if f["acts"] else None
+    if not last or last["kind"] != "partial":
+        return []
+    cid = json.loads(last["detail"] or "{}").get("case_id")
+    con = db.connect(f["owner"])
+    try:
+        return [dict(r) for r in con.execute("SELECT counterparty, quantity, status, fail_reason, term_id FROM proposal WHERE case_id = ? AND side = 'buy' ORDER BY id",
+                                             (cid,))]
+    finally:
+        con.close()
+
+
+def _partial_text(f) -> dict:
+    u = f["item"]["unit"]
+    rows = partial_rows(f)
+    ok = "・".join(f"{sc.OWNERS[r['counterparty']]['name']} {r['quantity']}{u}" for r in rows if r["status"] == "registered")
+    ng = "・".join(f"{sc.OWNERS[r['counterparty']]['name']} {r['quantity']}{u}は{fail_reason_short(r['fail_reason'])}ので登録していません"
+                   for r in rows if r["status"] == "failed")
+    short = [o for o in f["orders"] if o["short"] > 0]
+    return dict(done=f"{ok}は登録しました。{ng}。",
+                rest=("残りの " + "・".join(f"{o['shop']} {o['short']}{u}" for o in short) + "を、私が相談し直します。") if short else "")
+
+
+def partial(f) -> dict | None:
+    """一部登録の受け取った内容が今も新しい（AI がまだ次の相談を出していない）時の、見出しの文。"""
+    r = _fresh_receipt(f)
+    if not r or not f["acts"] or f["acts"][-1]["kind"] != "partial" or (f["delegation"] and _t(f["delegation"]["granted_at"]) > _t(f["acts"][-1]["at"])):
+        return None
+    return _partial_text(f)
 
 
 def fail_reason_short(reason: str | None) -> str:

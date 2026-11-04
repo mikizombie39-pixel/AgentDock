@@ -27,6 +27,10 @@ GET  /api/morning?owner=amiya                       ← 今日の仕事の流れ
 POST /api/delegate {"owner", "scope", "checked": {"orders", "directives"}, "idempotency_key", "role", "item"}  ← 確かめて任せる（業務を始める）
 GET  /api/current_timeline?owner=amiya&item=buri_xl  ← 記録の再生：今の状態が変わった時刻ごとの今の状態（記録から組み直す）
 POST /api/worker/resume                               ← 止まった実演の通しを再開する
+POST /api/chat     {"owner", "item", "text", "idempotency_key"}  ← 仲間へのチャット（聞く・頼む）。読むだけの道具で答える（業務の状態は変えない）
+GET  /api/chat?owner=amiya&item=buri_xl              ← これまでの対話（新しい順）
+GET  /api/chat/turn?owner=amiya&id=3                 ← 1回の対話の記録（渡した文脈・取得した記録・捨てた根拠・道具の呼び出し）
+POST /api/chat/run {"owner", "turn_id", "idempotency_key"}  ← 依頼の確認の後［この内容で頼む］：今の画面の操作と同じ中身なら、ボタンと同じ処理（dispatch）へ渡す
 
   python -m agentdock.server --port 8792 --real --new-take   # 本物の Claude で通す（記録は AgentDock-local の takes フォルダの「日時-live」）
 GET  /             web/index.html（画面のファイルは web/ の直下の .html・.css・.js だけを返す）
@@ -39,7 +43,7 @@ import sys
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
-from agentdock import agents, consult, db, deal, events, feed, live, mate, scene, stage, stockwork, work, workspace
+from agentdock import agents, chat, consult, db, deal, events, feed, live, mate, scene, stage, stockwork, work, workspace
 from agentdock.db import REPO
 from agentdock.seed import scenario as sc
 
@@ -49,7 +53,46 @@ MAX_BODY = 16 * 1024
 WEB = (REPO / "web").resolve()
 TYPES = {".html": "text/html; charset=utf-8", ".css": "text/css; charset=utf-8", ".js": "text/javascript; charset=utf-8"}
 WORKER: live.Worker | None = None
+CHAT = None          # チャットの呼び出し先（--real の時は本物の Claude・ほかは模擬の Claude）
+CHAT_KIND = "mock"
 MAX_QUESTION = 200
+
+
+class Rejected(Exception):
+    def __init__(self, detail):
+        super().__init__(detail)
+        self.detail = detail
+
+
+def dispatch(owner: str, path: str, body: dict, key: str) -> tuple[int, dict]:
+    """人の操作の実行（画面のボタンとチャットの依頼の両方がここを通る）。権限・社長の指示・二重の防止は、各処理の検査がそのまま行う。"""
+    if owner not in db.OWNER_CODES:
+        raise ValueError("owner")
+    if path == "/api/decide":
+        actor = body.get("actor") or "staff"
+        if body["action"] not in ("approve", "reject", "hold") or actor not in ("staff", "president"):
+            raise ValueError("action or actor")
+        try:
+            r = deal.decide(owner, int(body["case_id"]), int(body["option_id"]) if body.get("option_id") else None, body["action"],
+                            body.get("fingerprint"), key, actor=actor)
+        except deal.DealError as e:
+            raise Rejected(str(e)) from None
+        return (409 if r["result"] == "stale" else 200), r
+    c = db.connect(owner)
+    try:
+        if path == "/api/stock_answer":
+            try:
+                return 200, stockwork.answer(c, int(body["question_id"]), str(body["choice"]), key, str(body.get("role") or "staff"))
+            except stockwork.StockError as e:
+                raise Rejected(str(e)) from None
+        if path == "/api/draft":
+            try:
+                return 200, consult.decide_draft(c, int(body["draft_id"]), str(body["action"]), str(body.get("role") or "staff"))
+            except consult.ConsultError as e:
+                raise Rejected(str(e)) from None
+    finally:
+        c.close()
+    raise ValueError(f"no action for {path}")
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -124,6 +167,17 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(200, dict(mate.morning(q["owner"], q.get("date", sc.DEMO_DATE)), check=mate.check_sheet(q["owner"], q.get("date", sc.DEMO_DATE))))
             if u.path == "/api/work":
                 return self._send(200, work.view(q["owner"], q["item"], q.get("date", sc.DEMO_DATE)))
+            if u.path == "/api/chat":
+                if q["owner"] not in db.OWNER_CODES:
+                    raise ValueError(q["owner"])
+                return self._send(200, dict(turns=chat.history(q["owner"], q.get("item", "buri_xl"), int(q.get("limit", 20))), run_kind=CHAT_KIND))
+            if u.path == "/api/chat/turn":
+                if q["owner"] not in db.OWNER_CODES:
+                    raise ValueError(q["owner"])
+                try:
+                    return self._send(200, chat.turn(q["owner"], int(q["id"])))
+                except KeyError:
+                    return self._send(404, dict(error="not found"))
             if u.path == "/api/source":
                 try:
                     return self._send(200, work.source(q["owner"], q["db"], q["table"], int(q["id"])))
@@ -161,6 +215,10 @@ class Handler(BaseHTTPRequestHandler):
             return self._stock_answer()
         if u.path == "/api/delegate":
             return self._delegate()
+        if u.path == "/api/chat":
+            return self._chat()
+        if u.path == "/api/chat/run":
+            return self._chat_run()
         if u.path == "/api/worker/resume":
             if WORKER:
                 WORKER.resume()
@@ -246,36 +304,22 @@ class Handler(BaseHTTPRequestHandler):
 
     def _draft(self):
         """売り先への連絡の下書きを、人が使う（approve）か使わない（discard）か決める。Agent Dock は売り先に送らない。"""
+        return self._act("/api/draft")
+
+    def _act(self, path):
+        """人の操作の受け付け（ボタン）。中身は dispatch（チャットの依頼の実行と同じ処理）。"""
         try:
             b = self._body()
-            if b["owner"] not in db.OWNER_CODES:
-                raise ValueError("owner")
-            c = db.connect(b["owner"])
-            try:
-                return self._send(200, consult.decide_draft(c, int(b["draft_id"]), str(b["action"]), str(b.get("role") or "staff")))
-            finally:
-                c.close()
-        except consult.ConsultError as e:
-            return self._send(409, dict(error="rejected", detail=str(e)))
+            status, r = dispatch(b["owner"], path, b, str(b["idempotency_key"]) if path != "/api/draft" else str(b.get("idempotency_key") or ""))
+            return self._send(status, r)
+        except Rejected as e:
+            return self._send(409, dict(error="rejected", detail=e.detail))
         except (KeyError, ValueError, json.JSONDecodeError) as e:
             return self._send(400, dict(error=f"bad request: {e}"))
 
     def _stock_answer(self):
         """引当のない在庫の扱いの問いに、人が答える。答えと出来事は同じトランザクションで書く（AI が起きて続ける）。"""
-        try:
-            b = self._body()
-            if b["owner"] not in db.OWNER_CODES:
-                raise ValueError("owner")
-            c = db.connect(b["owner"])
-            try:
-                return self._send(200, stockwork.answer(c, int(b["question_id"]), str(b["choice"]), str(b["idempotency_key"]),
-                                                        str(b.get("role") or "staff")))
-            finally:
-                c.close()
-        except stockwork.StockError as e:
-            return self._send(409, dict(error="rejected", detail=str(e)))
-        except (KeyError, ValueError, json.JSONDecodeError) as e:
-            return self._send(400, dict(error=f"bad request: {e}"))
+        return self._act("/api/stock_answer")
 
     def _delegate(self):
         """担当者が今朝の注文と社長の指示を確かめ、任せる範囲を記録する。業務がまだ始まっていなければ、ここで始める（AI が働き始める）。"""
@@ -318,19 +362,50 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(400, dict(error=f"bad request: {e}"))
 
     def _decide(self):
-        n = int(self.headers.get("Content-Length") or 0)
-        if n <= 0 or n > MAX_BODY:
-            return self._send(400, dict(error="bad body size"))
+        return self._act("/api/decide")
+
+    # ── 仲間へのチャット ──
+    def _chat(self):
         try:
-            b = json.loads(self.rfile.read(n).decode("utf-8"))
-            actor = b.get("actor") or "staff"
-            if b["owner"] not in db.OWNER_CODES or b["action"] not in ("approve", "reject", "hold") or actor not in ("staff", "president"):
-                raise ValueError("owner, action or actor")
-            r = deal.decide(b["owner"], int(b["case_id"]), int(b["option_id"]) if b.get("option_id") else None, b["action"],
-                            b.get("fingerprint"), str(b["idempotency_key"]), actor=actor)
-            return self._send(409 if r["result"] == "stale" else 200, r)
-        except deal.DealError as e:
-            return self._send(409, dict(error="rejected", detail=str(e)))
+            b = self._body()
+            owner, item = b["owner"], str(b.get("item") or "buri_xl")
+            if owner not in db.OWNER_CODES:
+                raise ValueError("owner")
+            if CHAT is None:
+                return self._send(503, dict(error="unavailable", detail="チャットの呼び出し先がありません"))
+            r = chat.ask(CHAT, owner, item, str(b["text"]), str(b["idempotency_key"]), sc.DEMO_DATE, run_kind=CHAT_KIND)
+            return self._send(200, dict(r, run_kind=CHAT_KIND))
+        except chat.ChatFailed as e:
+            return self._send(502, dict(error="failed", detail=str(e), retry=True))
+        except chat.ChatError as e:
+            return self._send(400, dict(error="bad request", detail=str(e)))
+        except (KeyError, ValueError, json.JSONDecodeError) as e:
+            return self._send(400, dict(error=f"bad request: {e}"))
+
+    def _chat_run(self):
+        """依頼の確認の後［この内容で頼む］：同じキーなら前の結果。今の画面に同じ操作が無ければ止める。中身はボタンと同じ dispatch。"""
+        try:
+            b = self._body()
+            owner, tid, key = b["owner"], int(b["turn_id"]), str(b["idempotency_key"])
+            if owner not in db.OWNER_CODES:
+                raise ValueError("owner")
+            try:
+                t = chat.turn(owner, tid)
+            except KeyError:
+                return self._send(404, dict(error="not found"))
+            if t["executed"] and t["executed"]["key"] == key:
+                return self._send(t["executed"]["status"], dict(t["executed"]["result"], repeated=True, via="chat", turn_id=tid))
+            try:
+                ck = chat.check_request(owner, tid, sc.DEMO_DATE)
+            except chat.ChatError as e:
+                return self._send(409, dict(error="rejected", detail=str(e)))
+            api = ck["action"]["api"]
+            try:
+                status, r = dispatch(owner, api["path"], api["body"], key)
+            except Rejected as e:
+                status, r = 409, dict(error="rejected", detail=e.detail)
+            chat.record_execution(owner, tid, key, status, r)
+            return self._send(status, dict(r, via="chat", turn_id=tid, path=api["path"]))
         except (KeyError, ValueError, json.JSONDecodeError) as e:
             return self._send(400, dict(error=f"bad request: {e}"))
 
@@ -384,7 +459,7 @@ def main(argv=None) -> int:
     ap.add_argument("--new-take", action="store_true", help="撮影の置き場を新しく作り、種の DB を入れる")
     ap.add_argument("--max-calls", type=int, default=live.MAX_TOTAL_CALLS)
     a = ap.parse_args(argv)
-    global WORKER
+    global WORKER, CHAT, CHAT_KIND
     take = None
     if a.new_take:
         import os
@@ -403,6 +478,10 @@ def main(argv=None) -> int:
         clients = {o: companion.ClaudeClient(effort=agents.autonomy.EFFORT) for o in db.OWNER_CODES}
         WORKER = live.Worker(clients, run_kind="real", max_total_calls=a.max_calls, take_dir=take)
         WORKER.start()
+        CHAT, CHAT_KIND = companion.ClaudeClient(effort=chat.EFFORT), "real"   # チャットも本物の Claude（同じ鍵の読み方）
+    else:
+        from agentdock import chatmock
+        CHAT, CHAT_KIND = chatmock.ChatPolicy(), "mock"
     print(f"agentdock feed on http://127.0.0.1:{srv.server_address[1]}  data={db.data_dir()}  real={a.real}")
     try:
         srv.serve_forever()

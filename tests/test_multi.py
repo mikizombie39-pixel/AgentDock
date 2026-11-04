@@ -152,6 +152,19 @@ class RegisterTest(MultiBase):
         self.consult()
         self.b_hold("expired")                                               # B社の側で押さえの期限が切れた（B社の決まりで再検証）
         self.check_partial(self.approve(), "仮押さえが無い（expired）", "期限が切れた")
+        v = mate.view("amiya", "buri_xl")                                   # 見出しにも、何が済んで何が残ったか（写し 16 で見つけた・2026-11-04）
+        self.assertEqual(v["headline"]["text"], "岩瀬漁協 6本は登録しました。B社 2本は期限が切れたので登録していません。")
+        self.assertEqual(v["sub"][0]["text"], f"残りの {RYOTEI} 4本を、私が相談し直します。")
+        self.assertNotEqual(v["headline"]["text"], "買い付けの照会は私が進めます。")
+        self.assertEqual({o["code"]: o["state"] for o in v["orgs"]}["buyer_b"], "expired")   # 期限の切れた相手の印は「期限切れ」
+
+    def test_a_partial_headline_gives_way_to_the_next_consultation(self):
+        self.consult()
+        self.b_hold("expired")
+        self.approve()
+        self.run_all()                                                       # AI が残りで相談し直す
+        v = mate.view("amiya", "buri_xl")
+        self.assertNotIn("は登録しました。", v["headline"]["text"])
 
     def test_a_row_the_seller_cannot_fill_is_left(self):
         self.consult()

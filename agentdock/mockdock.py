@@ -225,6 +225,8 @@ def main(argv=None) -> int:
     srv = server.make_server(a.port)
     server.WORKER = live.Worker({o: Policy(o, a.delay) for o in db.OWNER_CODES}, run_kind="mock", take_dir=take)
     server.WORKER.start()
+    from agentdock import chatmock
+    server.CHAT, server.CHAT_KIND = chatmock.ChatPolicy(min(a.delay, 1.0)), "mock"   # チャットも模擬の Claude（費用 0）
     print(f"mock dock on http://127.0.0.1:{a.port}/mate.html  data={take}", flush=True)
     try:
         srv.serve_forever()

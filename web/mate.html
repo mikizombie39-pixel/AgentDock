@@ -50,6 +50,16 @@
         <div class="acts" id="acts"></div>
       </div>
       <div id="receipt"></div>
+      <!-- 聞く・頼む：仲間へのチャット（読み取りだけで答える。頼みは確認の後にボタンと同じ処理へ） -->
+      <div class="chat" id="chat">
+        <div class="chatlog" id="chatlog"></div>
+        <form class="chatin" id="chatform" autocomplete="off"><span class="ic" data-ic="message-circle"></span>
+          <input id="chatin" maxlength="300" placeholder="聞く・頼む（例：なぜ魚廣を優先するの？）" aria-label="仲間に聞く・頼む">
+          <button id="chatsend" type="submit"><span class="ic" data-ic="send"></span>送る</button></form>
+        <div class="chatstate" id="chatstate"></div>
+        <button class="chatmore" id="chatmore" hidden></button>
+        <div class="chathist" id="chathist" hidden></div>
+      </div>
       <div class="taken" id="taken"></div>
       <div class="others" id="others"></div>
       <button class="opbtn" id="opbtn" hidden></button>

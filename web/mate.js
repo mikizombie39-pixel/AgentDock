@@ -281,7 +281,7 @@
   function drawNet() {
     const orgs = V.orgs || [];
     setHTML("net", orgs.length ? `<span class="me">照会先</span>` + orgs.map((o) => `<span class="org ${o.state}" data-org="${esc(o.code)}">${icon(o.code === "iwase" ? "ship" : "store")}${esc(o.name)}
-      <small>${{ asked: "返事待ち", replied: "返事あり", declined: "断り" }[o.state]}</small></span>`).join("") : "");
+      <small>${{ asked: "返事待ち", replied: "返事あり", declined: "断り", expired: "期限切れ", failed: "登録できず" }[o.state]}</small></span>`).join("") : "");
     const fresh = (V.net || []).filter((m) => !seenNet.has(m.id));
     fresh.forEach((m) => seenNet.add(m.id));
     if (!netReady) { netReady = true; return; }
@@ -414,7 +414,155 @@
       more: [{ title: "並べ方の決まり", rows: [{ text: m.rule, origin: "code" }] }], speech_origin: null, origins: { record: "あなたが決める", code: "業務の記録から" } });
   });
 
+
+  // ═════ 聞く・頼む（仲間へのチャット）═════
+  // 答えはサーバーが検査した後のものだけを描く（根拠＝この回に取得した記録・数字＝コードと照合済み）。
+  // 送る途中で失敗したら、入力と冪等のキーを残す：もう一度送ると同じキーで送り直し、サーバーは二重に処理しない。
+  const EV_ICON = { directive: "user-round", rule: "shield-check", knowledge: "notebook-text", experience: "notebook-text", not_current: "notebook-text",
+    reply: "mail", record: "clipboard-list", calc: "receipt-japanese-yen" };
+  const ORG = { "岩瀬漁協": "漁協の回答", "B社": "B社の回答", "C社": "C社の回答" };
+  let chatTurns = [], chatPending = null, chatBusy = false, chatKind = "mock", histOpen = false;
+  const runKeys = {};
+
+  function evLabel(e) {
+    if (e.type === "reply") { const o = Object.keys(ORG).find((n) => e.text.startsWith(n)); return o ? ORG[o] : "相手の回答"; }
+    if (e.type === "calc") return e.ref.startsWith("calc:preview") ? "下見の計算" : e.ref.startsWith("calc:ceiling") ? "採算の計算" : "数の計算";
+    if (e.type === "not_current") return (e.src && e.src.category === "社長の指示") ? "期限切れの指示" : "今は効力のない記録";
+    return e.type_label;
+  }
+  function evGroups(a) {
+    const g = [];
+    a.evidence.forEach((e) => { const l = evLabel(e); let x = g.find((y) => y.label === l); if (!x) { x = { label: l, type: e.type, items: [] }; g.push(x); } x.items.push(e); });
+    return g;
+  }
+  // 根拠を開く：該当の文・日付・確認の時刻・出所（記録にある事実／コードの計算／AI の解釈）
+  function evCard(a, group) {
+    const list = group ? group.items : a.evidence;
+    const secs = list.map((e) => {
+      const s = e.src || {};
+      const rows = [{ text: e.quote, origin: e.origin === "calc" ? "calc" : "fact", q: true }];
+      if (e.quote_from === "record" && e.type !== "calc" && e.quote !== e.text) rows.push({ text: e.text, origin: "fact" });
+      if (s.vault) rows.push({ text: `Vault ${s.vault}・${s.category}・出所：${s.source}・対象：${s.subject}`, origin: "fact" },
+        { text: `記録日 ${s.recorded_on}・適用 ${s.valid_from}〜${s.valid_to || "期限なし"}（実演の日 ${"2026-11-02"} に${e.validity}）`, origin: "fact" },
+        { text: s.fictional, origin: "code" });
+      else if (e.at) rows.push({ text: `記録の時刻 ${String(e.at).slice(0, 10)} ${String(e.at).slice(11, 16)}`, origin: "fact" });
+      if (s.db) rows.push({ text: `業務 DB：${s.db === "market" ? "市場" : "自社"}の ${s.table}${s.id != null ? " " + s.id : ""}`, origin: "code" });
+      rows.push({ text: `確認の時刻 ${String(e.checked_at).slice(11, 19)}（この答えのために、サーバーが記録を読んだ時刻）`, origin: "code" });
+      return { title: `${evLabel(e)}・${e.title || e.ref}`, rows };
+    });
+    if (!group && a.interpretation) secs.push({ title: "AI が記録から考えたこと", rows: [{ text: a.interpretation, origin: "ai" }] });
+    if (!group && a.notes && a.notes.length) secs.push({ title: "サーバーの検査", rows: a.notes.map((n) => ({ text: n, origin: "code" })) });
+    return { lead: a.conclusion, sections: secs, more: [], speech_origin: null,
+      origins: { fact: "記録にある事実", calc: "コードの計算", ai: "AI の解釈", code: "サーバーが書いた文" } };
+  }
+
+  function bubbleHTML(t, latest) {
+    const a = t.answer;
+    if (!a) return "";
+    let h = `<div class="q">${icon("user-round")}${esc(t.question)}</div><div class="bubble" data-turn="${t.turn_id ?? t.id}">
+      <span class="kind ${esc(a.kind)}">${esc(a.kind_label)}</span>${chatKind === "mock" ? `<span class="mock">模擬の AI の答え</span>` : ""}
+      <div class="con">${esc(a.conclusion)}</div><div class="nx">${icon("arrow-right")}${esc(a.next_action)}</div>`;
+    if (latest && (a.detail || a.interpretation)) h += `<div class="det" hidden>${a.detail ? `<div>${esc(a.detail)}</div>` : ""}${a.interpretation ? `<div class="ai">${esc(a.interpretation)}</div>` : ""}</div>`;
+    if (latest && a.notes && a.notes.length) h += `<div class="notes">${a.notes.map(esc).join("<br>")}</div>`;
+    if (latest) {
+      h += `<div class="row2">` + evGroups(a).map((g, i) => `<button class="evchip ${esc(g.type)}" data-ev="${i}">${icon(EV_ICON[g.type] || "file-search")}${esc(g.label)}${g.items.length > 1 ? `<small>${g.items.length}件</small>` : ""}</button>`).join("") +
+        (a.detail || a.interpretation ? `<button class="linkbtn" data-det="1">${icon("chevron-down")}詳しく</button>` : "") +
+        (a.evidence.length ? `<button class="linkbtn" data-evall="1">${icon("file-search")}根拠を全部開く</button>` : "") + `</div>`;
+      const r = a.request;
+      if (r && !t.executed) {
+        h += `<div class="reqbox"><p>${esc(r.confirm_text)}</p><small>実行する操作：${esc(r.label)}${r.president ? "（社長の確認へ進みます）" : ""}・押すまで、何も実行しません</small>
+          <div class="btnrow"><button class="pbtn" data-run="1">${icon("stamp")}この内容で頼む</button><button class="sbtn" data-cancel="1">${icon("x")}やめる</button></div></div>`;
+      } else if (r && t.executed) {
+        h += `<div class="notes">［この内容で頼む］を押しました（サーバーの結果：${esc((t.executed.result || {}).result || (t.executed.result || {}).detail || t.executed.status)}）</div>`;
+      }
+    }
+    return h + `</div>`;
+  }
+
+  function drawChat() {
+    const latest = chatTurns.find((t) => t.status === "answered");
+    const log = $("chatlog");
+    const html = latest ? bubbleHTML(latest, true) : "";
+    if (log._h !== html) {
+      log.innerHTML = html; log._h = html;
+      const b = log.querySelector(".bubble");
+      if (b && !REDUCED && log._last !== (latest.turn_id ?? latest.id)) b.animate([{ opacity: 0, transform: "translateY(8px)" }, { opacity: 1, transform: "none" }], { duration: 360, easing: "ease-out" });
+      log._last = latest && (latest.turn_id ?? latest.id);
+    }
+    const older = chatTurns.filter((t) => t !== latest && t.status === "answered");
+    $("chatmore").hidden = !older.length;
+    $("chatmore").className = "linkbtn chatmore";
+    $("chatmore").innerHTML = `${icon("chevron-down")}${histOpen ? "これまでの対話を閉じる" : `これまでの対話（${older.length}件）を開く`}`;
+    $("chathist").hidden = !histOpen || !older.length;
+    $("chathist").innerHTML = older.map((t) => `<div class="h"><b>${esc(t.question)}</b>${esc(t.answer.kind_label)}：${esc(t.answer.conclusion)}</div>`).join("");
+  }
+
+  async function loadChat() {
+    try { const j = await getJSON(`/api/chat?owner=${OWNER}&item=${encodeURIComponent(ITEM)}`); chatTurns = j.turns.map((t) => Object.assign({ turn_id: t.id }, t)); chatKind = j.run_kind || chatKind; drawChat(); }
+    catch (e) { /* keep */ }
+  }
+
+  function chatState(html, bad) { $("chatstate").innerHTML = html; $("chatstate").className = "chatstate" + (bad ? " bad" : ""); }
+
+  $("chatform").addEventListener("submit", async (ev) => {
+    ev.preventDefault();
+    const text = $("chatin").value.trim();
+    if (!text || chatBusy) return;
+    if (!chatPending || chatPending.text !== text) chatPending = { text, key: key() };   // 同じ文の送り直しは同じキー
+    chatBusy = true; $("chatsend").disabled = true;
+    chatState(`<span class="ic spin">${(window.DOCK_ICONS || {})["loader"] || ""}</span>考えています…（業務の記録と Vault を読んでいます）`);
+    let r;
+    try { r = await post("/api/chat", { item: ITEM, text, idempotency_key: chatPending.key }); }
+    catch (e) { r = { ok: false, status: 0, j: {} }; }
+    chatBusy = false; $("chatsend").disabled = false;
+    if (r.ok && r.j.answer) {
+      chatPending = null; $("chatin").value = ""; chatState("");
+      chatKind = r.j.run_kind || chatKind;
+      chatTurns = [r.j].concat(chatTurns.filter((t) => (t.turn_id ?? t.id) !== r.j.turn_id));
+      drawChat();
+    } else if (r.status === 400) {
+      chatPending = null; chatState(`${icon("circle-alert")}送れませんでした：${esc(r.j.detail || r.j.error)}`, true);
+    } else {
+      chatState(`${icon("circle-alert")}届きませんでした。入力はそのままです。もう一度［送る］を押すと、同じ内容で送り直します（二重には処理しません）`, true);
+    }
+  });
+
+  $("chatlog").addEventListener("click", async (e) => {
+    const t = chatTurns.find((x) => x.status === "answered");
+    if (!t) return;
+    const a = t.answer;
+    const ev = e.target.closest("[data-ev]");
+    if (ev) return openPop(ev, evCard(a, evGroups(a)[+ev.dataset.ev]));
+    if (e.target.closest("[data-evall]")) return openPop(e.target.closest("[data-evall]"), evCard(a, null));
+    if (e.target.closest("[data-det]")) { const d = $("chatlog").querySelector(".det"); if (d) d.hidden = !d.hidden; return; }
+    if (e.target.closest("[data-cancel]")) { t.executed = { result: { result: "やめました（何も実行していません）" }, status: 0 }; $("chatlog")._h = null; drawChat(); return; }
+    const run = e.target.closest("[data-run]");
+    if (run) {
+      run.disabled = true;
+      const id = t.turn_id ?? t.id;
+      runKeys[id] = runKeys[id] || key();   // 押し直しは同じキー（二重に実行しない）
+      const prev = V && V.receipt ? V.receipt.at : null;
+      setHTML("receipt", `<div class="receipt pending">${icon("loader")}送っています…</div>`);
+      let r;
+      try { r = await post("/api/chat/run", { turn_id: id, idempotency_key: runKeys[id] }); } catch (x) { r = { ok: false, status: 0, j: {} }; }
+      if (r.ok && r.j.result !== "stale" && r.j.result !== "not_executable") {
+        t.executed = { result: r.j, status: r.status };
+        waitReceipt = { prev, t: Date.now() };
+        setHTML("receipt", `<div class="receipt pending">${icon("loader")}サーバーが記録を確かめています…</div>`);
+      } else if (r.status === 0) {
+        run.disabled = false;
+        setHTML("receipt", `<div class="receipt bad">${icon("circle-alert")}届きませんでした。もう一度押すと、同じ依頼を送り直します（二重には実行しません）</div>`);
+      } else {
+        t.executed = { result: r.j, status: r.status };
+        setHTML("receipt", `<div class="receipt bad">${icon("circle-alert")}実行しませんでした：${esc((r.j.reasons || [r.j.detail || r.j.error || r.j.result || r.status]).join("・"))}</div>`);
+      }
+      $("chatlog")._h = null; drawChat();
+    }
+  });
+  $("chatmore").addEventListener("click", () => { histOpen = !histOpen; drawChat(); });
+  if (ROLE === "president") $("chat").hidden = true; else loadChat();
+
   // a small hook for the screenshot script: which stance and state is on screen
-  window.__mate = () => ({ exec: V && V.exec, stance: fig && fig.stance, phase, pop: !$("pop").hidden, busy: !!(V && V.busy) });
+  window.__mate = () => ({ exec: V && V.exec, stance: fig && fig.stance, phase, pop: !$("pop").hidden, busy: !!(V && V.busy), chatBusy, chatTurns: chatTurns.length });
   tick();
 })();
