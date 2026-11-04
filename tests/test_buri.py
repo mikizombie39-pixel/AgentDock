@@ -57,6 +57,11 @@ def settle():
         ex(o, "UPDATE biz_event SET status = 'handled', handled_at = ? WHERE status = 'pending'", (NOW,))
 
 
+def no_directive():
+    """社長の今日の指示が無い朝にする（指示の売り先を満たす優先は、指示があれば社長が決めた扱いになる・test_mate で確かめる）。"""
+    ex("amiya", "UPDATE directive SET status = 'withdrawn'")
+
+
 def answer(cid, key, change, role="staff"):
     c = db.connect("amiya")
     try:
@@ -293,6 +298,7 @@ class AnswerTest(Base):
         self.assertEqual(json.loads(payload)["answered_by"], "president")
 
     def test_staff_approval_of_a_split_that_shorts_a_customer_needs_the_president(self):
+        no_directive()
         a = next(o for o in view()["options"] if o["code"] == "A")                        # スーパー 4本・料亭 2本（料亭が 4本足りない）
         self.assertEqual(deal.decide("amiya", self.case, a["id"], "approve", a["fingerprint"], "s1")["result"], "needs_president")
         self.assertEqual(deal.decide("amiya", self.case, a["id"], "approve", a["fingerprint"], "p1", actor="president")["result"], "registered")

@@ -306,6 +306,12 @@ class AuthorityTest(Base):
         return dict(quantity=12, allocations=[dict(order_id=self.order, quantity=10), dict(order_id=self.order_r, quantity=2)])
 
     def test_staff_cannot_finalize_a_priority_change_president_can(self):
+        c = db.connect("amiya")   # 社長の今日の指示が無い朝（指示どおりの優先は test_mate で確かめる）
+        try:
+            with c:
+                c.execute("UPDATE directive SET status = 'withdrawn'")
+        finally:
+            c.close()
         r = answer(self.cons, "staff-1", self.priority_change())
         self.assertEqual((r["result"], r["priority_change"]), ("needs_president", True))
         self.assertEqual(human_events(), [])                                           # 交渉し直しは起きない

@@ -22,6 +22,9 @@ POST /api/start    {"variant", "item"}                ← 業務を始める（�
 POST /api/order    {"owner", "customer", "item", "quantity", "idempotency_key"}  ← 作業の途中で売り先の注文が入る（実演の操作・売値は売り先の表から）
 POST /api/draft    {"owner", "draft_id", "action": "approve"|"discard", "role"}  ← 売り先への連絡の下書きを人が決める（送るのは人）
 POST /api/stock_answer {"owner", "question_id", "choice", "idempotency_key", "role"}  ← 引当のない在庫の扱いの問いに人が答える（出来事を書き、AI を起こす）
+GET  /api/mate?owner=amiya&item=buri_xl             ← 仲間との対話の画面（態度・実行の状態・語りかけ・行動・理由の1枚を1つの返り値で）
+GET  /api/morning?owner=amiya                       ← 今日の仕事の流れ（コードの決まりで並べる）と「一緒に確認する」の中身
+POST /api/delegate {"owner", "scope", "checked": {"orders", "directives"}, "idempotency_key", "role", "item"}  ← 確かめて任せる（業務を始める）
 GET  /api/current_timeline?owner=amiya&item=buri_xl  ← 記録の再生：今の状態が変わった時刻ごとの今の状態（記録から組み直す）
 POST /api/worker/resume                               ← 止まった実演の通しを再開する
 
@@ -36,7 +39,7 @@ import sys
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
-from agentdock import agents, consult, db, deal, events, feed, live, scene, stage, stockwork, work, workspace
+from agentdock import agents, consult, db, deal, events, feed, live, mate, scene, stage, stockwork, work, workspace
 from agentdock.db import REPO
 from agentdock.seed import scenario as sc
 
@@ -108,6 +111,17 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(200, work.current(q["owner"], q["item"], q.get("date", sc.DEMO_DATE)))
             if u.path == "/api/current_timeline":
                 return self._send(200, work.timeline(q["owner"], q["item"], q.get("date", sc.DEMO_DATE)))
+            if u.path == "/api/mate":
+                deal.expire(f"{sc.DEMO_DATE}T06:30:00+09:00")
+                if q["owner"] not in db.OWNER_CODES:
+                    raise ValueError(q["owner"])
+                if mate.tender_item(q["owner"], q["item"]):
+                    return self._send(200, mate.tender_view(q["owner"], q["item"], q.get("date", sc.DEMO_DATE)))
+                return self._send(200, mate.view(q["owner"], q["item"], q.get("date", sc.DEMO_DATE), worker_error=WORKER.error if WORKER else None))
+            if u.path == "/api/morning":
+                if q["owner"] not in db.OWNER_CODES:
+                    raise ValueError(q["owner"])
+                return self._send(200, dict(mate.morning(q["owner"], q.get("date", sc.DEMO_DATE)), check=mate.check_sheet(q["owner"], q.get("date", sc.DEMO_DATE))))
             if u.path == "/api/work":
                 return self._send(200, work.view(q["owner"], q["item"], q.get("date", sc.DEMO_DATE)))
             if u.path == "/api/source":
@@ -145,6 +159,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._draft()
         if u.path == "/api/stock_answer":
             return self._stock_answer()
+        if u.path == "/api/delegate":
+            return self._delegate()
         if u.path == "/api/worker/resume":
             if WORKER:
                 WORKER.resume()
@@ -257,6 +273,29 @@ class Handler(BaseHTTPRequestHandler):
             finally:
                 c.close()
         except stockwork.StockError as e:
+            return self._send(409, dict(error="rejected", detail=str(e)))
+        except (KeyError, ValueError, json.JSONDecodeError) as e:
+            return self._send(400, dict(error=f"bad request: {e}"))
+
+    def _delegate(self):
+        """担当者が今朝の注文と社長の指示を確かめ、任せる範囲を記録する。業務がまだ始まっていなければ、ここで始める（AI が働き始める）。"""
+        try:
+            b = self._body()
+            if b["owner"] not in db.OWNER_CODES:
+                raise ValueError("owner")
+            item = b.get("item", "buri_xl")
+            if item not in sc.SCENE_ORDERS:
+                raise ValueError(item)
+            c = db.connect(b["owner"])
+            try:
+                r = mate.delegate(c, sc.DEMO_DATE, b["scope"], b.get("checked") or {}, str(b["idempotency_key"]), str(b.get("role") or "staff"))
+            finally:
+                c.close()
+            if not r["repeated"] and not live.has_started():
+                scene.start(item=item)
+                r["started"] = item
+            return self._send(200, r)
+        except mate.MateError as e:
             return self._send(409, dict(error="rejected", detail=str(e)))
         except (KeyError, ValueError, json.JSONDecodeError) as e:
             return self._send(400, dict(error=f"bad request: {e}"))

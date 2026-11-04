@@ -52,6 +52,28 @@ CUSTOMERS = {
     "buyer_c": [("スーパー", "supermarket"), ("加工場", "processor")],
 }
 
+# 売り先の店の名前（架空・スーパー＝魚廣（うおひろ）・料亭＝順風満帆（じゅんぷうまんぱん）。2026-11-04 デイブが決定。店名の頭に「料亭」を付けない）。ここだけを直せば、画面と AI への文の店の名前が変わる
+# 区分の名前（スーパー・料亭）は業務の判定（売値・工程・権限）にそのまま使う
+SHOP_NAMES = {
+    "amiya": {"スーパー": "魚廣", "料亭": "順風満帆"},
+}
+
+
+def shop(owner: str, customer: str) -> str:
+    """売り先の店の名前（無ければ区分の名前）。"""
+    return SHOP_NAMES.get(owner, {}).get(customer, customer)
+
+
+# 社長の朝の指示（業務の記録・模擬）：(customer, item または None, kind, 言葉の型, 手段, 受けた時刻)
+# 言葉の型の {shop} は店の名前に置き換える（店の名前を変えると指示の言葉も変わる）
+DIRECTIVES = {
+    "amiya": [("スーパー", None, "keep_customer", "{shop}の分は落とすなよ", "電話（模擬）", "05:40")],
+}
+DIRECTIVE_FROM = {"amiya": ("president", "別の浜")}
+
+# 担当者が AI に任せる範囲（記号と名前はコードが決める）と、社長に確かめること（権限の表から）
+DELEGATION_SCOPES = {"inquiry": "照会", "bid_within_plan": "条件内の入札", "renegotiate": "再交渉"}
+
 # 売値（1単位）：(item, customer, 円)
 SALES_PRICES = {
     "amiya": [("buri_xl", "スーパー", 22000), ("buri_xl", "料亭", 24000),

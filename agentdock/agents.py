@@ -78,7 +78,7 @@ def read_orders(ctx, inp):
     it = _item(ctx.con, inp["item_code"])
     out = []
     for r in ctx.con.execute(
-            "SELECT o.id, c.name, o.quantity, o.sell_price_yen, o.status FROM order_book o JOIN customer c ON c.id = o.customer_id "
+            "SELECT o.id, c.name, o.quantity, o.sell_price_yen, o.status, c.shop_name FROM order_book o JOIN customer c ON c.id = o.customer_id "
             "WHERE o.item_id = ? AND o.order_date = ? AND o.status IN ('open', 'partly_filled') ORDER BY o.id", (it["id"], ctx.on_date)):
         try:
             ceiling = criteria.ceiling_yen(ctx.con, it["code"], r[1])
@@ -86,6 +86,8 @@ def read_orders(ctx, inp):
             ceiling = None
         out.append(dict(order_id=r[0], customer=r[1], quantity=r[2], unit=_u(it), sell_price_yen=r[3],
                         buy_ceiling_yen=ceiling, status=r[4], remaining=r[2] - stockwork.filled(ctx.con, r[0])))
+        if r[5]:
+            out[-1]["shop_name"] = r[5]
     pre = [dict(r) for r in ctx.con.execute(
         "SELECT id, side, quantity, max_unit_price_yen, min_unit_price_yen, spec, deliver_by, approved_by, valid_until FROM preapproval "
         "WHERE item_id = ? AND status = 'active'", (it["id"],))]
@@ -94,12 +96,26 @@ def read_orders(ctx, inp):
     if pre:
         res["preapproved"] = pre
         res["preapproved_note"] = "担当者が事前に承認した条件。この範囲なら条件付きの合意ができる。超えれば担当者の承認待ちになる"
+    dirs = directives(ctx.con, it["id"], ctx.on_date)
+    if dirs:
+        res["directives"] = dirs
+        res["directives_note"] = ("社長の今日の指示（業務の記録）。相談の根拠に使う。指示の売り先の注文を欠く案は、社長の確認が要る"
+                                  "（担当者は決められない・コードが止める）")
     spare = _spare(ctx.con, it)
     if spare:
         res["unallocated_stock"] = spare
         res["unallocated_note"] = ("引当のない在庫（どの注文にも充てていない手元の数）。新しい注文には、問い合わせる前に allocate_stock で充てる。"
                                    "intended_customer は人が承認した案で回すと決めた売り先（その売り先の注文にだけ充てられる）")
     return _j(res)
+
+
+def directives(con, item_id: int | None, on_date: str) -> list[dict]:
+    """今日の有効な社長の指示（品目を問わない指示を含む）。"""
+    return [dict(directive_id=r["id"], body=r["body"], customer=r["customer"], shop_name=r["shop_name"], issued_by=r["issued_by"],
+                 issued_from=r["issued_from"], via=r["via"], received_at=r["received_at"])
+            for r in con.execute("SELECT d.*, c.name AS customer, c.shop_name FROM directive d LEFT JOIN customer c ON c.id = d.customer_id "
+                                 "WHERE d.trade_date = ? AND d.status = 'active' AND (d.item_id IS NULL OR d.item_id = ?) ORDER BY d.id",
+                                 (on_date, item_id))]
 
 
 def _spare(con, it) -> list[dict]:
@@ -142,12 +158,12 @@ def read_customers(ctx, inp):
     it = _item(ctx.con, inp["item_code"])
     out = []
     for c in ctx.con.execute(
-            "SELECT c.id, c.name, c.allow_contact, s.unit_price_yen FROM customer c "
+            "SELECT c.id, c.name, c.allow_contact, s.unit_price_yen, c.shop_name FROM customer c "
             "JOIN sales_price s ON s.customer_id = c.id AND s.item_id = ? ORDER BY c.id", (it["id"],)):
         h = ctx.con.execute("SELECT count(*), avg(sold_qty), max(sale_date), min(sold_qty), max(sold_qty) FROM sales_history "
                             "WHERE customer_id = ? AND item_id = ?", (c[0], it["id"])).fetchone()
         out.append(dict(customer_id=c[0], customer=c[1], sell_price_yen=c[3], buy_ceiling_yen=criteria.ceiling_yen(ctx.con, it["code"], c[1]),
-                        may_contact=bool(c[2]),
+                        may_contact=bool(c[2]), shop_name=c[4],
                         sales_history=dict(times=h[0], avg_sold=round(h[1], 1) if h[1] else None, last=h[2], min=h[3], max=h[4])))
     return _j(dict(item=it["name"], unit=_u(it), customers=out))
 
@@ -742,7 +758,10 @@ SYSTEMS = {
              "売り先（スーパー・料亭など）への連絡は draft_to_customer で下書きするだけです。送るかは担当者が決めます。"
              "案の根拠に Vault の経験を使ったら、その番号を vault_refs に入れます。"
              "引当のない在庫（売り先の当てのない数量）も残りの仕事です。新しい注文には、問い合わせる前に allocate_stock で手元の在庫を充て、足りない分だけ問い合わせます。"
-             "充てる注文が無ければ、ask_about_stock で担当者に扱いを問います（売り先に注文を確かめる・ほかの仲買に譲る・そのまま持つ）。" + _COMMON,
+             "充てる注文が無ければ、ask_about_stock で担当者に扱いを問います（売り先に注文を確かめる・ほかの仲買に譲る・そのまま持つ）。"
+             "売り先は、人への文では店の名前（shop_name）で呼びます。社長の今日の指示（read_orders の directives）は相談の根拠です。"
+             "指示の売り先の注文を欠く案は社長の確認が要ることを、担当者への問いに短く書きます。"
+             "担当者が任せた範囲（照会・条件内の入札・再交渉）の外のことは、担当者に相談します。" + _COMMON,
     "iwase": "あなたは岩瀬漁協（売り手）の Claude AI パートナーです（Agent Dock）。仲買からの問い合わせに、自社の在庫と数量ごとの最低の値を見て答えます。"
              "最低の値より安い条件は出せません。まとめて買えば値を下げられる場合は、その条件を示してかまいません。"
              "同じ仲買から条件を変えた問い合わせが届いたら、その問い合わせに、今の在庫と数量ごとの最低の値で答え直します（前の仮押さえは新しい返事に置き換わります）。" + _COMMON,
@@ -923,7 +942,23 @@ def situation(owner: str, event: dict, on_date: str) -> tuple[str, str]:
         head = f"出来事：{event['kind']}"
     lines = _thread_lines(owner, item, on_date) if item else []
     hist = "\n今日のこの品目のやり取り：\n" + "\n".join(lines) if lines else ""
-    return f"{head}\n{_item_line(owner, item)}日付：{on_date}\n必要なことを道具で調べ、判断してください。{hist}", item
+    return f"{head}\n{_item_line(owner, item)}{_morning_line(owner, item, on_date)}日付：{on_date}\n必要なことを道具で調べ、判断してください。{hist}", item
+
+
+def _morning_line(owner: str, item: str | None, on_date: str) -> str:
+    """社長の今日の指示と、担当者が任せた範囲（記録からコードが書く）。無ければ空。"""
+    c = db.connect(owner)
+    try:
+        it = c.execute("SELECT id FROM item WHERE code = ?", (item,)).fetchone() if item else None
+        dirs = directives(c, it["id"] if it else None, on_date)
+        d = c.execute("SELECT scope_json FROM delegation WHERE trade_date = ? ORDER BY id DESC LIMIT 1", (on_date,)).fetchone()
+    finally:
+        c.close()
+    out = "".join(f"社長の今日の指示（指示 {x['directive_id']}・{x['issued_from']}から・{x['via']}）：「{x['body']}」"
+                  f"（{x['shop_name'] or x['customer']}＝売り先の区分 {x['customer']}）\n" for x in dirs)
+    if d:
+        out += "担当者が任せた範囲：" + "・".join(sc.DELEGATION_SCOPES.get(s, s) for s in json.loads(d[0])) + "\n"
+    return out
 
 
 def _item_line(owner: str, item: str | None) -> str:

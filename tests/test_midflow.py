@@ -33,6 +33,7 @@ def run_amiya_on(kind, payload, script):
 
 
 def approve_split(t):
+    tb.no_directive()   # 社長の指示が無い朝：スーパー 4本・料亭 2本の分け方は、社長の確認が要る
     a = next(o for o in tb.view()["options"] if o["code"] == "A")                              # スーパー 4本・料亭 2本
     t.assertEqual(deal.decide("amiya", t.case, a["id"], "approve", a["fingerprint"], "s1")["result"], "needs_president")
     t.assertEqual(deal.decide("amiya", t.case, a["id"], "approve", a["fingerprint"], "p1", actor="president")["result"], "registered")

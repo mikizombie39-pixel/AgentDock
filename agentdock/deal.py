@@ -285,6 +285,7 @@ def _approve(owner: str, case, opt, shown_fp: str, actor: str, now: str, fail_at
         differs = plan.get("differs_from_decision") is not None
         settled = (decision is not None and not differs and authority.may_change_priority(c, decision["decided_by"])
                    and not consult.against_decision(c, decision, plan["allocations"]))
+        settled = settled or (priority and not differs and consult.directive_settles(c, case, dict(quantity=purchase["quantity"], allocations=allocs)))
         by_decider = not differs or actor == decision["decided_by"] or may
     finally:
         c.close()

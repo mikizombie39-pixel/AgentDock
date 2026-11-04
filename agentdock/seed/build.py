@@ -46,6 +46,7 @@ def _fill_owner(con, code: str, public_rows, scene_c: bool, with_aji_s: bool = F
         item = _ids(con, "item")
         con.executemany("INSERT INTO customer (name, kind) VALUES (?, ?)", sc.CUSTOMERS.get(code, []))
         cust = _ids(con, "customer", "name")
+        con.executemany("UPDATE customer SET shop_name = ? WHERE name = ?", [(s, c) for c, s in sc.SHOP_NAMES.get(code, {}).items()])
         con.executemany("INSERT INTO authority (role, person_name, max_trade_yen) VALUES (?, ?, ?)", sc.AUTHORITY.get(code, []))
         con.executemany("UPDATE authority SET may_change_priority = 1 WHERE role = ?", [(r,) for r in sc.PRIORITY_ROLES.get(code, ())])
 
@@ -82,6 +83,12 @@ def _fill_owner(con, code: str, public_rows, scene_c: bool, with_aji_s: bool = F
             "INSERT INTO landing (item_id, landing_date, kind, quantity, size_note, caught_at, area, water_temp_c) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
             [(item[i], tomorrow, k, q, s, c, a, w) for i, k, q, s, c, a, w in keep(sc.LANDINGS.get(code, []), 0)])
         _fill_autonomy(con, code, item, cust, now)
+        role, place = sc.DIRECTIVE_FROM.get(code, ("president", ""))
+        con.executemany(
+            "INSERT INTO directive (issued_by, issued_from, via, body, kind, customer_id, item_id, trade_date, received_at, status) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'active')",
+            [(role, place, via, body.format(shop=sc.shop(code, c)), k, cust[c], item[i] if i else None, sc.DEMO_DATE,
+              f"{sc.DEMO_DATE}T{at}:00+09:00") for c, i, k, body, via, at in sc.DIRECTIVES.get(code, [])])
         con.execute("INSERT INTO audit_event (at, actor, event, detail) VALUES (?, 'system', 'seed', ?)",
                     (now, "scene_c" if scene_c else "main"))
 

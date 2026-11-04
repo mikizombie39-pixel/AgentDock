@@ -201,6 +201,29 @@ def changes_priority(con, case, change: dict) -> bool:
     return any(sum(a["quantity"] for a in allocs if a["order_id"] != s) > 0 for s in short)
 
 
+def directive_settles(con, case, change: dict) -> bool:
+    """社長の今日の指示（この売り先の分は落とすな）が、この優先をすでに決めているか（2026-11-04 デイブ・SAL）：
+    指示の売り先の注文を全部満たし、欠けるのは指示の外の売り先だけなら、社長の決めた優先どおり。指示と違う案は社長の確認へ進む。"""
+    allocs = change.get("allocations")
+    if allocs is None:
+        return False
+    keep = {r[0] for r in con.execute(
+        "SELECT customer_id FROM directive WHERE kind = 'keep_customer' AND status = 'active' AND trade_date = ? AND customer_id IS NOT NULL "
+        "AND (item_id IS NULL OR item_id = ?)", (case["trade_date"], case["item_id"]))}
+    if not keep:
+        return False
+    kept = [dict(r) for r in con.execute(
+        "SELECT id, quantity FROM order_book WHERE item_id = ? AND order_date = ? AND status IN ('open', 'partly_filled') AND customer_id IN (%s)"
+        % ",".join("?" * len(keep)), (case["item_id"], case["trade_date"], *keep))]
+    if not kept:
+        return False
+    got = {}
+    for a in allocs:
+        if a["order_id"] is not None:
+            got[a["order_id"]] = got.get(a["order_id"], 0) + a["quantity"]
+    return all(got.get(o["id"], 0) >= o["quantity"] for o in kept)
+
+
 def _answer_change(con, c, option_id: int, key: str, reason_text, change, role: str) -> dict:
     """条件を変える答え。確定できれば、記録と同じトランザクションで出来事 human_choice を書く。"""
     if c["case_id"] is None:
@@ -219,7 +242,7 @@ def _answer_change(con, c, option_id: int, key: str, reason_text, change, role: 
     now = db.now_iso()
     cj = json.dumps(change, ensure_ascii=False, sort_keys=True)
     base = dict(consultation_id=c["id"], option="change", duplicate=False, priority_change=priority)
-    if priority and not may:
+    if priority and not may and not directive_settles(con, case, change):
         with con:
             con.execute("UPDATE consultation SET status = 'needs_president', chosen_option_id = ?, reason_text = ?, answered_at = ?, idempotency_key = ?, "
                         "change_json = ?, answered_by = ? WHERE id = ?", (option_id, reason_text, now, key, cj, role, c["id"]))

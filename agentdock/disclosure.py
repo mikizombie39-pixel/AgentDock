@@ -72,6 +72,8 @@ def check(con, item_code: str, unit_price_yen: int, quantity: int, text: str, on
     norm = unicodedata.normalize("NFKC", text)
     reasons += [f"word {w}" for w in WORDS if w in norm]
     reasons += [f"customer {r[0]}" for r in con.execute("SELECT name FROM customer ORDER BY id") if r[0] in norm]
+    reasons += [f"customer {r[0]}" for r in con.execute("SELECT shop_name FROM customer WHERE shop_name IS NOT NULL ORDER BY id")
+                if unicodedata.normalize("NFKC", r[0]) in norm]   # 店の名前も相手に書かない
     return reasons
 
 

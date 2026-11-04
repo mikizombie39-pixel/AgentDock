@@ -66,6 +66,7 @@ class WorkTest(tb.Base):
             self.assertNotIn(bad, text)
 
     def test_approval_waits_for_the_president_then_registered_and_leftover(self):
+        tb.no_directive()
         self.renegotiate()
         a = next(o for o in tb.view()["options"] if o["code"] == "A")                       # 版 2：スーパー 4本・料亭 2本
         deal.decide("amiya", self.case, a["id"], "approve", a["fingerprint"], "s1")
@@ -171,6 +172,7 @@ class CurrentTest(tb.Base):
         self.assertEqual(a["grounds"]["reason"], "朝の注文を先に満たす")
 
     def test_after_approval_waiting_for_the_president_then_registered(self):
+        tb.no_directive()
         a = next(o for o in work.current("amiya", "buri_xl")["options"] if o["code"] == "A")
         deal.decide("amiya", self.case, a["option_id"], "approve", a["fingerprint"], "s1")
         cur = work.current("amiya", "buri_xl")
