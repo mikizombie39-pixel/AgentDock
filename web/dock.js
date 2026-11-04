@@ -9,8 +9,10 @@
   const Q = new URLSearchParams(location.search);
   const MODE = Q.get("mode") === "replay" ? "replay" : "live";
   const ITEM = Q.get("item") || "buri_xl";
-  // live mode opens on the worker's current state; the five sections are the 「仕組みと根拠」 side. Replay shows the sections
-  let VIEW = MODE === "live" && Q.get("view") !== "evidence" ? "now" : "evidence";
+  // both modes open on the worker's current state; the five sections are the 「仕組みと根拠」 side. Replay rebuilds the current state
+  // at each recorded time from the records (GET /api/current_timeline)
+  let VIEW = Q.get("view") !== "evidence" ? "now" : "evidence";
+  let REPLAY_T = null;          // replay clock (seconds); null in live
   const $ = (id) => document.getElementById(id);
   const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
   const NOREC = "記録なし";
@@ -36,14 +38,16 @@
   // ── labels (fixed words for recorded states and kinds) ──
   const STATE = { held: "押さえ中", released: "下ろした", confirmed: "確定", expired: "期限切れ", open: "答え待ち", needs_president: "網谷さんを待つ",
     answered: "答えた", stale: "古い版", closed: "閉じた", registered: "登録済み", incomplete: "途中", partly_filled: "一部充足", filled: "充足",
-    sold: "売れた", for_sale: "売りに出している", approved: "承認済み" };
+    sold: "売れた", for_sale: "売りに出している", approved: "承認済み", allocated: "注文に充てた" };
   const KIND_MSG = { inquiry: "問い合わせ", offer: "条件の返事", decline: "断りの返事" };
   const RUN = { order_new: "注文を読み、仕入れ先に問い合わせています", quote_received: "相手の返事を読み、案を組んでいます",
     human_choice: "あなたの答えを受けて、交渉し直しています", staff_question: "あなたの質問に答えています", quote_request: "問い合わせに答えています",
     trade_registered: "登録を受けて、残った注文を確かめています",
     "info_received": "届いた情報を確かめています" };
+  const RUN_SOURCE = { stock_question: "あなたの答えを受けて、引当のない在庫の続きを進めています" };
+  const runText = (kind, source) => RUN_SOURCE[source] || RUN[kind];
   const WAIT = new Set(["open", "needs_president"]);
-  const PAST = new Set(["released", "expired", "answered", "closed", "stale"]);
+  const PAST = new Set(["released", "expired", "answered", "closed", "stale", "allocated"]);
   const ORG_ICON = { iwase: "ship", buyer_b: "package", buyer_c: "package" };
 
   // ── model ──
@@ -87,6 +91,12 @@
         <div class="kv"><div>${d.quantity}${unit} × ${yen(d.unit_price_yen)}</div><div class="v">${yen(d.quantity * d.unit_price_yen)}</div>
         <div>承認</div><div class="v">${d.decided_by === "president" ? "網谷さん" : d.decided_by === "staff" ? "担当者" : esc(d.decided_by)}</div></div>`;
       case "consultation": return consultHtml(it, state, live);
+      case "stock_question": {
+        const ch = (d.choices || []).map((c) => esc(c.label) + (c.code === d.recommended ? "（AIの勧め）" : "")).join("・");
+        return hd("package", "引当のない在庫の扱いを問われています") + `<div class="main">${esc(d.question)}</div>
+          <div class="sub">引当のない在庫 ${d.quantity}${unit}　選択肢：${ch}</div>${d.reason ? `<div class="sub">理由：${esc(d.reason)}</div>` : ""}`;
+      }
+      case "stock_alloc": return hd("package", "引当のない在庫を注文に充てた") + `<div class="main">${esc(d.customer)}の注文に ${d.quantity}${unit}</div>`;
       case "approval": return hd("stamp", "網谷さんの承認を待っています") + `<div class="main">案 ${esc(d.option_code)}：${esc(d.option_label || NOREC)}</div>
         <div class="sub">${d.priority_change ? "売り先の注文を欠いてほかへ回す案です（顧客の間の優先）" : ""}${d.over_limit ? `担当者の上限 ${yen(d.limit_yen)} を超えます（${yen(d.amount_yen)}）` : ""}</div>
         <div class="foot">${state === "needs_president" ? `<button class="act main" data-approve="${esc(it.key)}" ${live ? "" : "disabled"}>網谷さん（社長）として承認する</button>` : badge(state)}
@@ -117,6 +127,10 @@
   }
 
   function leftHtml(it) {
+    if (it.kind === "stock_left") {
+      const d = it.data;
+      return `<span class="shoal">${icon("package")}</span><span>引当のない在庫 ${d.quantity}${unit}（${d.intended_customer ? `${esc(d.intended_customer)}に回すつもり・注文なし` : "売り先なし"}）</span>${srcBtn(it)}`;
+    }
     const n = Math.max(1, Math.min(6, it.data.remaining));
     return `<span class="shoal">${icon("fish").repeat(n)}</span><span>${esc(it.data.customer)}　残り ${it.data.remaining}${unit}（注文 ${it.data.quantity}${unit}）</span>${srcBtn(it)}`;
   }
@@ -299,7 +313,7 @@
     const on = runs.filter((r) => (now == null ? !r.ended_at : sec(r.started_at) <= now && (!r.ended_at || sec(r.ended_at) > now)));
     const r = on[on.length - 1];
     $("ai").classList.toggle("busy", !!r);
-    $("aitext").textContent = r ? `AI：${RUN[r.event_kind] || "出来事を確かめています"}` : (runs.length || shown.size ? "AI：次の出来事を見張っています" : "");
+    $("aitext").textContent = r ? `AI：${runText(r.event_kind, r.event_source) || "出来事を確かめています"}` : (runs.length || shown.size ? "AI：次の出来事を見張っています" : "");
   }
 
   function header(v) {
@@ -308,18 +322,26 @@
   }
 
   // ── replay: reveal the derived items in time order, compressed ──
-  function replay(v) {
+  function replay(v, timeline) {
     $("replayctl").hidden = false;
+    activity = v.activity;
     const evs = [];
     for (const it of v.items) it.history.forEach((h, i) => evs.push({ t: sec(h.at), it, state: h.state, first: i === 0 }));
     for (const r of v.activity) { evs.push({ t: sec(r.started_at), run: true }); if (r.ended_at) evs.push({ t: sec(r.ended_at), run: true }); }
-    evs.sort((a, b) => a.t - b.t);
+    // the current state rebuilt by the code at each recorded time (applied after the items of the same second)
+    for (const s of (timeline && timeline.snapshots) || []) evs.push({ t: sec(s.at), snap: s.current });
+    evs.sort((a, b) => a.t - b.t || (a.snap ? 1 : 0) - (b.snap ? 1 : 0));
     let i = 0, timer = 0, playing = false;
     const states = new Map();
     function reset() {
       clearTimeout(timer); i = 0; states.clear(); shown.clear(); orgsShown.clear(); formOpen = null;
       for (const id of ["sec-waiting", "sec-read", "sec-done", "msgs", "leftlist", "orglist"]) $(id).innerHTML = "";
       for (const id of ["orgs", "waiting", "read", "done", "network", "left"]) $(id).hidden = true;
+      for (const el of nowState.lines.values()) el.remove();
+      nowState.lines.clear();
+      for (const id of ["nowholds", "nowdecision", "nowask", "nowdrafts"]) { $(id).innerHTML = ""; $(id)._html = null; }
+      Object.assign(nowState, { key: "", open: null, cur: null, stop: "", ack: null });
+      REPLAY_T = evs.length ? evs[0].t : null;
       if (evs.length) clock(evs[0].t); else $("rpclock").textContent = NOREC;
       aiText([], 0);
     }
@@ -331,11 +353,16 @@
       if (i >= evs.length) { playing = false; $("rpplay").querySelector(".ic").innerHTML = window.DOCK_ICONS.play; $("rpplay").lastChild.textContent = "再生"; return; }
       const e = evs[i++];
       clock(e.t);
-      if (!e.run) {
+      REPLAY_T = e.t;
+      if (e.snap) {
+        const changed = renderNow(e.snap, true);
+        if (VIEW === "now" && !REDUCED) for (const el of changed) { const r = rectOf(el); Sea.school({ from: { x: r.x - 30, y: r.y + r.h / 2 }, to: r, n: 18, hold: 160 }); }
+      } else if (!e.run) {
         states.set(e.it.key, e.state);
         apply([Object.assign({}, e.it, { _state: e.state })], true);
       }
       aiText(v.activity, e.t);
+      if (nowState.cur && !nowState.cur.waiting_for) drawAsk();   // the AI's turn line follows the replay clock
       const nx = evs[i];
       const gap = nx ? nx.t - e.t : 0;
       const wait = nx ? Math.min(2400, Math.max(gap === 0 ? 260 : 650, gap * 110)) : 0;   // compressed time
@@ -398,26 +425,32 @@
     if (!cur || !cur.lines) return [];
     unit = cur.item.unit;
     const changed = [], seen = new Set(), box = $("nowlines");
-    for (const l of cur.lines) {
-      const k = "o" + l.order_id; seen.add(k);
-      let el = nowState.lines.get(k);
-      if (!el) { el = document.createElement("div"); el._text = null; box.appendChild(el); nowState.lines.set(k, el); }
+    // order lines, then the stock with no order behind it (売り先の当てのない数量) — both written by the code
+    const rows = cur.lines.map((l) => ({ k: "o" + l.order_id, cls: l.state, ic: "fish", text: l.text }))
+      .concat((cur.stock || []).map((s) => ({ k: "s" + (s.intended_customer || ""), cls: "spare", ic: "package", text: s.text })));
+    for (const l of rows) {
+      seen.add(l.k);
+      let el = nowState.lines.get(l.k);
+      if (!el) { el = document.createElement("div"); el._text = null; box.appendChild(el); nowState.lines.set(l.k, el); }
       if (el._text !== l.text) {
-        el.className = `line ${l.state}`;
-        el.innerHTML = `${icon("fish")}<span>${esc(l.text)}</span>`;
+        el.className = `line ${l.cls}`;
+        el.innerHTML = `${icon(l.ic)}<span>${esc(l.text)}</span>`;
         if (el._text !== null) changed.push(el);
         el._text = l.text;
       }
     }
     for (const [k, el] of nowState.lines) if (!seen.has(k)) { el.remove(); nowState.lines.delete(k); }
     $("nowholds").innerHTML = (cur.holds || []).map((x) => `<div class="holdline">${icon("hourglass")}<span>${esc(x.text)}</span></div>`).join("");
-    $("nowdecision").textContent = cur.decision ? `人の決定：${cur.decision.text}` : "";
+    $("nowdecision").textContent = [cur.decision ? `人の決定：${cur.decision.text}` : "", cur.stock_decision ? cur.stock_decision.text : ""].filter(Boolean).join("　／　");
     drawDrafts(cur.drafts || []);
     const k = JSON.stringify([cur.waiting_for, cur.case && cur.case.version, cur.case && cur.case.status, cur.consultation && cur.consultation.status,
-      (cur.options || []).map((o) => o.option_id + ":" + o.fingerprint + ":" + o.executable)]);
+      (cur.options || []).map((o) => o.option_id + ":" + o.fingerprint + ":" + o.executable), cur.stock_question && cur.stock_question.question_id]);
     if (k !== nowState.key) {
       // (c) the situation changed while the person was choosing: stop them, show what changed, re-form
-      if (nowState.open && nowState.key && animate) { Sea.ripple(rectOf($("nowask"))); nowState.stop = "状況が変わったので、選んでいた内容を止めました。新しい内容を見てください"; }
+      if (nowState.open && nowState.key && animate) { Sea.ripple(rectOf($("nowask"))); nowState.stop = "状況が変わったので、選んでいた内容を止めました。新しい内容を見てください"; nowState.stopT = Date.now(); }
+      else if (nowState.stop && Date.now() - (nowState.stopT || 0) > ACK_GRACE) nowState.stop = "";
+      // the result of the person's last action belongs to the situation it answered: once the situation moves on, it goes
+      if (nowState.ack && Date.now() - nowState.ack.t > ACK_GRACE) nowState.ack = null;
       nowState.key = k; nowState.open = null;
     }
     nowState.cur = cur;
@@ -425,18 +458,27 @@
     return changed;
   }
   function aiNow() {
-    const r = [...activity].reverse().find((x) => !x.ended_at);
-    if (r) return `AI：${RUN[r.event_kind] || "出来事を確かめています"}`;
+    const on = (x) => (REPLAY_T == null ? !x.ended_at : sec(x.started_at) <= REPLAY_T && (!x.ended_at || sec(x.ended_at) > REPLAY_T));
+    const r = [...activity].reverse().find(on);
+    if (r) return `AI：${runText(r.event_kind, r.event_source) || "出来事を確かめています"}`;
     const qd = (nowState.cur && nowState.cur.ai_queue) || [];
-    if (qd.length) return `AIの番です：${RUN[qd[0].kind] || "出来事を確かめます"}（起きるのを待っています）`;
+    if (qd.length) return `AIの番です：${runText(qd[0].kind, qd[0].source) || "出来事を確かめます"}（起きるのを待っています）`;
     return "あなたを待つことはありません。AIが次の出来事を見張っています";
   }
+  const ACK_GRACE = 1500, ACK_KEEP = 8000;
   function ackLine() {
+    // a ✓ line is the answer to the person's own action: it stays a few seconds, not after the work has moved on
+    if (nowState.ack && !nowState.ack.bad && Date.now() - nowState.ack.t > ACK_KEEP) nowState.ack = null;
     return (nowState.stop ? `<div class="ack bad">${esc(nowState.stop)}</div>` : "") + (nowState.ack ? `<div class="ack ${nowState.ack.bad ? "bad" : ""}">${esc(nowState.ack.text)}</div>` : "");
+  }
+  function drawStockQuestion(q) {
+    return `<div class="ask-q">${esc(q.text)}</div><div class="ask-sub">AIの問い（引当のない在庫 ${q.quantity}${unit}）${q.reason ? "　理由：" + esc(q.reason) : ""}</div>
+      <div class="choices">${(q.choices || []).map((c) => `<button class="choice" data-sq="${esc(c.code)}">${esc(c.label)}<small>${c.code === q.recommended ? "AIの勧め" : ""}</small></button>`).join("")}</div>`;
   }
   function drawAsk() {
     const cur = nowState.cur, box = $("nowask");
     if (!cur) return;
+    if (!cur.waiting_for && cur.stock_question) { box.innerHTML = drawStockQuestion(cur.stock_question) + ackLine(); return; }
     if (!cur.waiting_for) { box.innerHTML = `<div class="aiturn">${icon("bot")}<span>${esc(aiNow())}</span></div>${ackLine()}`; return; }
     if (cur.waiting_for === "president") {
       const p = cur.pending || {};
@@ -474,10 +516,10 @@
     const cur = nowState.cur;
     const body = o.action === "approve" ? { owner: OWNER, case_id: cur.case.id, option_id: o.option_id, action: "approve", fingerprint: o.fingerprint, idempotency_key: key(), actor }
       : { owner: OWNER, case_id: cur.case.id, option_id: null, action: "reject", fingerprint: null, idempotency_key: key(), actor };
-    nowState.ack = { text: "送っています…", bad: false }; drawAsk();
+    nowState.ack = { text: "送っています…", bad: false, t: Date.now() }; drawAsk();
     let r, j;
     try { r = await fetch("/api/decide", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }); j = await r.json(); }
-    catch (e) { nowState.ack = { text: "送れませんでした（サーバーに届いていません）", bad: true }; drawAsk(); return; }
+    catch (e) { nowState.ack = { text: "送れませんでした（サーバーに届いていません）", bad: true, t: Date.now() }; drawAsk(); return; }
     settle(r.status, j);
   }
   function settle(status, j) {
@@ -487,8 +529,10 @@
     } else if (j.result === "needs_president") nowState.ack = { text: "網谷さん（社長）の承認を待ちます", bad: false };
     else if (j.result === "registered") nowState.ack = { text: "✓ 登録しました（サーバーが受け付けました）", bad: false };
     else if (j.result === "rejected") nowState.ack = { text: "✓ 見送りました（サーバーが受け付けました）", bad: false };
+    else if (j.result === "answered" && j.question_id) nowState.ack = { text: "✓ 答えを記録しました。AIが続けます", bad: false };
     else if (j.result === "answered") nowState.ack = { text: "✓ 答えを記録しました。AIが交渉し直します", bad: false };
     else nowState.ack = { text: j.detail || j.error || j.result || NOREC, bad: true };
+    nowState.ack.t = Date.now();
     nowState.open = null; nowState.stop = ""; nowState.refresh = true; drawAsk();
   }
   $("nowask").addEventListener("click", async (e) => {
@@ -496,6 +540,16 @@
     if (!b || b.disabled || MODE !== "live") return;
     const cur = nowState.cur;
     if (b.dataset.choice) { nowState.open = Number(b.dataset.choice) === nowState.open ? null : Number(b.dataset.choice); nowState.stop = ""; nowState.ack = null; return drawAsk(); }
+    if (b.dataset.sq && cur.stock_question) {   // the person answers the AI's question about the stock with no order behind it
+      b.disabled = true;
+      let r, j;
+      try {
+        r = await fetch("/api/stock_answer", { method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ owner: OWNER, question_id: cur.stock_question.question_id, choice: b.dataset.sq, idempotency_key: key(), role: "staff" }) });
+        j = await r.json().catch(() => ({}));
+      } catch (err) { nowState.ack = { text: "送れませんでした（サーバーに届いていません）", bad: true, t: Date.now() }; return drawAsk(); }
+      return settle(r.status, j);
+    }
     if (b.dataset.go) {
       const o = cur.options.find((x) => x.option_id === Number(b.dataset.go));
       b.disabled = true;
@@ -612,7 +666,10 @@
   fetch(`/api/work?owner=${OWNER}&item=${encodeURIComponent(ITEM)}`).then((r) => r.json()).then((v) => {
     if (!v.item) { $("aitext").textContent = NOREC; return; }
     header(v);
-    if (MODE === "live") { $("viewbtn").hidden = false; $("opbtn").hidden = ITEM !== "buri_xl"; setView(VIEW); } else document.body.dataset.view = "evidence";
-    if (MODE === "replay") replay(v); else live();
+    $("viewbtn").hidden = false;
+    setView(VIEW);
+    if (MODE === "live") { $("opbtn").hidden = ITEM !== "buri_xl"; live(); return; }
+    fetch(`/api/current_timeline?owner=${OWNER}&item=${encodeURIComponent(ITEM)}`).then((r) => (r.ok ? r.json() : null)).catch(() => null)
+      .then((tl) => replay(v, tl));
   });
 })();
