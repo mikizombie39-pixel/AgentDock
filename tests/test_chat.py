@@ -261,11 +261,12 @@ class RequestTest(ChatBase):
         threading.Thread(target=self.srv.serve_forever, daemon=True).start()
         self.base = f"http://127.0.0.1:{self.srv.server_address[1]}"
         server.CHAT, server.CHAT_KIND = chatmock.ChatPolicy(), "mock"
+        server.CHAT_RUN = True          # 段4 の実行の経路を確かめる（既定は止めてある）
 
     def tearDown(self):
         self.srv.shutdown()
         self.srv.server_close()
-        server.CHAT = None
+        server.CHAT, server.CHAT_RUN = None, False
         super().tearDown()
 
     def http(self, method, path, body=None):
@@ -343,6 +344,19 @@ class RequestTest(ChatBase):
         self.assertIn("できること：", a["detail"])
         self.assertIn("できないこと：", a["detail"])
         self.assertNotIn("実行しました", json.dumps(a, ensure_ascii=False))
+
+    def test_the_run_is_off_by_default_and_nothing_changes(self):
+        server.CHAT_RUN = False                                                             # 段2：質問と下見だけ
+        self.consult()
+        st, r = self.http("POST", "/api/chat", dict(owner="amiya", item="buri_xl", text="その案で進めて", idempotency_key="off1"))
+        self.assertEqual((st, r["run_enabled"], r["answer"]["kind"]), (200, False, "request"))   # 確認の文は出す
+        before = snapshot()
+        st, out = self.run_turn(r["turn_id"], "offx")
+        self.assertEqual((st, out["error"]), (403, "not_enabled"))
+        self.assertEqual(snapshot(), before)
+        st, h = self.http("GET", "/api/chat?owner=amiya&item=buri_xl")
+        self.assertFalse(h["run_enabled"])
+        self.assertIsNone(chat.turn("amiya", r["turn_id"])["executed"])
 
     def test_history_and_turn_record_over_http(self):
         self.consult()

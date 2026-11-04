@@ -421,7 +421,7 @@
   const EV_ICON = { directive: "user-round", rule: "shield-check", knowledge: "notebook-text", experience: "notebook-text", not_current: "notebook-text",
     reply: "mail", record: "clipboard-list", calc: "receipt-japanese-yen" };
   const ORG = { "岩瀬漁協": "漁協の回答", "B社": "B社の回答", "C社": "C社の回答" };
-  let chatTurns = [], chatPending = null, chatBusy = false, chatKind = "mock", histOpen = false;
+  let chatTurns = [], chatPending = null, chatBusy = false, chatKind = "mock", chatRun = false, histOpen = false;
   const runKeys = {};
 
   function evLabel(e) {
@@ -469,7 +469,9 @@
         (a.detail || a.interpretation ? `<button class="linkbtn" data-det="1">${icon("chevron-down")}詳しく</button>` : "") +
         (a.evidence.length ? `<button class="linkbtn" data-evall="1">${icon("file-search")}根拠を全部開く</button>` : "") + `</div>`;
       const r = a.request;
-      if (r && !t.executed) {
+      if (r && !t.executed && !chatRun) {
+        h += `<div class="reqbox"><p>${esc(r.confirm_text)}</p><small>チャットからの実行は、まだ使えません。進める時は、画面のボタン（${esc(r.label)}）を押してください。</small></div>`;
+      } else if (r && !t.executed) {
         h += `<div class="reqbox"><p>${esc(r.confirm_text)}</p><small>実行する操作：${esc(r.label)}${r.president ? "（社長の確認へ進みます）" : ""}・押すまで、何も実行しません</small>
           <div class="btnrow"><button class="pbtn" data-run="1">${icon("stamp")}この内容で頼む</button><button class="sbtn" data-cancel="1">${icon("x")}やめる</button></div></div>`;
       } else if (r && t.executed) {
@@ -498,7 +500,7 @@
   }
 
   async function loadChat() {
-    try { const j = await getJSON(`/api/chat?owner=${OWNER}&item=${encodeURIComponent(ITEM)}`); chatTurns = j.turns.map((t) => Object.assign({ turn_id: t.id }, t)); chatKind = j.run_kind || chatKind; drawChat(); }
+    try { const j = await getJSON(`/api/chat?owner=${OWNER}&item=${encodeURIComponent(ITEM)}`); chatTurns = j.turns.map((t) => Object.assign({ turn_id: t.id }, t)); chatKind = j.run_kind || chatKind; chatRun = !!j.run_enabled; drawChat(); }
     catch (e) { /* keep */ }
   }
 
@@ -517,7 +519,7 @@
     chatBusy = false; $("chatsend").disabled = false;
     if (r.ok && r.j.answer) {
       chatPending = null; $("chatin").value = ""; chatState("");
-      chatKind = r.j.run_kind || chatKind;
+      chatKind = r.j.run_kind || chatKind; chatRun = !!r.j.run_enabled;
       chatTurns = [r.j].concat(chatTurns.filter((t) => (t.turn_id ?? t.id) !== r.j.turn_id));
       drawChat();
     } else if (r.status === 400) {

@@ -77,7 +77,17 @@ class ChatPolicy:
     def _ids(self, pred):
         return [r["id"] for r in self.ix if pred(r)]
 
+    def _unknown_shop(self):
+        """質問の中の店の名前（〜商店・〜鮮魚店）が、今の注文の店に無い時はその名前（記録に無い店を、ある店に読み替えない）。"""
+        known = {self._shop_of(k) for k in ("スーパー", "料亭")}
+        for m in re.finditer(r"[一-龥ァ-ヶー]+(?:商店|鮮魚店)", self.q):
+            if m.group(0) not in known:
+                return m.group(0)
+        return None
+
     def _pick(self):
+        if self._unknown_shop():
+            return [], None
         if self._has("代わり"):
             return self._ids(lambda r: "代わりの魚" in r["title"] or ("順風満帆" in r["subject"] and r["category"] == "仕入れの知識")), None
         if self._has("優先にすると", "どうなる", "先にすると"):
@@ -123,6 +133,11 @@ class ChatPolicy:
 
     def _answer(self):
         q = self.q
+        shop = self._unknown_shop()
+        if shop:
+            return self._ans("question", chat.UNKNOWN, f"「{shop}」がどの店のことか、先輩か社長に確かめてください。",
+                             self._ev(*(x["ref"] for x in self._facts(lambda x: x["ref"].startswith("order_book:")))),
+                             detail=f"今の注文の店は {'・'.join(self._shop_of(k) for k in ('スーパー', '料亭'))} で、「{shop}」は記録にありません。")
         if self._has("代わり"):
             no = next((r for r in self.read.values() if "記録していない" in r["body"]), None)
             cond = next((r for r in self.read.values() if "代わりの魚" in r["title"]), None)

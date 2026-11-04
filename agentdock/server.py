@@ -55,6 +55,8 @@ TYPES = {".html": "text/html; charset=utf-8", ".css": "text/css; charset=utf-8",
 WORKER: live.Worker | None = None
 CHAT = None          # チャットの呼び出し先（--real の時は本物の Claude・ほかは模擬の Claude）
 CHAT_KIND = "mock"
+CHAT_RUN = False     # チャットからの依頼の実行（段4）。段2 は質問と下見だけ：依頼は確認の文まで出し、実行は断る（2026-11-04 デイブ）
+CHAT_RUN_OFF = "チャットからの実行は、まだ使えません。画面のボタンで進めてください。"
 MAX_QUESTION = 200
 
 
@@ -170,7 +172,8 @@ class Handler(BaseHTTPRequestHandler):
             if u.path == "/api/chat":
                 if q["owner"] not in db.OWNER_CODES:
                     raise ValueError(q["owner"])
-                return self._send(200, dict(turns=chat.history(q["owner"], q.get("item", "buri_xl"), int(q.get("limit", 20))), run_kind=CHAT_KIND))
+                return self._send(200, dict(turns=chat.history(q["owner"], q.get("item", "buri_xl"), int(q.get("limit", 20))), run_kind=CHAT_KIND,
+                                            run_enabled=CHAT_RUN))
             if u.path == "/api/chat/turn":
                 if q["owner"] not in db.OWNER_CODES:
                     raise ValueError(q["owner"])
@@ -374,7 +377,7 @@ class Handler(BaseHTTPRequestHandler):
             if CHAT is None:
                 return self._send(503, dict(error="unavailable", detail="チャットの呼び出し先がありません"))
             r = chat.ask(CHAT, owner, item, str(b["text"]), str(b["idempotency_key"]), sc.DEMO_DATE, run_kind=CHAT_KIND)
-            return self._send(200, dict(r, run_kind=CHAT_KIND))
+            return self._send(200, dict(r, run_kind=CHAT_KIND, run_enabled=CHAT_RUN))
         except chat.ChatFailed as e:
             return self._send(502, dict(error="failed", detail=str(e), retry=True))
         except chat.ChatError as e:
@@ -389,6 +392,8 @@ class Handler(BaseHTTPRequestHandler):
             owner, tid, key = b["owner"], int(b["turn_id"]), str(b["idempotency_key"])
             if owner not in db.OWNER_CODES:
                 raise ValueError("owner")
+            if not CHAT_RUN:
+                return self._send(403, dict(error="not_enabled", detail=CHAT_RUN_OFF))
             try:
                 t = chat.turn(owner, tid)
             except KeyError:
