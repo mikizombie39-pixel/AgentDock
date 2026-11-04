@@ -218,7 +218,7 @@ class NumbersTest(Base):
         held = "・".join(f"{h['name']} {h['quantity']}本" for h in t["held"])
         self.assertEqual((t["total"], t["registered"], t["held_total"], t["left"]), (10, 0, 8, 2))   # 漁協 6本（返事の2つの条件のうち押さえは1件）＋ B社 2本
         self.assertEqual(held, "岩瀬漁協 6本・B社 2本")
-        line = f"注文は合わせて 10本。登録済み 0本・仮押さえ 8本（{held}）で、あと 2本足りません。"
+        line = f"10本の注文に対し、8本を仮押さえ（{held}）。あと 2本不足。どの案でも、どこかの店が欠けます。"
         self.assertEqual(t["line"], line)
         self.assertIn(line, [s["text"] for s in v["sub"]])                                   # 下の行
         rows = [r["text"] for s in v["why"]["sections"] for r in s["rows"]]
@@ -520,9 +520,11 @@ class DecideBlockTest(Base):
         rec = acts[f"{SUPER} 4本を確保し、{RYOTEI}へ 4本を回す"]
         self.assertTrue(rec["recommended"])
         self.assertEqual((rec["choice"], rec["confirm"]), ("approve", "この配分で購入を承認する"))
-        self.assertEqual(rec["buys"], [dict(seller="岩瀬漁協", quantity=6), dict(seller="B社", quantity=2)])
+        self.assertEqual(rec["buys"], [dict(seller="岩瀬漁協", quantity=6, unit_price_yen=17500, amount_yen=105000),
+                                       dict(seller="B社", quantity=2, unit_price_yen=18400, amount_yen=36800)])
+        self.assertEqual(rec["purchase_yen"], 141800)                                        # 相手ごとの金額の合計と同じ（理由の1枚の「仕入れ 141,800円」）
         self.assertEqual(rec["alloc"], [dict(shop=SUPER, ordered=4, secured=4, short=0), dict(shop=RYOTEI, ordered=6, secured=4, short=2)])
-        self.assertEqual(rec["effect"], "岩瀬漁協 6本・B社 2本の買い付けを登録します（購入の確定）。")
+        self.assertEqual(rec["effect"], "岩瀬漁協 6本・B社 2本（合計 141,800円）の買い付けを登録します（購入の確定）。")
         pres = acts[f"{RYOTEI}へ 6本を回す（{SUPER}は 0本）"]
         self.assertEqual((pres["choice"], pres["confirm"], pres["president"]), ("president", "この案を社長に確かめる", True))
         self.assertIn("社長が承認するまで、何も登録しません", pres["effect"])

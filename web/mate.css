@@ -500,10 +500,10 @@ hr.rule { border: 0; border-top: 1px solid var(--line); margin: 0 0 18px; }
 .pv0 small { font-size: 13px; }
 .pvh small { display: block; font-size: 12px; color: var(--teal); font-weight: bold; }
 .pvh b { font-size: 17px; line-height: 1.4; }
-.pvs { margin: 10px 0 6px; font-size: 14px; display: flex; gap: 6px; align-items: center; }
 .bars { display: flex; flex-direction: column; gap: 8px; margin: 10px 0; }
 .bar { display: grid; grid-template-columns: 72px 1fr 64px 92px; gap: 10px; align-items: center; font-size: 14px; }
-.bar .track { height: 12px; border-radius: 6px; background: #F1DDD8; overflow: hidden; }
+.bar .lane { display: block; }
+.bar .track { display: block; height: 14px; border-radius: 7px; background: #F1DDD8; border: 1px solid #E2B9AF; overflow: hidden; }   /* 長さ＝注文の数（共通の尺度）・塗り＝確保・残り＝不足 */
 .bar .track i { display: block; height: 100%; background: var(--teal); border-radius: 6px; animation: grow .6s ease-out both; }
 .bar .q { font-variant-numeric: tabular-nums; text-align: right; }
 .bar .st { font-size: 12px; font-weight: bold; }
@@ -522,3 +522,11 @@ hr.rule { border: 0; border-top: 1px solid var(--line); margin: 0 0 18px; }
   .chev i, .optrow .pointer .ic, .pv0 .back .ic, .go .down .ic, .go .dbtn, .dsteps li.on, .bar .track i { animation: none !important; }
   .chev i { opacity: .8; }
 }
+/* 下見の仕入れの表（円は「円」付き・右揃え） */
+.buyt { width: 100%; border-collapse: collapse; margin: 10px 0 4px; font-size: 14px; }
+.buyt th { font-size: 12px; font-weight: normal; color: var(--mute); text-align: right; padding: 2px 6px; border-bottom: 1px solid var(--line); }
+.buyt th:first-child, .buyt td:first-child { text-align: left; }
+.buyt td { text-align: right; padding: 5px 6px; font-variant-numeric: tabular-nums; }
+.buyt .sn { display: inline-flex; gap: 6px; align-items: center; }
+.buyt tfoot td { border-top: 1.5px solid var(--ink); font-weight: bold; font-size: 15px; }
+.rfold { margin-top: 10px; color: var(--mute); }

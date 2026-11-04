@@ -503,14 +503,18 @@ def tally(f) -> dict:
             hit["ordered"] += a["quantity"]
             hit["secured"] += a["secured_after"]
             hit["short"] += a["short_after"]
-        buys = [dict(seller=r["seller"], quantity=r["quantity"]) for r in n.get("rows") or []] or \
-            ([dict(seller=n["purchase"]["seller"], quantity=n["purchase"]["quantity"])] if n["purchase"] else [])
+        buys = [dict(seller=r["seller"], quantity=r["quantity"], unit_price_yen=r["unit_price_yen"], amount_yen=r["amount_yen"]) for r in n.get("rows") or []] or \
+            ([dict(seller=n["purchase"]["seller"], quantity=n["purchase"]["quantity"], unit_price_yen=n["purchase"]["unit_price_yen"],
+                   amount_yen=n["purchase"]["quantity"] * n["purchase"]["unit_price_yen"])] if n["purchase"] else [])
         options.append(dict(option_id=o["option_id"], code=o["code"], no=no, label=label, short_after=short_after, rows=n.get("rows") or [],
-                            alloc=alloc, buys=buys,
+                            alloc=alloc, buys=buys, purchase_yen=n["purchase_yen"],
                             note=("この案では足りない：" + "・".join(f"{s['shop']} {s['quantity']}{u}" for s in short_after)) if short_after else "全部の注文がそろう"))
     held_text = "・".join(f"{h['name']} {h['quantity']}{u}" for h in held)
-    line = (f"注文は合わせて {total}{u}。登録済み {registered}{u}・仮押さえ {held_total}{u}" + (f"（{held_text}）" if held else "") +
-            (f"で、あと {left}{u}足りません。" if left else "で、数はそろっています。"))
+    have = "・".join(x for x in ((f"{registered}{u}を登録済み" if registered else ""),
+                                  (f"{held_total}{u}を仮押さえ" + (f"（{held_text}）" if held else "") if held_total else "")) if x)
+    line = f"{total}{u}の注文に対し、" + (have if have else "まだ確保はありません") + "。" + (f"あと {left}{u}不足。" if left else "数はそろっています。")
+    if left and options:   # 案との関係：全部の案の不足（コードの計算）から言う
+        line += ("どの案でも、どこかの店が欠けます。" if all(o["short_after"] for o in options) else "全部そろう案もあります。")
     told = bool(f["presents"]) and bool(json.loads(f["presents"][-1]["layout_json"] or "{}").get("all_holds_missing"))
     unused_text = ("・".join(f"{h['name']}の {h['quantity']}{u}" for h in unused) + "（仮押さえ）は、どの案にも入っていません。" +
                    ("仮押さえを全部使う案が無いことを、AI に伝えました。" if told else "")) if unused else None
@@ -696,7 +700,7 @@ def _choice_words(f, c, action, needs_president) -> tuple[str, str, str]:
     buys = "・".join(f"{b['seller']} {b['quantity']}{u}" for b in c["buys"])
     if needs_president:
         return title, "この案を社長に確かめる", "社長に確認を送ります。社長が承認するまで、何も登録しません。"
-    return title, "この配分で購入を承認する", f"{buys}の買い付けを登録します（購入の確定）。"
+    return title, "この配分で購入を承認する", f"{buys}（合計 {_yen(c['purchase_yen'])}）の買い付けを登録します（購入の確定）。"
 
 
 def _choices(f, tl):
@@ -719,7 +723,7 @@ def _choices(f, tl):
             title, confirm, effect = _choice_words(f, c, o["action"], pv["needs"])
             acts.append(dict(id=f"opt{o['option_id']}", label=("社長に確かめる：" + label) if pv["needs"] else label,
                              kind="primary" if o["recommended"] else "secondary", recommended=o["recommended"], short_after=c["short_after"],
-                             note="・".join(tags), title=title, confirm=confirm, effect=effect, alloc=c["alloc"], buys=c["buys"],
+                             note="・".join(tags), title=title, confirm=confirm, effect=effect, alloc=c["alloc"], buys=c["buys"], purchase_yen=c["purchase_yen"],
                              choice="reject" if o["action"] != "approve" else ("president" if pv["needs"] else "approve"),
                              api=dict(path="/api/decide", body=dict(case_id=cur["case"]["id"], option_id=o["option_id"] if o["action"] == "approve" else None,
                                                                     action=o["action"], fingerprint=o["fingerprint"] if o["action"] == "approve" else None,

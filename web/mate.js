@@ -321,7 +321,8 @@
   // ═════ 判断のブロック（SAL 2026-11-04 §2・§3／デイブ「関連性・重要度・操作の方法を分かりやすく、矢印を動かす」）═════
   // ① 案を選ぶ（画面の下見だけ・サーバーには書かない）→ ② 配分を確かめる（右に店ごとの確保と不足）→ ③ 承認のボタンで初めて登録（既存の処理）。
   // AI のおすすめは★の札で示し、選択中（丸の印と枠）とは別の形にする。社長の確認が要る案は、承認のボタンが「社長に確かめる」になる
-  let SEL = null;
+  let SEL = null, RFOLD = false;
+  const yen = (v) => (v == null ? "" : `${Number(v).toLocaleString("ja-JP")}円`);
   function decideHTML(acts) {
     const u = esc((V.item && V.item.unit) || "");
     const opts = acts.filter((a) => String(a.id).startsWith("opt"));
@@ -347,11 +348,14 @@
     if (!sel) {
       pv = `<div class="pv0"><span class="back">${icon("arrow-right")}</span><div><b>左の案を選ぶと、ここに配分を下見します。</b><small>選んでも、まだ何も登録しません。</small></div></div>`;
     } else {
+      const most = Math.max(1, ...(sel.alloc || []).map((x) => x.ordered));
       const bars = (sel.alloc || []).map((x) => `<div class="bar"><span class="nm">${esc(x.shop)}</span>
-        <span class="track"><i style="width:${x.ordered ? Math.round((x.secured / x.ordered) * 100) : 0}%"></i></span>
+        <span class="lane"><span class="track" style="width:${(x.ordered / most) * 100}%"><i style="width:${x.ordered ? (x.secured / x.ordered) * 100 : 0}%"></i></span></span>
         <span class="q">${x.secured} / ${x.ordered}${u}</span><span class="st ${x.short ? "short" : "ok"}">${x.short ? `${x.short}${u} 足りない` : "確保"}</span></div>`).join("");
       pv = `<div class="pvh"><small>② 下見（まだ登録していません）</small><b>${esc(sel.title)}</b></div>
-        ${(sel.buys || []).length ? `<div class="pvs">${icon("ship")}仕入れ：${sel.buys.map((b) => `${esc(b.seller)} ${b.quantity}${u}`).join("・")}</div>` : ""}
+        ${(sel.buys || []).length ? `<table class="buyt"><thead><tr><th>仕入先</th><th>数量</th><th>単価</th><th>金額</th></tr></thead><tbody>` +
+          sel.buys.map((b) => `<tr><td><span class="sn">${icon("ship")}${esc(b.seller)}</span></td><td>${b.quantity}${u}</td><td>${yen(b.unit_price_yen)}</td><td>${yen(b.amount_yen)}</td></tr>`).join("") +
+          `</tbody><tfoot><tr><td colspan="3">合計</td><td>${yen(sel.purchase_yen)}</td></tr></tfoot></table>` : ""}
         <div class="bars">${bars}</div>
         <div class="eff">${icon(sel.choice === "president" ? "user-round" : sel.choice === "reject" ? "x" : "stamp")}押すと：${esc(sel.effect)}</div>
         <div class="go"><span class="down" aria-hidden="true">${icon("arrow-right")}</span>
@@ -359,8 +363,11 @@
           <button class="linkbtn" data-unpick="1">選び直す</button></div>`;
     }
     return `<div class="decide" data-at="${at}">
-      <div class="dk">${icon("hand")}あなたに決めてほしいこと</div>
-      <div class="dq">${sel ? "右の下見を確かめて、③ のボタンを押してください。押すまで、何も登録しません。" : `どの分け方で買うか、選んでください。${rec ? `おすすめは「${esc(rec.title || rec.label)}」です。` : ""}`}</div>
+      <div class="dk">${icon("hand")}配分について、あなたの判断を待っています</div>
+      <div class="dq">${!sel ? `${rec ? `私のおすすめは「${esc(rec.title || rec.label)}」です。` : ""}どの分け方にするか、選んでください。`
+        : sel.choice === "president" ? `${esc(sel.title)}案です。社長の確認が要る案なので、よければ私が社長に確かめます。`
+        : sel.choice === "reject" ? "今回は仕入れを見送る案です。よければ見送ります。仮押さえは手放します。"
+        : `${esc(sel.title)}案です。内容を確認して、よければ購入を承認してください。`}</div>
       <ol class="dsteps">${step(1, "案を選ぶ", "まだ何も登録しません")}${chev}${step(2, "配分を確かめる", "右に下見が出ます")}${chev}${step(3, "承認する", "ここで初めて登録します")}</ol>
       <div class="dgrid"><div class="opts">${opts.map(card).join("")}</div><div class="pv ${sel ? "on" : ""}">${pv}</div></div></div>`;
   }
@@ -378,6 +385,11 @@
       return;
     }
     const mine = ROLE !== "president" || (r && r.at === ownAt);   // 社長の画面には、社長自身の操作の受領だけを出す
+    const deciding = V.exec === "your_turn" && (V.actions || []).some((a) => String(a.id).startsWith("opt"));
+    if (r && mine && deciding && r.at !== ownAt) {
+      setHTML("receipt", `<button class="linkbtn rfold" data-rfold="1">${icon("chevron-down")}${RFOLD ? "これまでの受け取りを閉じる" : `これまでの受け取りを見る（${esc(r.at_shown || hm(r.at))}）`}</button>` + (RFOLD ? receiptHTML(r) : ""));
+      return;
+    }
     setHTML("receipt", r && mine ? receiptHTML(r) : "");
   }
   function receiptHTML(r) {
@@ -519,6 +531,7 @@
       document.querySelectorAll("#acts .dbtn").forEach((x) => (x.disabled = false));
     }
   });
+  $("receipt").addEventListener("click", (e) => { if (e.target.closest("[data-rfold]")) { RFOLD = !RFOLD; drawReceipt(); } });
   $("bandothers").addEventListener("click", (e) => {
     const b = e.target.closest("button[data-item]");
     if (b) location.search = `?item=${encodeURIComponent(b.dataset.item)}` + (ROLE === "president" ? "&role=president" : "");
