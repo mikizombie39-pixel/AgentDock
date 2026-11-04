@@ -52,7 +52,7 @@ TALOS_PORTS = range(8772, 8778)
 MAX_BODY = 16 * 1024
 WEB = (REPO / "web").resolve()
 TYPES = {".html": "text/html; charset=utf-8", ".css": "text/css; charset=utf-8", ".js": "text/javascript; charset=utf-8",
-         ".png": "image/png"}   # ロゴ（web/ の直下だけ）
+         ".png": "image/png", ".ico": "image/x-icon"}   # ロゴとファビコン（web/ の直下だけ）
 WORKER: live.Worker | None = None
 CHAT = None          # チャットの呼び出し先（--real の時は本物の Claude・ほかは模擬の Claude）
 CHAT_KIND = "mock"
