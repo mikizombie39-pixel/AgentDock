@@ -880,6 +880,20 @@ def _open_orders(owner: str, item: str) -> list[dict]:
         c.close()
 
 
+def _approved_by(owner: str, p: dict) -> str:
+    """登録した取引を、誰がどの案で決めたか（登録の前に proposal に書かれる・2026-11-04 通し：AI が社長の承認を知らずに動いた）。"""
+    con = db.connect(owner)
+    try:
+        r = con.execute("SELECT p.decided_by, o.label FROM proposal p LEFT JOIN board_option o ON o.id = p.option_id "
+                        "WHERE p.case_id = ? AND p.decided_by IS NOT NULL ORDER BY p.id DESC LIMIT 1", (p["case_id"],)).fetchone()
+    finally:
+        con.close()
+    if r is None:
+        return ""
+    who = {"staff": "担当者", "president": "社長（網谷さん）"}.get(r["decided_by"], r["decided_by"])
+    return f"{who}が案「{r['label']}」を承認しました（人の決定。覆さないでください）。" if r["label"] else f"{who}が承認しました（人の決定。覆さないでください）。"
+
+
 def _spare_lines(owner: str, item: str) -> str:
     """引当のない在庫の文（コードが DB から書く）。無ければ空。"""
     c = db.connect(owner)
@@ -956,7 +970,7 @@ def situation(owner: str, event: dict, on_date: str) -> tuple[str, str]:
         left = [o for o in _open_orders(owner, item) if o["remaining"] > 0]
         spare = _spare_lines(owner, item)
         failed = p.get("failed") or []
-        head = (f"出来事：取引を登録しました（案件 {p['case_id']}・{', '.join(p.get('trades') or [])}）。" +
+        head = (f"出来事：取引を登録しました（案件 {p['case_id']}・{', '.join(p.get('trades') or [])}）。" + _approved_by(owner, p) +
                 ("登録できなかった行：" + "・".join(f"{f['seller_name']} {f['quantity']}（{f['reason']}）" for f in failed) +
                  "。この行の分は足りないままです。" if failed else "") +
                 ("満たしていない注文：" + "・".join(f"{o['customer']} {o['quantity']}{o['unit']}（注文 {o['order_id']}）のうち {o['remaining']}{o['unit']}" for o in left) +

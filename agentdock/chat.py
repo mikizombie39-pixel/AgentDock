@@ -68,6 +68,32 @@ def _hm(ts) -> str | None:
 
 # ── 業務の状態（業務 DB からコードが書く。Vault は使わない）────────────────────────
 
+WHO = {"staff": "担当者", "president": "社長（網谷さん）"}
+
+
+def _decisions(owner: str, item_code: str) -> list[dict]:
+    """この品目の案件の決定を、起きた順に文にする（コードが書く文・数は書かない）。"""
+    con = db.connect(owner)
+    try:
+        rows = con.execute("SELECT c.id, c.at, c.actor, c.action, c.result, c.detail, o.label FROM case_decision c JOIN deal_case d ON d.id = c.case_id "
+                           "JOIN item i ON i.id = d.item_id LEFT JOIN board_option o ON o.id = c.option_id WHERE i.code = ? ORDER BY c.id", (item_code,)).fetchall()
+    finally:
+        con.close()
+    out = []
+    for r in rows:
+        who, opt = WHO.get(r["actor"], r["actor"]), f"案「{r['label']}」" if r["label"] else "案"
+        reason = (json.loads(r["detail"] or "{}").get("reason") or "").strip()
+        text = {("approve", "registered"): f"{who}が{opt}を承認し、取引を登録しました",
+                ("approve", "partial"): f"{who}が{opt}を承認し、取引の一部を登録しました",
+                ("approve", "needs_president"): f"{who}が{opt}を選び、社長の確認に送りました",
+                ("approve", "stale"): f"{who}が{opt}を承認しましたが、案が古くなっていたため登録しませんでした",
+                ("reject", "rejected"): f"{who}が案を見送り、仮押さえを手放しました",
+                ("return", "returned"): f"{who}が{opt}を差し戻しました" + (f"（理由：{reason}）" if reason else ""),
+                ("hold", "held"): f"{who}が案を保留しました"}.get((r["action"], r["result"]), f"{who}の操作：{r['action']}（結果 {r['result']}）")
+        out.append(dict(id=r["id"], at=r["at"], text=text))
+    return out
+
+
 def work_state(owner: str, item: str, on_date: str = sc.DEMO_DATE) -> dict:
     """今の仕事の事実と、今の画面の操作。各事実に ref（根拠の識別子）・種類・文・記録の時刻を付ける。"""
     f = mate.facts(owner, item, on_date)
@@ -126,6 +152,8 @@ def work_state(owner: str, item: str, on_date: str = sc.DEMO_DATE) -> dict:
         d = f["delegation"]
         add(f"delegation:{d['id']}", "record", "担当者が AI に任せた範囲：" + "・".join(sc.DELEGATION_SCOPES.get(s, s) for s in json.loads(d["scope_json"])),
             d["granted_at"], dict(db="owner", table="delegation", id=d["id"]))
+    for x in _decisions(owner, f["item"]["code"]):   # 案件の決定（誰がどの案をどうしたか）。無いと「記録では確認できません」と答える（2026-11-04 通し）
+        add(f"case_decision:{x['id']}", "record", x["text"], x["at"], dict(db="owner", table="case_decision", id=x["id"]))
     cur = f["cur"]
     cmp_rows = []
     for o in cur.get("options") or []:

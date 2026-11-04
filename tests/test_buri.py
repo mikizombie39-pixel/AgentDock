@@ -532,5 +532,50 @@ class DraftStaleTest(Base):
         self.assertEqual(self.status(later)[0], "draft")
 
 
+class DecisionFactsTest(Base):
+    """チャットに渡す業務の記録に、案件の決定（誰がどの案をどうしたか）を入れる（2026-11-04 本物の Claude の通し：
+    社長が案 B を承認したのに、記録に無いので「理由は記録では確認できません」と答えた）。"""
+
+    def decisions(self):
+        from agentdock import chat
+        return [x for x in chat.work_state("amiya", "buri_xl")["facts"] if x["ref"].startswith("case_decision:")]
+
+    def test_the_staff_send_and_the_president_registration_are_in_the_facts(self):
+        no_directive()
+        a = next(o for o in view()["options"] if o["code"] == "A")
+        deal.decide("amiya", self.case, a["id"], "approve", a["fingerprint"], "s1")
+        deal.decide("amiya", self.case, a["id"], "approve", a["fingerprint"], "p1", actor="president")
+        d = self.decisions()
+        self.assertEqual([x["type"] for x in d], ["record", "record"])
+        self.assertIn("担当者が案「漁協から 6本、スーパーに 4本・料亭に 2本」を選び、社長の確認に送りました", d[0]["text"])
+        self.assertIn("社長（網谷さん）が案「漁協から 6本、スーパーに 4本・料亭に 2本」を承認し、取引を登録しました", d[1]["text"])
+        self.assertTrue(all(x["at"] for x in d))
+
+    def test_a_return_carries_the_president_reason(self):
+        no_directive()
+        a = next(o for o in view()["options"] if o["code"] == "A")
+        deal.decide("amiya", self.case, a["id"], "approve", a["fingerprint"], "s1")
+        deal.decide("amiya", self.case, a["id"], "return", None, "p1", actor="president", reason="スーパーの 4本を先に確保して")
+        self.assertIn("社長（網谷さん）が案「漁協から 6本、スーパーに 4本・料亭に 2本」を差し戻しました（理由：スーパーの 4本を先に確保して）",
+                      self.decisions()[-1]["text"])
+
+    def test_the_ai_wakes_to_a_registration_knowing_who_approved(self):
+        no_directive()
+        a = next(o for o in view()["options"] if o["code"] == "A")
+        deal.decide("amiya", self.case, a["id"], "approve", a["fingerprint"], "s1")
+        deal.decide("amiya", self.case, a["id"], "approve", a["fingerprint"], "p1", actor="president")
+        c = db.connect("amiya")
+        try:
+            ev = events.pending(c, ["trade_registered"])[-1]
+        finally:
+            c.close()
+        prompt, _ = agents.situation("amiya", ev, D)
+        self.assertIn("社長（網谷さん）が案「漁協から 6本、スーパーに 4本・料亭に 2本」を承認しました", prompt)
+
+    def test_a_rejection_is_in_the_facts(self):
+        deal.decide("amiya", self.case, None, "reject", None, "r1")
+        self.assertIn("担当者が案を見送り、仮押さえを手放しました", self.decisions()[-1]["text"])
+
+
 if __name__ == "__main__":
     unittest.main()
