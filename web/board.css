@@ -140,3 +140,4 @@ button:disabled { cursor: default; opacity: .45; }
 .drow { padding: 10px 0; border-bottom: 1px solid #EEE7DA; font-size: 14px; }
 .drow .t { color: var(--mute); font-size: 12px; }
 #verifylink { position: absolute; right: 24px; top: 70px; font-size: 11px; color: var(--mute); }
+.adlogo { display: block; flex: none; height: 40px; width: auto; }   /* 向かい合う魚のロゴ（SAL 2026-11-04） */

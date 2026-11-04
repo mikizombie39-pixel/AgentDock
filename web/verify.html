@@ -5,7 +5,7 @@
 <title>Agent Dock — 技術の検証</title>
 <style>
   body { font-family: "BIZ UDPGothic", "Yu Gothic UI", sans-serif; background: #F3EEE3; color: #27221D; margin: 20px 28px; font-size: 13px; }
-  h1 { font-size: 20px; margin: 0 0 4px; } h2 { font-size: 15px; margin: 22px 0 6px; border-left: 4px solid #1D6670; padding-left: 8px; }
+  h1 { font-size: 20px; margin: 0 0 4px; } .adlogo { display: block; flex: none; height: 40px; width: auto; } h2 { font-size: 15px; margin: 22px 0 6px; border-left: 4px solid #1D6670; padding-left: 8px; }
   .note { color: #6B6156; } table { border-collapse: collapse; width: 100%; background: #FBF8F1; }
   td, th { border: 1px solid #D8CFBF; padding: 4px 7px; vertical-align: top; text-align: left; }
   th { background: #EFE8DA; font-weight: normal; color: #6B6156; }
@@ -17,7 +17,7 @@
 </style>
 </head>
 <body>
-<h1>技術の検証（Agent Dock）</h1>
+<h1 style="display:flex;align-items:center;gap:16px"><img class="adlogo" src="agentdock-logo.png" alt="Agent Dock　水産業に、新しい仲間を。" width="256" height="40">技術の検証</h1>
 <div class="note">Claude の起動と道具の呼び出し、市場の取引帳簿の API と登録の結果、帳簿の照合、費用を、DB の記録から表示します。
   市場の取引帳簿と API は会期中に新しく作った部品です（既存の業務システムへの接続は今回は行っていません）。</div>
 <div class="bar">

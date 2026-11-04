@@ -173,3 +173,4 @@ body[data-view="evidence"] #nowview { display: none !important; }
 @media (prefers-reduced-motion: reduce) {
   .card, .leftover { transition: opacity .15s linear; }
 }
+.adlogo { display: block; flex: none; height: 40px; width: auto; }   /* 向かい合う魚のロゴ（SAL 2026-11-04） */

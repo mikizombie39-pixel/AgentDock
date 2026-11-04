@@ -91,3 +91,4 @@ svg text { font-family: inherit; }
 .ctl button { font: inherit; font-size: 13px; padding: 5px 12px; border: 1px solid var(--line); border-radius: 6px; background: var(--sf); color: var(--ink); cursor: pointer; }
 
 @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
+.adlogo { display: block; flex: none; height: 44px; width: auto; }   /* 向かい合う魚のロゴ（SAL 2026-11-04） */
