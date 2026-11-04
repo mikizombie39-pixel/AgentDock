@@ -22,6 +22,7 @@
 """
 import datetime
 import json
+import re
 
 from agentdock import agents, authority, consult, criteria, db, market, work
 from agentdock.seed import scenario as sc
@@ -114,7 +115,7 @@ def facts(owner: str, item: str, on_date: str = sc.DEMO_DATE, worker_error: str 
         msgs = [dict(r) for r in m.execute("SELECT * FROM network_message WHERE (from_owner = ? OR to_owner = ?) AND item_code = ? AND trade_date = ? ORDER BY id",
                                            (owner, owner, item, on_date))]
         for x in msgs:
-            x["terms"] = [dict(t) for t in m.execute("SELECT id, quantity, unit_price_yen, valid_until, status FROM offer_term WHERE message_id = ? ORDER BY id",
+            x["terms"] = [dict(t) for t in m.execute("SELECT id, quantity, unit_price_yen, valid_until, status, hold_ref FROM offer_term WHERE message_id = ? ORDER BY id",
                                                      (x["id"],))]
     finally:
         m.close()
@@ -291,15 +292,60 @@ def _orders_phrase(f, orders=None) -> str:
     return "・".join(f"{o['shop']} {o['quantity']}{u}" for o in (orders if orders is not None else f["orders"]))
 
 
+DIGITS = re.compile(r"[0-9０-９]")
+
+
 def _ai_question(f):
-    """今の版の AI の短い問い（AI が書いた文・記録の番号つき）。"""
+    """今の版の AI の短い問い（AI が書いた文・記録の番号つき）。
+    数字を含む AI の文は画面の語りかけに使わない（取引の整合性：金額と数量はコードが業務 DB から出す）。
+    使わなかった時は (None, 使わなかった文と記録の番号) を返し、理由の1枚に出所を残す。"""
     cur = f["cur"]
     if cur.get("waiting_for") != "staff" or not f["presents"]:
-        return None
+        return None, None
     t = f["presents"][-1]
     lay = json.loads(t["layout_json"] or "{}")
     q = lay.get("short_question") or lay.get("ask_human")
-    return _said(q, "ai", dict(db="owner", table="workspace_turn", id=t["id"])) if q else None
+    if not q:
+        return None, None
+    ref = dict(db="owner", table="workspace_turn", id=t["id"])
+    if DIGITS.search(q):
+        return None, dict(text=q, ref=ref, reason="数字を含む AI の文は使わず、コードの計算の文に替えました")
+    return _said(q, "ai", ref), None
+
+
+def tally(f) -> dict:
+    """画面に出す数の元。見出し・下の行・案のボタン・理由の1枚は、全部これから出す（同じ計算）。
+    確保済み＝登録した在庫の引当／仮押さえ＝相手が期限つきで押さえた条件（返事ごとに1件・どの注文に回すかは人の決定まで未定）／
+    返事だけ＝条件の返事はあるが押さえの無い条件"""
+    u = f["item"]["unit"]
+    total = sum(o["quantity"] for o in f["orders"])
+    registered = sum(o["registered"] for o in f["orders"])
+    held = [dict(seller=h["seller"], name=h["seller_name"], quantity=h["quantity"], unit_price_yen=h["unit_price_yen"], term_id=h["term_id"])
+            for h in f["holds"]]
+    held_ids = {h["term_id"] for h in held}
+    held_msgs = {x["id"] for x in f["messages"] for t in x["terms"] if t["id"] in held_ids}
+    reply_only = [dict(name=sc.OWNERS[x["from_owner"]]["name"], quantity=t["quantity"], unit_price_yen=t["unit_price_yen"])
+                  for x in f["messages"] if x["to_owner"] == f["owner"] and x["kind"] == "offer" and x["id"] not in held_msgs
+                  for t in x["terms"] if t["status"] == "offered" and not t["hold_ref"]]
+    held_total = sum(h["quantity"] for h in held)
+    left = max(0, total - registered - held_total)
+    shops = {o["customer"]: o["shop"] for o in f["orders"]}
+    options = []
+    for o in f["cur"].get("options") or []:
+        n = o["numbers"]
+        if n["purchase"]:
+            p = n["purchase"]
+            label = f"{p['seller']} {p['quantity']}{u}：" + "・".join(f"{shops.get(l['to'], l['to'])} {l['quantity']}{u}" for l in n["lines"])
+        else:
+            label = "見送る（仕入れない）"
+        short_after = [dict(shop=shops.get(a["customer"], a["customer"]), quantity=a["short_after"]) for a in o["after"] if a["short_after"] > 0]
+        options.append(dict(option_id=o["option_id"], code=o["code"], label=label, short_after=short_after,
+                            note=("この案では足りない：" + "・".join(f"{s['shop']} {s['quantity']}{u}" for s in short_after)) if short_after else "全部の注文がそろう"))
+    held_text = "・".join(f"{h['name']} {h['quantity']}{u}" for h in held)
+    line = (f"注文は合わせて {total}{u}。登録済み {registered}{u}・仮押さえ {held_total}{u}" + (f"（{held_text}）" if held else "") +
+            (f"で、あと {left}{u}足りません。" if left else "で、数はそろっています。"))
+    return dict(total=total, registered=registered, held=held, held_total=held_total, reply_only=reply_only, left=left,
+                options=options, line=line, unit=u)
 
 
 def _counterparts(f) -> list[str]:
@@ -326,9 +372,10 @@ def view(owner: str, item: str, on_date: str = sc.DEMO_DATE, worker_error: str |
     cur = f["cur"]
     short = _short_total(f)
     head, sub, ask, actions = None, [], None, []
-    aiq = _ai_question(f)
+    aiq, replaced = _ai_question(f)
     mid = _mid_orders(f)
     sup = _suppliers(f)
+    tl = tally(f)
 
     if ex == "before_start":
         vol = order_volume(owner, on_date)
@@ -349,15 +396,13 @@ def view(owner: str, item: str, on_date: str = sc.DEMO_DATE, worker_error: str |
         sub = [_said("・".join(why) + "。" if why else "社長の判断が要る案です。"), _said("答えが来たら続けます。待つ間、ほかの仕事を進めてかまいません。")]
         ask = _said("今は、あなたが答える仕事ではありません。")
     elif st == "careful":
-        if aiq:
-            head = aiq
+        if ex == "your_turn":   # 相談の見出しはコードの文。数字を含まない AI の文だけを使う
+            head = aiq or _said(f"{'・'.join(o['shop'] for o in mid)}の追加注文で、魚が足りません。どう分けますか" if mid else "条件が変わりました。どう進めますか")
         else:
             head = _said("待ってください。確認し直します。")
         if mid:
             sub.append(_said("・".join(f"{o['shop']}から追加の注文 {o['quantity']}{u}" for o in mid) + "が入りました。"))
-            total = sum(o["quantity"] for o in f["orders"])
-            held = "・".join(f"{h['seller_name']} {h['quantity']}{u}" for h in f["holds"])
-            sub.append(_said(f"注文は合わせて {total}{u}です。" + (f"押さえているのは {held}です。" if held else "まだ押さえている魚はありません。")))
+            sub.append(_said(tl["line"], "calc"))
         elif refs.get("changed_by"):
             sub.append(_said("あなたの答えで条件が変わったので、相手に問い合わせ直します。"))
     elif st == "sorry":
@@ -382,7 +427,9 @@ def view(owner: str, item: str, on_date: str = sc.DEMO_DATE, worker_error: str |
         head = _said(f"{name}はそろいました。")
         sub = [_said(f"{_orders_phrase(f)}を登録しました。")]
     elif ex == "your_turn":
-        head = aiq or _said("相談させてください。")
+        head = aiq or _said("どう進めるか、決めてください。")
+        if cur.get("waiting_for") == "staff":
+            sub.append(_said(tl["line"], "calc"))
     elif ex == "running":
         waiting = [n for c, n in sup.items() if any(x["to_owner"] == c and x["from_owner"] == owner for x in f["messages"])]
         head = _said("買い付けの照会は私が進めます。")
@@ -395,7 +442,7 @@ def view(owner: str, item: str, on_date: str = sc.DEMO_DATE, worker_error: str |
 
     # 人に求める行動（同じ返り値から）
     if ex == "your_turn":
-        actions, ask = _choices(f, aiq)
+        actions, ask = _choices(f, tl)
     elif st == "relief" and ex != "your_turn" and short == 0 and ex not in ("president", "stopped"):
         ask = _said("登録の前に、内容を確かめてください。")
     if ex in ("running", "idle") and not actions:
@@ -414,12 +461,13 @@ def view(owner: str, item: str, on_date: str = sc.DEMO_DATE, worker_error: str |
     if ex == "president":
         p = cur.get("pending") or {}
         o = next((x for x in cur.get("options") or [] if x["option_id"] == p.get("option_id")), None)
+        ol = next((x for x in tl["options"] if x["option_id"] == p.get("option_id")), None)
         pres = dict(kind=p.get("kind"), case_id=cur["case"]["id"], option_id=p.get("option_id"), fingerprint=o["fingerprint"] if o else None,
-                    label=o["label"] if o else None, consultation_id=p.get("consultation_id"), change=p.get("change"),
+                    label=ol["label"] if ol else None, note=ol["note"] if ol else None, consultation_id=p.get("consultation_id"), change=p.get("change"),
                     priority_change=p.get("priority_change"), over_limit=p.get("over_limit"), asked_by=p.get("asked_by"))
     return dict(owner=owner, item=f["item"], subject=subject(f), stance=st, stance_label=STANCE_LABEL.get(st), rule=rule, refs=refs,
                 exec=ex, exec_label=EXEC_LABEL[ex], stop=stop, who=who, headline=head, sub=sub, ask=ask, actions=actions,
-                why=why_card(f, st, ex, head), receipt=_fresh_receipt(f), taken=taken(f, ex), others=others(owner, item, on_date),
+                why=why_card(f, st, ex, head, tl, replaced), receipt=_fresh_receipt(f), tally=tl, taken=taken(f, ex), others=others(owner, item, on_date),
                 orgs=list(orgs.values()), net=net, op=_op(f, ex), president=pres, busy=_running(f) is not None)
 
 
@@ -437,21 +485,26 @@ def _directive_shop(f):
     return (d["shop_name"] or d["customer"]) if d else None
 
 
-def _choices(f, aiq):
-    """あなたの判断待ちの時のボタン。社長の確認が要る案は「社長に確かめる」にする（新人に決めさせない）。"""
+def _choices(f, tl):
+    """あなたの判断待ちの時のボタン。案の名前と数はコードの計算（tally）から書く（AI の案の名前の数字は使わない）。
+    社長の確認が要る案は「社長に確かめる」にする（新人に決めさせない）。"""
     cur = f["cur"]
     acts = []
     if cur.get("waiting_for") == "staff":
+        by_id = {x["option_id"]: x for x in tl["options"]}
         for o in cur.get("options") or []:
             pv = option_needs_president(f["owner"], cur["case"]["id"], o["option_id"]) if o["action"] == "approve" else dict(needs=False)
-            label = o["label"]
+            c = by_id[o["option_id"]]
+            label = c["label"]
             if o["action"] == "approve" and not o["executable"]:
                 acts.append(dict(id=f"opt{o['option_id']}", label=label, kind="off", disabled=True,
                                  note="実行できません：" + "・".join(o["numbers"]["errors"])))
                 continue
+            tags = [t for t in ("社長の確認が要る案" if pv["needs"] else "", "AI の勧め" if o["recommended"] and not pv["needs"] else "",
+                                c["note"] if o["action"] == "approve" else "") if t]
             acts.append(dict(id=f"opt{o['option_id']}", label=("社長に確かめる：" + label) if pv["needs"] else label,
-                             kind="primary" if o["recommended"] else "secondary", recommended=o["recommended"],
-                             note=("社長の確認が要る案です" if pv["needs"] else ("AI の勧め" if o["recommended"] else "")),
+                             kind="primary" if o["recommended"] else "secondary", recommended=o["recommended"], short_after=c["short_after"],
+                             note="・".join(tags),
                              api=dict(path="/api/decide", body=dict(case_id=cur["case"]["id"], option_id=o["option_id"] if o["action"] == "approve" else None,
                                                                     action=o["action"], fingerprint=o["fingerprint"] if o["action"] == "approve" else None,
                                                                     actor="staff")),
@@ -480,12 +533,21 @@ ORIGIN_LABEL = {"reply": "相手から届いた回答", "calc": "コードの計
                 "directive": "社長の指示（記録）", "record": "業務の記録", "ai": "AI が書いた文", "code": "コードの決まった文"}
 
 
-def why_card(f, st, ex, head) -> dict:
+def why_card(f, st, ex, head, tl=None, replaced=None) -> dict:
     u = f["item"]["unit"]
     cur = f["cur"]
     ds = _directive_shop(f)
-    orders = [_row(f"{o['shop']}の注文 {o['quantity']}{u}" + (f"：確保 {o['secured']}{u}・あと {o['short']}{u}" if o["short"] else "：確保済み"),
+    tl = tl or tally(f)
+    # 数は全部 tally から（見出し・下の行・ボタンと同じ計算）
+    orders = [_row(f"{o['shop']}の注文 {o['quantity']}{u}：登録済み {o['registered']}{u}" +
+                   (f"・人の決定で回す仮押さえ {o['secured'] - o['registered']}{u}" if o["secured"] > o["registered"] else ""),
                    "record", o["received_at"], dict(db="owner", table="order_book", id=o["order_id"])) for o in f["orders"]]
+    if tl["held"]:
+        orders.append(_row("仮押さえ（相手が期限つきで押さえた分・どの注文に回すかは未定）：" + "・".join(f"{h['name']} {h['quantity']}{u}" for h in tl["held"]),
+                           "reply", None, dict(db="market", table="offer_term", id=tl["held"][0]["term_id"])))
+    if tl["reply_only"]:
+        orders.append(_row("返事だけ（押さえていない）：" + "・".join(f"{r['name']} {r['quantity']}{u}" for r in tl["reply_only"]), "reply"))
+    orders.append(_row(tl["line"], "calc"))
     dir_rows = [_row(f"「{d['body']}」（{d['issued_from']}から・{d['via']}）", "directive", d["received_at"],
                      dict(db="owner", table="directive", id=d["directive_id"])) for d in f["directives"]]
     staff = f["authority"].get("staff") or {}
@@ -501,8 +563,12 @@ def why_card(f, st, ex, head) -> dict:
         if x["kind"] == "decline":
             replies.append(_row(f"{who}：断り" + (f"（{x['reason']}）" if x["reason"] else ""), "reply", x["created_at"],
                                 dict(db="market", table="network_message", id=x["id"])))
+        held_ids = {h["term_id"] for h in tl["held"]}
         for t in x["terms"]:
-            state = {"offered": "押さえ中", "released": "下ろした", "confirmed": "確定", "expired": "期限切れ"}.get(t["status"], t["status"])
+            if t["status"] == "offered":
+                state = "仮押さえ" if t["id"] in held_ids else ("同じ返事の別の条件・どちらか一方" if t["hold_ref"] else "返事だけ・押さえなし")
+            else:
+                state = {"released": "下ろした", "confirmed": "確定", "expired": "期限切れ"}.get(t["status"], t["status"])
             replies.append(_row(f"{who}：{t['quantity']}{u} × {_yen(t['unit_price_yen'])}（{state}・期限 {t['valid_until'][11:16]}）", "reply",
                                 x["created_at"], dict(db="market", table="offer_term", id=t["id"])))
     asked = [_row(f"{sc.OWNERS[x['to_owner']]['name']}に照会：{x['quantity'] or ''}{u if x['quantity'] else ''}" +
@@ -517,12 +583,10 @@ def why_card(f, st, ex, head) -> dict:
         if o["ceiling_yen"]:
             calc.append(_row(f"{o['shop']}向けの仕入れ値の上限 {_yen(o['ceiling_yen'])}（売値 − 加工 − 確保する利益）", "calc"))
     opts = []
-    shops = {o["customer"]: o["shop"] for o in f["orders"]}
+    by_id = {x["option_id"]: x for x in tl["options"]}
     for o in cur.get("options") or []:
-        n = o["numbers"]
-        lines = "・".join(f"{l['to']} {l['quantity']}{u}" for l in n["lines"])
-        lines = "・".join(f"{shops.get(l['to'], l['to'])} {l['quantity']}{u}" for l in n["lines"])
-        opts.append(_row(f"案 {o['code']}「{o['label']}」：" + (f"仕入れ {_yen(n['purchase_yen'])}・" if n["purchase"] else "") + (lines or "仕入れない") +
+        n, c = o["numbers"], by_id[o["option_id"]]
+        opts.append(_row(f"案 {o['code']}：{c['label']}" + (f"（仕入れ {_yen(n['purchase_yen'])}）" if n["purchase"] else "") + f"・{c['note']}" +
                          ("" if o["executable"] else "（実行できません）"), "calc"))
     vault = [_row(f"{v['title']}（{v['author']}・{v['written_on']}）", "vault", None, dict(db="owner", table="vault_note", id=v["id"])) for v in f["vault"]]
     history = asked + [r for r in replies]
@@ -551,7 +615,7 @@ def why_card(f, st, ex, head) -> dict:
         elif st == "careful":
             lead = "注文や条件が変わったので、足りない数と相手の回答を確かめ直しています。"
         else:
-            lead = f"{'・'.join(o['shop'] + ' ' + str(o['short']) + u for o in f['orders'] if o['short'] > 0)}の足りない分をどうするか、あなたの判断が要ります。"
+            lead = f"注文の合計 {tl['total']}{u}に対して、あと {tl['left']}{u}足りません。どう分けるか、あなたの判断が要ります。"
         sections = [("足りない数と注文", orders), ("社長の指示と権限", dir_rows), ("相手の回答と値", replies), ("在庫", stock), ("案（コードの計算）", opts)]
         more = [("Vault の記録", vault), ("これまでのやり取り", asked)]
     elif st == "bold":
@@ -576,7 +640,7 @@ def why_card(f, st, ex, head) -> dict:
         more = [("在庫", stock), ("Vault の記録", vault)]
     keep = lambda xs: [dict(title=t, rows=r) for t, r in xs if r]   # noqa: E731
     return dict(lead=lead, sections=keep(sections), more=keep(more),
-                speech_origin=dict(origin=head["origin"], label=ORIGIN_LABEL[head["origin"]], ref=head["ref"]) if head else None,
+                speech_origin=dict(origin=head["origin"], label=ORIGIN_LABEL[head["origin"]], ref=head["ref"], replaced=replaced) if head else None,
                 origins=ORIGIN_LABEL)
 
 

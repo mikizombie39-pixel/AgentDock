@@ -28,6 +28,8 @@ button:disabled { cursor: default; opacity: .5; }
 .who .ic { width: 22px; height: 22px; color: var(--warm); margin-top: 4px; }
 .who small { display: block; font-size: 14px; color: var(--mute); }
 .who h1 { margin: 2px 0 0; font-size: 26px; }
+/* 見出しは文節で折り返し、行の長さをそろえる（1文字だけの行を作らない）。auto-phrase が効かない環境は balance だけ */
+.who h1, .propose h2, .checklist h2, #headline, .pop .lead, .subs p, .propose p, .ask b, .receipt div { text-wrap: balance; word-break: auto-phrase; line-break: strict; }
 hr.rule { border: 0; border-top: 1px solid var(--line); margin: 0 0 18px; }
 .mcols { display: grid; grid-template-columns: 250px 1fr; gap: 34px; }
 .side h3 { font-size: 14px; font-weight: normal; color: var(--mute); margin: 4px 0 12px; }

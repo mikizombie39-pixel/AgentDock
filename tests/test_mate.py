@@ -101,7 +101,7 @@ class StanceTest(Base):
     def test_careful_when_an_order_arrives_while_the_ai_works_then_settled_by_a_human_decision(self):
         self.start()
         self.worker.step()
-        self.add_ryotei()                                                    # 料亭 磯月の追加注文（AI が働き始めた後）
+        self.add_ryotei()                                                    # 順風満帆の追加注文（AI が働き始めた後）
         v = self.v()
         self.assertEqual((v["stance"], v["rule"]), ("careful", "注文や条件が変わった"))
         self.assertEqual(v["headline"]["text"], "待ってください。確認し直します。")
@@ -145,7 +145,7 @@ class StanceTest(Base):
         self.worker.step()
         self.add_ryotei()
         self.run_all()
-        a = self.option(self.v(), f"{RYOTEI}に6")                            # 料亭 6本・魚廣 0本 → 社長に確かめる
+        a = self.option(self.v(), f"：{RYOTEI} 6本")                            # 料亭 6本・魚廣 0本 → 社長に確かめる
         self.assertTrue(a["president"])
         self.assertTrue(a["label"].startswith("社長に確かめる："))
         time.sleep(1.05)
@@ -185,6 +185,72 @@ class StruggleTest(Base):
         self.assertEqual(v["why"]["sections"][0]["title"], "値と上限（コードの計算）")
 
 
+class NumbersTest(Base):
+    """相談の画面の数（見出し・下の行・案のボタン・理由の1枚）は、全部コードの同じ計算（mate.tally）から出る。
+    AI の文に食い違う数があっても、画面にはコードの数が出る（取引の整合性：金額と数量はコードが業務 DB から出す）。"""
+
+    def consult(self, lie=False):
+        orig = mockdock.Policy._present
+        if lie:   # 模擬の AI が、業務 DB と合わない数を文と案の名前に書く
+            def lying(policy, item, orders, terms):
+                name, inp = orig(policy, item, orders, terms)
+                inp = json.loads(json.dumps(inp, ensure_ascii=False))
+                inp["short_question"] = inp["ask_human"] = f"{RYOTEI}の追加で 3本足りません。どう分けますか"
+                for o in inp["options"]:
+                    if o["code"] != "E":
+                        o["short_label"], o["label"] = f"{SUPER}9・{RYOTEI}9", "漁協から 9本"
+                return name, inp
+            mockdock.Policy._present = lying
+        try:
+            self.start()
+            self.worker.step()
+            self.add_ryotei()
+            self.run_all()
+        finally:
+            mockdock.Policy._present = orig
+        v = self.v()
+        self.assertEqual((v["stance"], v["exec"]), ("careful", "your_turn"))
+        return v
+
+    def check_one_calculation(self, v):
+        t = v["tally"]
+        held = "・".join(f"{h['name']} {h['quantity']}本" for h in t["held"])
+        self.assertEqual((t["total"], t["registered"], t["held_total"], t["left"]), (10, 0, 8, 2))   # 漁協 6本（返事の2つの条件のうち押さえは1件）＋ B社 2本
+        self.assertEqual(held, "岩瀬漁協 6本・B社 2本")
+        line = f"注文は合わせて 10本。登録済み 0本・仮押さえ 8本（{held}）で、あと 2本足りません。"
+        self.assertEqual(t["line"], line)
+        self.assertIn(line, [s["text"] for s in v["sub"]])                                   # 下の行
+        rows = [r["text"] for s in v["why"]["sections"] for r in s["rows"]]
+        self.assertIn(line, rows)                                                            # 理由の1枚
+        self.assertIn(f"仮押さえ（相手が期限つきで押さえた分・どの注文に回すかは未定）：{held}", rows)
+        a = next(x for x in v["actions"] if x.get("recommended"))
+        self.assertEqual(a["label"], f"岩瀬漁協 6本：{SUPER} 4本・{RYOTEI} 2本")              # 案のボタン（案の配分から）
+        self.assertEqual(a["short_after"], [dict(shop=RYOTEI, quantity=4)])
+        self.assertIn(f"この案では足りない：{RYOTEI} 4本", a["note"])
+        self.assertTrue(any(r.startswith(f"案 A：岩瀬漁協 6本：{SUPER} 4本・{RYOTEI} 2本") and f"この案では足りない：{RYOTEI} 4本" in r for r in rows))
+        b = next(x for x in v["actions"] if x.get("president"))
+        self.assertEqual(b["label"], f"社長に確かめる：岩瀬漁協 6本：{RYOTEI} 6本")
+        texts = [v["headline"]["text"]] + [s["text"] for s in v["sub"]] + [x["label"] for x in v["actions"]] + [x.get("note") or "" for x in v["actions"]] + rows
+        for x in texts:
+            self.assertNotIn("9本", x)
+            self.assertNotIn(f"{SUPER}9", x)
+        return a
+
+    def test_the_numbers_on_the_consult_screen_come_from_one_calculation(self):
+        v = self.consult()
+        self.check_one_calculation(v)
+        self.assertEqual(v["headline"]["origin"], "ai")                                      # 数字の無い AI の文は使う（出所つき）
+        self.assertIsNone(v["why"]["speech_origin"]["replaced"])
+
+    def test_an_ai_text_with_numbers_that_do_not_match_is_replaced_by_the_code(self):
+        v = self.consult(lie=True)
+        self.check_one_calculation(v)
+        self.assertEqual(v["headline"], dict(text=f"{RYOTEI}の追加注文で、魚が足りません。どう分けますか", origin="code", ref=None))
+        r = v["why"]["speech_origin"]["replaced"]                                            # 使わなかった AI の文と、その記録の番号を残す
+        self.assertEqual((r["text"], r["ref"]["table"]), (f"{RYOTEI}の追加で 3本足りません。どう分けますか", "workspace_turn"))
+        self.assertNotIn("3本", " ".join([v["headline"]["text"]] + [s["text"] for s in v["sub"]]))
+
+
 class MorningTest(Base):
     def test_before_start_greets_and_lists_todays_work_by_the_rule(self):
         v = self.v()
@@ -207,7 +273,7 @@ class MorningTest(Base):
         self.run_all()
         keys = [j["key"] for j in mate.morning("amiya")["jobs"]]
         self.assertEqual(keys[0], "ask:buri_xl")
-        a = self.option(self.v(), f"{RYOTEI}に6")
+        a = self.option(self.v(), f"：{RYOTEI} 6本")
         time.sleep(1.05)
         self.decide(a, "s3")
         jobs = [j for j in mate.morning("amiya")["jobs"] if not j["done"]]

@@ -329,7 +329,8 @@
     const html = `<div class="ph">${icon("notebook-text")}こう考えた理由<button id="popclose">${icon("x")}閉じる</button></div>
       <div class="lead">${esc(c.lead)}</div>${c.sections.map(sec).join("")}
       ${c.more && c.more.length ? `<button class="more" id="popmore">${icon("chevron-down")}詳しい経緯と Vault の記録</button><div class="moresecs" ${open ? "" : "hidden"}>${c.more.map(sec).join("")}</div>` : ""}
-      ${c.speech_origin ? `<div class="origin">いまの語りかけの出所：${esc(c.speech_origin.label)}${c.speech_origin.ref ? `（${esc(c.speech_origin.ref.table)} ${c.speech_origin.ref.id}）` : ""}</div>` : ""}`;
+      ${c.speech_origin ? `<div class="origin">いまの語りかけの出所：${esc(c.speech_origin.label)}${c.speech_origin.ref ? `（${esc(c.speech_origin.ref.table)} ${c.speech_origin.ref.id}）` : ""}
+        ${c.speech_origin.replaced ? `<br>${esc(c.speech_origin.replaced.reason)}（AI の文「${esc(c.speech_origin.replaced.text)}」・${esc(c.speech_origin.replaced.ref.table)} ${c.speech_origin.replaced.ref.id}）` : ""}</div>` : ""}`;
     if (pop._h !== html) { pop.innerHTML = html; pop._h = html; }
   }
   function closePop() {
