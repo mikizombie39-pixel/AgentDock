@@ -186,8 +186,21 @@ def _record(owner, case_id, option_id, action, actor, out, key) -> None:
                       (case_id, option_id, action, actor, db.now_iso(), out["result"], json.dumps(out, ensure_ascii=False), key))
             c.execute("INSERT INTO audit_event (at, actor, event, detail) VALUES (?, 'owner', ?, ?)",
                       (db.now_iso(), f"case_{action}", json.dumps(dict(case_id=case_id, option_id=option_id, result=out["result"]), ensure_ascii=False)))
+            why = DRAFT_STALE.get(out["result"])
+            if why:   # 下書きは作った時の状態を前提に書かれている。案件が決まったら、まだ決めていない下書きは使えない（2026-11-04 通し）
+                n = c.execute("UPDATE customer_draft SET status = 'stale', stale_reason = ? WHERE status = 'draft' "
+                              "AND item_id = (SELECT item_id FROM deal_case WHERE id = ?)", (why, case_id)).rowcount
+                if n:
+                    c.execute("INSERT INTO audit_event (at, actor, event, detail) VALUES (?, 'system', 'customer_draft_stale', ?)",
+                              (db.now_iso(), json.dumps(dict(case_id=case_id, result=out["result"], drafts=n), ensure_ascii=False)))
     finally:
         c.close()
+
+
+DRAFT_STALE = {"registered": "取引を登録したため、下書きを作った時の前提と変わりました",
+               "partial": "取引の一部を登録したため、下書きを作った時の前提と変わりました",
+               "rejected": "案を見送り、仮押さえを手放したため、下書きを作った時の前提と変わりました",
+               "returned": "社長が案を差し戻し、案を組み直すため、下書きを作った時の前提と変わりました"}
 
 
 def _set_case(owner: str, case_id: int, status: str) -> None:

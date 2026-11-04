@@ -454,14 +454,14 @@ def current(owner: str, item: str, on_date: str = sc.DEMO_DATE, at: str | None =
         ask["ai_queue"] = ai_queue
         # 売り先への連絡の下書き（AI が作った・まだ送っていない。送るかは人が決める）
         drafts = []
-        for r in con.execute("SELECT d.id, c.name AS customer, s.name AS sub, d.body, d.reason, d.status, d.created_at, d.decided_by, d.decided_at FROM customer_draft d "
+        for r in con.execute("SELECT d.id, c.name AS customer, s.name AS sub, d.body, d.reason, d.status, d.created_at, d.decided_by, d.decided_at, d.stale_reason FROM customer_draft d "
                              "JOIN customer c ON c.id = d.customer_id LEFT JOIN item s ON s.id = d.substitute_item_id WHERE d.item_id = ? ORDER BY d.id", (it["id"],)):
             if not cut(r["created_at"]):
                 continue
             decided = r["status"] != "draft" and cut(r["decided_at"]) if at is not None else True
             drafts.append(dict(draft_id=r["id"], customer=r["customer"], substitute=r["sub"], body=r["body"], reason=r["reason"],
                                status=r["status"] if decided else "draft", created_at=r["created_at"], decided_by=r["decided_by"] if decided else None,
-                               decided_at=r["decided_at"] if decided else None))
+                               decided_at=r["decided_at"] if decided else None, stale_reason=r["stale_reason"] if decided else None))
         ask["drafts"] = drafts
         # 引当のない在庫（売り先の当てのない数量）と、その扱いの問い
         ask["stock"] = _stock_lines(con, it, orders, unit, at)

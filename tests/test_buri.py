@@ -480,5 +480,57 @@ class ToolInputTest(Base):
         self.assertIn("AttributeError", steps[0][2])
 
 
+class DraftStaleTest(Base):
+    """売り先への連絡の下書きは、作った時の状態を前提に書かれている（2026-11-04 本物の Claude の通し：
+    案 A の時の「6本のうち 2本」の下書きが、社長が案 B を承認した後も承認できた）。案件が決まったら、まだ決めていない下書きは古くなる。"""
+
+    def draft(self, body="料亭様　本日のブリは 6本のうち 2本の見込みです。"):
+        c = db.connect("amiya")
+        try:
+            with c:
+                return c.execute("INSERT INTO customer_draft (customer_id, item_id, body, reason, status, run_id, created_at) "
+                                 "VALUES ((SELECT id FROM customer WHERE name = '料亭'), (SELECT id FROM item WHERE code = 'buri_xl'), ?, '数が少ない', 'draft', NULL, ?)",
+                                 (body, db.now_iso())).lastrowid
+        finally:
+            c.close()
+
+    def status(self, did):
+        return q("amiya", "SELECT status, stale_reason FROM customer_draft WHERE id = ?", (did,))[0]
+
+    def approve_draft(self, did):
+        c = db.connect("amiya")
+        try:
+            return consult.decide_draft(c, did, "approve", "staff")
+        finally:
+            c.close()
+
+    def test_a_registration_makes_an_undecided_draft_stale_and_it_cannot_be_approved(self):
+        did = self.draft()
+        no_directive()
+        a = next(o for o in view()["options"] if o["code"] == "A")
+        self.assertEqual(deal.decide("amiya", self.case, a["id"], "approve", a["fingerprint"], "s1")["result"], "needs_president")
+        self.assertEqual(self.status(did)[0], "draft")                       # 社長の確認待ちの間は、まだ決まっていない
+        self.assertEqual(deal.decide("amiya", self.case, a["id"], "approve", a["fingerprint"], "p1", actor="president")["result"], "registered")
+        st, why = self.status(did)
+        self.assertEqual(st, "stale")
+        self.assertIn("登録", why)
+        with self.assertRaises(consult.ConsultError) as e:
+            self.approve_draft(did)
+        self.assertIn("古く", str(e.exception))
+
+    def test_a_rejection_makes_an_undecided_draft_stale(self):
+        did = self.draft()
+        self.assertEqual(deal.decide("amiya", self.case, None, "reject", None, "r1")["result"], "rejected")
+        self.assertEqual(self.status(did)[0], "stale")
+
+    def test_a_decided_draft_and_a_draft_written_after_the_decision_stay_as_they_are(self):
+        done = self.draft()
+        self.assertEqual(self.approve_draft(done)["status"], "approved")
+        self.assertEqual(deal.decide("amiya", self.case, None, "reject", None, "r1")["result"], "rejected")
+        later = self.draft("料亭様　本日のブリはご用意できない見込みです。")
+        self.assertEqual(self.status(done)[0], "approved")
+        self.assertEqual(self.status(later)[0], "draft")
+
+
 if __name__ == "__main__":
     unittest.main()

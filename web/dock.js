@@ -570,7 +570,7 @@
          <div class="ds">代わりの品：${esc(d.substitute || "なし（AIが読める品目に無い）")}${d.reason ? "　理由：" + esc(d.reason) : ""}</div>
          <div class="go"><button class="act main" data-draft="${d.draft_id}" data-act="approve" ${MODE === "live" ? "" : "disabled"}>この文で伝える（あなたが伝えます）</button>
          <button class="act" data-draft="${d.draft_id}" data-act="discard" ${MODE === "live" ? "" : "disabled"}>使わない</button></div></div>`
-      : `<div class="draft done"><div class="dk">${esc(d.customer)}への連絡：${d.status === "approved" ? "伝えることにしました" : "使わないことにしました"}（${d.decided_by === "president" ? "網谷さん" : "担当者"}）</div><div class="db">${esc(d.body)}</div></div>`).join("");
+      : `<div class="draft done"><div class="dk">${esc(d.customer)}への連絡：${d.status === "stale" ? "古くなったため使えません（" + esc(d.stale_reason || "") : (d.status === "approved" ? "伝えることにしました" : "使わないことにしました") + "（" + (d.decided_by === "president" ? "網谷さん" : "担当者")}）</div><div class="db">${esc(d.body)}</div></div>`).join("");
     if ($("nowdrafts")._html !== html) { $("nowdrafts").innerHTML = html; $("nowdrafts")._html = html; }
   }
   $("nowdrafts").addEventListener("click", async (e) => {

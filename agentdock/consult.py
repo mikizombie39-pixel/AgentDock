@@ -323,9 +323,11 @@ def decide_draft(con, draft_id: int, action: str, role: str) -> dict:
     if action not in ("approve", "discard"):
         raise ConsultError(f"unknown action: {action}")
     authority.limit_for(con, role)   # 表に無い役割は止める
-    d = con.execute("SELECT id, status, decided_by FROM customer_draft WHERE id = ?", (draft_id,)).fetchone()
+    d = con.execute("SELECT id, status, decided_by, stale_reason FROM customer_draft WHERE id = ?", (draft_id,)).fetchone()
     if d is None:
         raise KeyError(draft_id)
+    if d["status"] == "stale":   # 案件が決まった後の下書き（deal.DRAFT_STALE）：前提が変わったので使えない
+        raise ConsultError(f"この下書きは古くなったため、使えません（{d['stale_reason']}）")
     want = "approved" if action == "approve" else "discarded"
     if d["status"] != "draft":
         if d["status"] == want:
