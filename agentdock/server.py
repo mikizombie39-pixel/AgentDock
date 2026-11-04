@@ -14,7 +14,7 @@ GET  /api/board?owner=amiya                          ← 磁石ボード（最�
 GET  /api/current?owner=amiya&item=buri_xl           ← 現在地（注文ごとの状態の行・押さえ・人の決定・AI の短い問いと案。状態の行はコードが作る）
 GET  /api/work?owner=amiya&item=buri_xl              ← 作業の画面の一覧（読み取ったこと・AIが済ませたこと・あなたを待つこと・やり取り・残った仕事）
 GET  /api/source?owner=amiya&db=market&table=network_message&id=3   ← 一覧の根拠の行（自社の行と、自社が当事者の市場の行だけ）
-POST /api/decide   {"owner", "case_id", "option_id", "action", "fingerprint", "idempotency_key", "actor"}  ← 担当者（または社長）の承認・見送り・保留
+POST /api/decide   {"owner", "case_id", "option_id", "action", "fingerprint", "idempotency_key", "actor"}  ← 担当者（または社長）の承認・見送り・保留・社長の差し戻し（action=return）
 GET  /api/flow?owner=amiya                           ← 段階と経過（業務 DB の事実からコードが決める）
 POST /api/ask      {"owner", "case_id", "text", "idempotency_key"}  ← 担当者の質問（出来事として記録し、Claude を起こす）
 GET  /api/verify?owner=amiya                         ← 技術の検証（Claude の道具の呼び出し・市場の取引帳簿の API・照合・費用）
@@ -73,11 +73,11 @@ def dispatch(owner: str, path: str, body: dict, key: str) -> tuple[int, dict]:
         raise ValueError("owner")
     if path == "/api/decide":
         actor = body.get("actor") or "staff"
-        if body["action"] not in ("approve", "reject", "hold") or actor not in ("staff", "president"):
+        if body["action"] not in ("approve", "reject", "hold", "return") or actor not in ("staff", "president"):
             raise ValueError("action or actor")
         try:
             r = deal.decide(owner, int(body["case_id"]), int(body["option_id"]) if body.get("option_id") else None, body["action"],
-                            body.get("fingerprint"), key, actor=actor)
+                            body.get("fingerprint"), key, actor=actor, reason=body.get("reason"))
         except deal.DealError as e:
             raise Rejected(str(e)) from None
         return (409 if r["result"] == "stale" else 200), r

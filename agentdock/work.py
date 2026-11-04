@@ -474,7 +474,7 @@ def current(owner: str, item: str, on_date: str = sc.DEMO_DATE, at: str | None =
 
 
 CASE_RESULT = {"registered": "registered", "rejected": "rejected", "partial": "partial", "held": "held", "stale": "stale", "needs_president": "needs_president",
-               "incomplete": "incomplete"}
+               "incomplete": "incomplete", "returned": "open"}   # 社長の差し戻し：元の案を取り下げ、AI が組み直す
 
 
 def _case_at(con, it, on_date, at):

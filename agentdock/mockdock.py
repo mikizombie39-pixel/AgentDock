@@ -97,11 +97,13 @@ class Policy:
             return [ [("read_thread", B)], [("do_nothing", dict(reason="当たれる先の返事が断りでした。次に当たる先を担当者と相談します"))] ]
         last_present = _q("amiya", "SELECT max(t.at) AS at FROM workspace_turn t WHERE t.source = 'present'")[0]["at"]
         newest = max([m["created_at"] for m in msgs] + [o["received_at"] for o in orders if o.get("received_at")])
+        if "差し戻しました" in prompt:                                       # 社長の差し戻し：指示の売り先を欠く案を外して出し直す
+            return [ [("read_orders", B), ("read_thread", B), ("read_vault", B)], [self._present(item, orders, live_terms, returned=True)] ]
         if last_present and last_present[:19] >= newest[:19]:   # 出した案の後に新しい返事も注文も無い：出し直さない
             return [ [("read_thread", B)], [("do_nothing", dict(reason="出した案の後に、新しい返事も注文もありません"))] ]
         return [ [("read_orders", B), ("read_thread", B), ("read_vault", B)], [self._present(item, orders, live_terms)] ]
 
-    def _present(self, item, orders, terms):
+    def _present(self, item, orders, terms, returned=False):
         keep = next((o for o in orders if o["customer"] == "スーパー"), None)   # 社長の指示の売り先（区分の名前）
         rest = [o for o in orders if o is not keep and o["remaining"] > 0]
         need = sum(o["remaining"] for o in orders)
@@ -136,7 +138,7 @@ class Policy:
                          allocations=fill(n), reason="社長の朝の指示の売り先を先にそろえる", risk="ほかの注文が足りない時は、残りを別の仕入先で探す",
                          differs_from_decision=False, vault_refs=[]))
         short_after = need - max(n, n_all if len(opts) > 1 else n)
-        if rest and keep and keep["remaining"] > 0 and need - n > 0:
+        if rest and keep and keep["remaining"] > 0 and need - n > 0 and not returned:   # 社長が差し戻した後は、指示の売り先を欠く案を出さない
             r = rest[0]
             k = min(n, r["remaining"])
             opts.append(dict(code=next(codes), label="追加の注文を先にそろえる", short_label="追加の注文を先に", buy_term_id=big["term_id"], buy_term_ids=[],

@@ -533,3 +533,10 @@ hr.rule { border: 0; border-top: 1px solid var(--line); margin: 0 0 18px; }
 .bstep.partial .dot { background: #F6EBD6; border-color: var(--warm); color: var(--warm); }   /* 照会は終えたが不足が残る：済みの色にしない */
 .bstep.partial .bname { color: var(--ink); }
 .bstep.partial .bword { color: var(--warm); font-weight: bold; }
+/* 社長の差し戻しの理由（2026-11-04）：承認の横に開く入力欄 */
+.retbox { display: flex; flex-direction: column; gap: 6px; min-width: 340px; }
+.retbox label { font-size: 13px; color: var(--mute); font-weight: bold; }
+.retbox textarea { font: inherit; font-size: 15px; padding: 8px 10px; border: 1px solid var(--line); border-radius: 10px; background: #fff; color: var(--ink); resize: vertical; }
+.retbox textarea:focus { outline: 2px solid var(--teal); outline-offset: 1px; }
+.retbox textarea.need { border-color: var(--stop); }
+.retacts { display: flex; gap: 10px; align-items: center; }

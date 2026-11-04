@@ -88,7 +88,7 @@
       const ic = s.state === "done" ? "circle-check" : s.state === "partial" ? "circle-alert" : i === b.current ? BAND_ICON[b.mode] || "eye" : !s.connected ? "octagon-pause" : "";
       const dot = nd.querySelector(".dot");
       if (dot._ic !== ic) { dot.innerHTML = ic ? icon(ic) : ""; dot._ic = ic; }
-      const word = !s.connected && s.state !== "done" ? "未接続" : BAND_WORD[s.state];
+      const word = !s.connected && s.state !== "done" ? "未接続" : s.word || BAND_WORD[s.state];   // 段ごとの言い方（例：照合済み）はサーバーが渡す
       const w = nd.querySelector(".bword"); if (w.textContent !== word) w.textContent = word;
       const note = s.state === "current" || s.state === "done" || s.state === "partial" || s.state === "skipped" ? s.note || "" : "";
       const nt = nd.querySelector(".bnote"); if (nt.textContent !== (note === word ? "" : note)) nt.textContent = note === word ? "" : note;
@@ -296,12 +296,17 @@
       (p.change ? `<p>担当者の答え：仕入れ ${p.change.quantity}（${(p.change.allocations || []).map((a) => `${esc(a.customer)} ${a.quantity}`).join("・")}）</p>` : "");
   }
 
+  let RET = false, RET_TEXT = "";   // 社長の差し戻しの理由の入力欄（開いている間は描き直しで消さない）
   function drawAsk(isPres) {
     let ask = "", acts = "";
     if (isPres) {
       const p = V.president;
-      ask = p ? `<b>この案を進めてよいか、決めてください。</b><small>承認すると、AI がこの条件で登録まで進めます。</small>` : `<b>答える仕事はありません。</b>`;
-      if (p && p.kind === "approval") acts = `<button class="dbtn" data-pres="approve">${icon("stamp")}社長として承認する</button>`;
+      ask = p ? `<b>この案を承認するか、理由を添えて差し戻すかを選んでください。</b><small>承認すると、AI がこの条件で登録まで進めます。${p.kind === "approval" ? "差し戻すと、元の案は登録できなくなり、AI が理由に沿って案を組み直します。登録済みの取引はそのままです。" : ""}</small>` : `<b>答える仕事はありません。</b>`;
+      // 社長の差し戻し（2026-11-04 デイブ・SAL）：取引の取り消しとは別。理由を添えて担当者と AI に見直しを求める
+      if (p && p.kind === "approval") acts = RET ? `<div class="retbox"><label for="retr">差し戻しの理由</label>
+          <textarea id="retr" rows="2" maxlength="200" placeholder="例：魚廣の 4本を先に確保して">${esc(RET_TEXT)}</textarea>
+          <div class="retacts"><button class="dbtn" data-pres="return-send">${icon("rotate-ccw")}この理由で差し戻す</button><button class="linkbtn" data-pres="return-cancel">やめる</button></div></div>`
+        : `<button class="dbtn" data-pres="approve">${icon("stamp")}承認する</button><button class="dbtn alt" data-pres="return">${icon("rotate-ccw")}理由を添えて差し戻す</button>`;
       if (p && p.kind === "consultation") acts = `<button class="dbtn" data-pres="consult">${icon("stamp")}この答えで確定する</button>`;
     } else {
       ask = V.ask ? `<b>${esc(V.ask.text)}</b>` : "";
@@ -509,7 +514,13 @@
     let path, body;
     if (b.dataset.pres) {
       const p = V.president;
-      if (p.kind === "approval") { path = "/api/decide"; body = { case_id: p.case_id, option_id: p.option_id, action: "approve", fingerprint: p.fingerprint, actor: "president" }; }
+      if (b.dataset.pres === "return" || b.dataset.pres === "return-cancel") { RET = b.dataset.pres === "return"; RET_TEXT = ""; return drawAsk(true); }
+      if (b.dataset.pres === "return-send") {
+        RET_TEXT = ($("retr").value || "").trim();
+        if (!RET_TEXT) { $("retr").focus(); $("retr").classList.add("need"); return; }
+        path = "/api/decide"; body = { case_id: p.case_id, option_id: p.option_id, action: "return", fingerprint: p.fingerprint, actor: "president", reason: RET_TEXT };
+        RET = false;
+      } else if (p.kind === "approval") { path = "/api/decide"; body = { case_id: p.case_id, option_id: p.option_id, action: "approve", fingerprint: p.fingerprint, actor: "president" }; }
       else { path = "/api/answer"; body = { consultation_id: p.consultation_id, option: "change", change: p.change, role: "president" }; }
     } else {
       const a = (V.actions || []).find((x) => x.id === b.dataset.act);

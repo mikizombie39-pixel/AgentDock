@@ -213,6 +213,23 @@ def _round_story(f, tl) -> tuple[str, str | None]:
     return "".join(parts), nxt
 
 
+def _return_ctx(f) -> dict | None:
+    """最後の人の判断が社長の差し戻し（理由つき）なら、その中身。redone＝AI が差し戻しの後に案を出し直した（2026-11-04 デイブ・SAL）。"""
+    if not f["acts"] or f["acts"][-1]["kind"] != "returned":
+        return None
+    a = f["acts"][-1]
+    d = json.loads(a.get("detail") or "{}")
+    return dict(id=a["id"], at=a["at"], label=d.get("label") or "元の", reason=d.get("reason") or "",
+                redone=any(_t(p["at"]) >= _t(a["at"]) for p in f["presents"]))
+
+
+def _holds_line(f, tl) -> str:
+    u = f["item"]["unit"]
+    if tl["held"]:
+        return "仮押さえ（" + "・".join(f"{h['name']} {h['quantity']}{u}" for h in tl["held"]) + "）は、見直した案で使えるよう残しています。"
+    return "仮押さえは残っていません（期限の切れたものは解放済みです）。"
+
+
 def _short_total(f) -> int:
     return sum(o["short"] for o in f["orders"] if o["state"] != "secured")
 
@@ -262,6 +279,8 @@ def stance(f) -> tuple[str | None, str | None, dict]:
         return None, None, {}
     mid = _mid_orders(f)
     # 慎重の説明は、いまの理由を言う（SAL 2026-11-04：一律に「注文や条件が変わった」としない）
+    if _return_ctx(f):
+        return "careful", "社長が見直しを求めた", dict(returned=_return_ctx(f)["id"])
     if mid:
         return "careful", "追加の注文が入った", dict(orders=[o["order_id"] for o in mid])
     if run and run["kind"] == "human_choice" and run["source"] == "consultation":
@@ -603,6 +622,20 @@ def view(owner: str, item: str, on_date: str = sc.DEMO_DATE, worker_error: str |
         head = _said(f"{PRESIDENT}に確認しています。")
         sub = [_said("・".join(why) + "。" if why else "社長の判断が要る案です。"), _said("答えが来たら続けます。待つ間、ほかの仕事を進めてかまいません。")]
         ask = _said("今は、あなたが答える仕事ではありません。")
+    elif ex in ("running", "idle", "your_turn") and _return_ctx(f):   # 社長の差し戻し：理由を伝え、AI が案を組み直す（取引の取り消しとは別）
+        rc = _return_ctx(f)
+        ref = dict(db="owner", table="case_decision", id=rc["id"])
+        if rc["redone"] and ex == "your_turn":
+            head = _said("社長から、この点を見直すよう返事がありました。案を組み直しました。")
+            sub = [_said(f"社長の理由：「{rc['reason']}」", "code", ref), _said(tl["line"], "calc"), _said(_holds_line(f, tl), "calc")]
+        else:
+            head = _said("社長から、この点を見直すよう返事がありました。")
+            sub = [_said(f"社長の理由：「{rc['reason']}」", "code", ref),
+                   _said(f"元の案「{rc['label']}」は承認待ちを解除しました。この案のままでは登録できません。"),
+                   _said(_holds_line(f, tl), "calc")]
+            if tl["registered"]:
+                sub.append(_said(f"登録済みの {tl['registered']}{f['item']['unit']}はそのままです。", "calc"))
+            sub.append(_said("社長の理由に沿って、案を組み直しています。"))
     elif ex == "idle" and tl["left"] and _closed_draft(f):   # 下書きに答えた後：不足は残ったまま、AI は見張りに戻る（「別の浜を当たる」と言わない・SAL 2026-11-04 通しの確認）
         cd = _closed_draft(f)
         shop = sc.shop(owner, cd["customer"])
@@ -889,7 +922,9 @@ def why_card(f, st, ex, head, tl=None, replaced=None) -> dict:
         more = [("相手の回答と値", replies), ("Vault の記録", vault)]
     elif st == "careful" or (st is None and ex == "your_turn"):
         ds_short = any(o["shop"] == ds and o["short"] > 0 for o in f["orders"])
-        if ds and others_short and ds_short:
+        if _return_ctx(f):
+            lead = f"社長から見直しの返事があったためです（理由：「{_return_ctx(f)['reason']}」）。登録済みの取引はそのままで、未確定の案だけを組み直します。"
+        elif ds and others_short and ds_short:
             lead = (f"{ds}を優先するのは、社長の朝の指示があるためです。"
                     f"{'・'.join(o['shop'] for o in others_short)}を優先するには、社長への確認が必要です。")
         elif st == "careful" and _round_declines(f) and _short_total(f) > 0:
@@ -960,6 +995,10 @@ def receipt(f) -> dict | None:
             text = f"受け取りました。{pt['done']}" + pt["rest"]
         elif k == "needs_president":
             text = f"受け取りました。{PRESIDENT}に確認を送りました。答えが来たら続けます。"
+        elif k == "returned":
+            d = json.loads(last.get("detail") or "{}")
+            text = (f"受け取りました。「{d.get('label') or '元の'}」の案を差し戻しました。理由：「{d.get('reason') or ''}」。"
+                    "元の案は登録できない状態にし、担当者と AI に見直しを伝えました。")
         elif k == "rejected":
             # 見送りでは AI は起きない（相談を閉じる）。「別の仕入先を当たります」と約束しない（SAL 2026-11-04 通しの確認）
             text = "受け取りました。この案は見送り、仮押さえは手放しました。" + (("・".join(f"{o['shop']} {o['short']}{u}" for o in short) + "は足りないままです。") if short else "")
@@ -978,7 +1017,7 @@ def receipt(f) -> dict | None:
             text = "受け取りました。答えの扱いで続けます。"
         else:
             text = "受け取りました。"
-        out = dict(at=last["at"], text=text, ref=dict(db="owner", table="case_decision" if k in ("registered", "partial", "needs_president", "rejected", "stale") else
+        out = dict(at=last["at"], text=text, ref=dict(db="owner", table="case_decision" if k in ("registered", "partial", "needs_president", "rejected", "stale", "returned") else
                                                        ("human_decision" if k == "decision" else "stock_question"), id=last["id"]))
     after = [r for r in f["runs"] if r["ended_at"] and _t(r["started_at"]) >= _t(out["at"]) and r["summary"] and r["outcome"] not in STOP_OUTCOMES]
     if after:
@@ -1247,7 +1286,9 @@ def band(owner: str, code: str, on_date: str = sc.DEMO_DATE, worker_error: str |
             if got:
                 won = sum(r["quantity"] for r in got if r["is_own"])
                 kind = "せり" if all(str(r["lot_no"]).startswith("A-") for r in got) else "市場"
-                S["落札結果の照合"].update(state="done", note=f"{kind}の落札 {won}{u}")
+                # 照合が済んだことと、魚を確保できたかを分ける（SAL 2026-11-04：0本で「済み」は誤読される）
+                S["落札結果の照合"].update(state="done", word="照合済み",
+                                       note=f"{kind}で自社の落札 {won}{u}" if won else "自社の落札なし。不足分の手配へ")
             elif f["runs"]:   # 結果が届かないまま手配が始まった：今日の結果は無い（未着と不足を分ける）
                 S["落札結果の照合"].update(state="skipped", note="今日の結果は届いていません")
             else:
@@ -1266,7 +1307,7 @@ def band(owner: str, code: str, on_date: str = sc.DEMO_DATE, worker_error: str |
                         S["不足分の手配"].update(state="partial", note="・".join(x for x in (held, f"あと {tl['left']}{u}不足") if x))
                     else:
                         S["不足分の手配"].update(state="done", note=held)
-                    what = "配分" if cur.get("waiting_for") == "staff" else "売り先への連絡" if any(d["status"] == "draft" for d in cur.get("drafts") or [])                         else "在庫の扱い" if cur.get("stock_question") else "配分"
+                    what = "見直した案" if _return_ctx(f) else "配分" if cur.get("waiting_for") == "staff" else "売り先への連絡" if any(d["status"] == "draft" for d in cur.get("drafts") or [])                         else "在庫の扱い" if cur.get("stock_question") else "配分"
                     S["振分け・承認"].update(state="current", note=f"{what}を相談中・あなたの判断待ち" if ex == "your_turn" else "社長確認中")
                     mode = "you" if ex == "your_turn" else "president"
                 else:
@@ -1274,6 +1315,8 @@ def band(owner: str, code: str, on_date: str = sc.DEMO_DATE, worker_error: str |
                     note = {"stopped": "停止", "running": (f"{'・'.join(who)}に照会中" if who else "照会の準備中"), "idle": "見張り中"}.get(ex, EXEC_LABEL.get(ex))
                     if ex == "running" and _mid_orders(f):
                         note = "追加注文で照会し直し中"
+                    if ex == "running" and _return_ctx(f):
+                        note = "社長の差し戻しを受けて組み直し中"
                     if ex == "idle" and tl["left"]:   # 見張りに戻っても、不足が残ることを言う
                         note = f"あと {tl['left']}{u}不足・見張り中"
                     S["不足分の手配"].update(state="current", note=note)

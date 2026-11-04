@@ -939,6 +939,12 @@ def situation(owner: str, event: dict, on_date: str) -> tuple[str, str]:
                 "offer_to_buyers": "post_request（side は sell）で、ほかの仲買に譲る掲示を出してください。値は自社の最低の値（read_stock の resale_floor）以上です。",
                 "keep": "そのまま持ちます。do_nothing で終えてください。"}[p["choice"]]
         head = (f"出来事：{who}が引当のない在庫の扱いを答えました（問い {p['question_id']}）：「{p['label']}」。\n" + _spare_lines(owner, item) + "\n" + todo)
+    elif event["kind"] == "human_choice" and p.get("source") == "president_return":   # 社長の差し戻し（理由つき）
+        item = p["item"]
+        head = (f"出来事：社長（網谷さん）が、担当者の送った案「{p.get('label') or ''}」を差し戻しました（案件 {p['case_id']}）。"
+                f"社長の理由：「{p['reason']}」。\n元の案は取り下げ済みで、そのままでは登録できません。登録済みの取引はそのままです。"
+                "残っている仮押さえと相手の返事を道具で確かめ、社長の理由に沿う案で磁石ボードを出し直してください。"
+                "理由に沿えない時は、その事情を案の理由に書いてください。")
     elif event["kind"] == "human_choice":
         item = _case_item(owner, p["case_id"])
         head =("出来事：担当者が選んだ案は、承認の時の再検証で確定できませんでした（案件 {}）。理由：{}。"

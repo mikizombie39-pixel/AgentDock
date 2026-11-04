@@ -445,7 +445,7 @@ class BandTest(Base):
         self.start()                                                          # 委任・朝のせりの結果が届く・注文の出来事
         x, s = self.b()
         self.assertEqual(s["注文の確認"][0], "done")
-        self.assertEqual(s["落札結果の照合"], ("done", "せりの落札 0本"))      # せり 12本のうち、網谷水産の落札は 0本（未着ではない）
+        self.assertEqual(s["落札結果の照合"], ("done", "自社の落札なし。不足分の手配へ"))   # せり 12本のうち、網谷水産の落札は 0本（未着ではない・照合済みと確保を分ける）
         self.worker.step()                                                    # 漁協と B社に照会
         x, s = self.b()
         self.assertEqual((x["mode"], s["不足分の手配"][0]), ("working", "current"))
@@ -600,6 +600,64 @@ class RoundStoryTest(Base):
         said = json.dumps(dict(h=v["headline"], s=v["sub"], a=v["ask"], w=v["why"], r=v["receipt"], b=v["band"]), ensure_ascii=False)
         for word in ("そろいました", "終わりました", "全部の注文がそろ", "別の浜を当たります", "別の仕入先を当たります", "ほかに当たれる先を探します"):
             self.assertNotIn(word, said)
+
+
+class PresidentReturnTest(Base):
+    """社長の差し戻し（2026-11-04 デイブ・SAL）：取引の取り消しとは別。理由を添えて戻し、元の案は登録できなくなり、AI が理由に沿って案を組み直す。
+    登録済みの取引と、期限の内の仮押さえは残す。"""
+
+    def ask_president(self):
+        self.start()
+        self.worker.step()
+        self.add_ryotei()
+        self.run_all()
+        a = self.option(self.v(), f"：{RYOTEI} 6本")                            # 順風満帆 6本・魚廣 0本 → 社長に確かめる
+        time.sleep(1.05)
+        self.assertEqual(self.decide(a, "rt1")["result"], "needs_president")
+        return self.v()["president"]
+
+    def send_back(self, p, key="rt3", reason="魚廣の 4本を先に確保して"):
+        time.sleep(1.05)
+        return server.dispatch("amiya", "/api/decide", dict(case_id=p["case_id"], option_id=p["option_id"], action="return",
+                                                            fingerprint=p["fingerprint"], actor="president", reason=reason), key)   # 画面のボタンと同じ道
+
+    def test_only_the_president_returns_and_a_reason_is_required(self):
+        p = self.ask_president()
+        with self.assertRaises(deal.DealError):                               # 担当者は差し戻せない
+            deal.decide("amiya", p["case_id"], p["option_id"], "return", p["fingerprint"], "rt2", actor="staff", reason="r")
+        with self.assertRaises(server.Rejected):                              # 理由のない差し戻しは通らない
+            self.send_back(p, "rt2b", reason="  ")
+
+    def test_the_return_withdraws_the_option_and_the_ai_rebuilds_the_board(self):
+        p = self.ask_president()
+        held = self.v()["tally"]["held_total"]
+        r = self.send_back(p)
+        self.assertEqual((r[0], r[1]["result"], r[1]["reason"]), (200, "returned", "魚廣の 4本を先に確保して"))
+        again = deal.decide("amiya", p["case_id"], p["option_id"], "approve", p["fingerprint"], "rt4", actor="president")
+        self.assertEqual(again["result"], "stale")                            # 元の案は承認待ちを解いた：そのままでは登録できない
+        self.assertEqual(self.v()["tally"]["registered"], 0)
+        v = self.v()                                                          # AI が組み直す前
+        self.assertEqual((v["exec"], v["stance"], v["rule"]), ("running", "careful", "社長が見直しを求めた"))
+        self.assertEqual(v["headline"]["text"], "社長から、この点を見直すよう返事がありました。")
+        subs = [s["text"] for s in v["sub"]]
+        self.assertEqual(subs[0], "社長の理由：「魚廣の 4本を先に確保して」")
+        self.assertTrue(subs[1].startswith("元の案「") and subs[1].endswith("」は承認待ちを解除しました。この案のままでは登録できません。"))
+        self.assertEqual(subs[2], "仮押さえ（岩瀬漁協 6本・B社 2本）は、見直した案で使えるよう残しています。")
+        self.assertEqual(v["tally"]["held_total"], held)                      # 取り消しではない：仮押さえは手放さない
+        self.assertIn("理由：「魚廣の 4本を先に確保して」", v["receipt"]["text"])
+        self.assertEqual({x["name"]: x["note"] for x in v["band"]["steps"]}["不足分の手配"], "社長の差し戻しを受けて組み直し中")
+        self.run_all()                                                        # AI が理由に沿って案を出し直す
+        v = self.v()
+        self.assertEqual((v["exec"], v["stance"], v["rule"]), ("your_turn", "careful", "社長が見直しを求めた"))
+        self.assertEqual(v["headline"]["text"], "社長から、この点を見直すよう返事がありました。案を組み直しました。")
+        self.assertEqual(v["sub"][0]["text"], "社長の理由：「魚廣の 4本を先に確保して」")
+        opts = [a for a in v["actions"] if str(a.get("id", "")).startswith("opt")]
+        self.assertNotIn(f"opt{p['option_id']}", [a["id"] for a in opts])     # 元の案は出てこない
+        self.assertFalse([a for a in opts if a.get("president")])             # 理由に沿う案だけ（指示の売り先を欠く案は出し直さない）
+        self.assertEqual({x["name"]: x["note"] for x in v["band"]["steps"]}["振分け・承認"], "見直した案を相談中・あなたの判断待ち")
+        rec = next(a for a in opts if a.get("recommended"))
+        time.sleep(1.05)
+        self.assertEqual(self.decide(rec, "rt5")["result"], "registered")    # 見直した案は、いつもの道で登録まで進む
 
 
 class ShopNameTest(unittest.TestCase):

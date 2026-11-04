@@ -114,11 +114,17 @@ def _verify_buyer(ag: dict, now: str) -> list[str]:
 # ── 判断の入口 ─────────────────────────────────────────────────
 
 def decide(owner: str, case_id: int, option_id: int | None, action: str, shown_fingerprint: str | None,
-           idempotency_key: str, actor: str = "staff", now: str | None = None, fail_at: str | None = None) -> dict:
+           idempotency_key: str, actor: str = "staff", now: str | None = None, fail_at: str | None = None, reason: str | None = None) -> dict:
     """担当者の判断を1回だけ処理する。結果の dict を返す（同じ key なら前の結果を返す）。"""
     now = now or f"{sc.DEMO_DATE}T06:30:00+09:00"
-    if action not in ("approve", "reject", "hold"):
+    if action not in ("approve", "reject", "hold", "return"):
         raise DealError(f"unknown action: {action}")
+    if action == "return" and actor != "president":   # 差し戻しは社長だけ（担当者が送った確認を、担当者へ戻す）
+        raise DealError("only the president returns a case")
+    if action == "return" and not (reason or "").strip():   # 差し戻しには理由を添える（例：魚廣の4本を先に確保して）
+        raise DealError("a return needs a reason")
+    if action == "return" and len(reason.strip()) > 200:
+        raise DealError("the reason is too long (200 characters at most)")
     con = db.connect(owner)
     try:
         prev = _q1(con, "SELECT result, detail FROM case_decision WHERE idempotency_key = ?", (idempotency_key,))
@@ -135,7 +141,9 @@ def decide(owner: str, case_id: int, option_id: int | None, action: str, shown_f
     finally:
         con.close()
     expire(now)
-    if action == "hold":
+    if action == "return":
+        out = _return(owner, case, option_id, reason.strip())
+    elif action == "hold":
         out = dict(result="held", case_id=case_id)
         _set_case(owner, case_id, "held")
     elif action == "reject":
@@ -145,6 +153,29 @@ def decide(owner: str, case_id: int, option_id: int | None, action: str, shown_f
         out = _approve(owner, case, opt, shown_fingerprint, actor, now, fail_at)
     _record(owner, case_id, option_id, action, actor, out, idempotency_key)
     return out
+
+
+def _return(owner: str, case, option_id: int | None, reason: str) -> dict:
+    """社長の差し戻し（2026-11-04 デイブ・SAL）：取引の取り消しとは別。
+    登録済みの取引はそのまま。元の案は承認待ちを解き、取り下げる（そのままでは登録できない）。
+    仮押さえは、期限の内のものは見直した案で使えるよう残し、期限の切れたものは解放済みとして伝える。
+    出来事 human_choice（source=president_return）を書き、AI が社長の理由に沿って案を組み直す。"""
+    con = db.connect(owner)
+    try:
+        last = _q1(con, "SELECT option_id, result FROM case_decision WHERE case_id = ? ORDER BY id DESC LIMIT 1", (case["id"],))
+        if case["status"] != "needs_president" or last is None or last["result"] != "needs_president" or last["option_id"] != option_id:
+            raise DealError(f"case {case['id']} does not wait for the president on option {option_id}")
+        opt = _q1(con, "SELECT label FROM board_option WHERE id = ?", (option_id,))
+        now = db.now_iso()
+        with con:
+            con.execute("UPDATE board_option SET status = 'withdrawn' WHERE case_id = ? AND status = 'offered'", (case["id"],))
+            con.execute("UPDATE deal_case SET status = 'open', updated_at = ? WHERE id = ?", (now, case["id"]))
+            item = _q1(con, "SELECT code FROM item WHERE id = ?", (case["item_id"],))[0]
+            events._insert(con, "human_choice", dict(source="president_return", case_id=case["id"], option_id=option_id, label=opt["label"] if opt else None,
+                                                     reason=reason, item=item), events._now())
+    finally:
+        con.close()
+    return dict(result="returned", case_id=case["id"], option_id=option_id, label=opt["label"] if opt else None, reason=reason)
 
 
 def _record(owner, case_id, option_id, action, actor, out, key) -> None:
