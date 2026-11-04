@@ -376,7 +376,7 @@ class Handler(BaseHTTPRequestHandler):
                 raise ValueError("owner")
             if CHAT is None:
                 return self._send(503, dict(error="unavailable", detail="チャットの呼び出し先がありません"))
-            r = chat.ask(CHAT, owner, item, str(b["text"]), str(b["idempotency_key"]), sc.DEMO_DATE, run_kind=CHAT_KIND)
+            r = chat.ask(CHAT, owner, item, str(b["text"]), str(b["idempotency_key"]), sc.DEMO_DATE, run_kind=CHAT_KIND, run_enabled=CHAT_RUN)
             return self._send(200, dict(r, run_kind=CHAT_KIND, run_enabled=CHAT_RUN))
         except chat.ChatFailed as e:
             return self._send(502, dict(error="failed", detail=str(e), retry=True))

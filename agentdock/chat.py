@@ -38,6 +38,9 @@ TYPE_LABEL = {"directive": "社長の指示", "rule": "会社のルール", "kno
               "reply": "相手の回答", "record": "業務の記録", "calc": "コードの計算"}
 ORIGIN_LABEL = {"fact": "記録にある事実", "calc": "コードの計算", "ai": "AI の解釈"}
 UNKNOWN = "記録にはありません。確認が必要です。"
+MAX_CONCLUSION = 90
+SUPERLATIVE = re.compile(r"一番|いちばん|最も|もっとも|最小|最善|最良|ベスト")
+RUN_OFF_CONCLUSION = "チャットからは、まだ仕事を実行できません。何も実行していません。"
 NUMBERS_REPLACED = "この文の数字を、コードの値と照合できませんでした。数字は根拠の記録で確かめてください。"
 RUNNING_STALE_SEC = 180
 
@@ -109,7 +112,7 @@ def work_state(owner: str, item: str, on_date: str = sc.DEMO_DATE) -> dict:
         finally:
             con.close()
         add(f"directive:{d['directive_id']}", "directive", f"社長の今日の指示「{d['body']}」（{d['issued_from']}から・{d['via']}・売り先の区分 {d['customer']}）" +
-            (f"・Vault {vid}" if vid else ""), d["received_at"], dict(db="owner", table="directive", id=d["directive_id"]))
+            (f"・Vault {vid}" if vid else ""), d["received_at"], dict(db="owner", table="directive", id=d["directive_id"], vault=vid, body=d["body"]))
     staff, pres = f["authority"].get("staff") or {}, f["authority"].get("president") or {}
     if staff.get("max_trade_yen"):
         add("authority", "record", f"権限の表：若い担当者が決められる買い付けは 1件 {staff['max_trade_yen']:,}円まで。得意先の間の優先を変えるのは社長"
@@ -119,11 +122,27 @@ def work_state(owner: str, item: str, on_date: str = sc.DEMO_DATE) -> dict:
         add(f"delegation:{d['id']}", "record", "担当者が AI に任せた範囲：" + "・".join(sc.DELEGATION_SCOPES.get(s, s) for s in json.loads(d["scope_json"])),
             d["granted_at"], dict(db="owner", table="delegation", id=d["id"]))
     cur = f["cur"]
+    cmp_rows = []
     for o in cur.get("options") or []:
         c = next(x for x in tl["options"] if x["option_id"] == o["option_id"])
         pv = mate.option_needs_president(owner, cur["case"]["id"], o["option_id"]) if o["action"] == "approve" else dict(needs=False)
         add(f"calc:option:{o['option_id']}", "calc", f"案{c['no']}：{c['label']}・{c['note']}" +
             ("・社長の確認が要る案" if pv["needs"] else "") + ("" if o["executable"] or o["action"] != "approve" else "・実行できない案"))
+        cmp_rows.append(dict(no=c["no"], short=sum(x["quantity"] for x in c["short_after"]), president=bool(pv["needs"]),
+                             staff=o["action"] == "approve" and bool(o["executable"]) and not pv["needs"]))
+    compare = None
+    if cmp_rows:   # 全部の案の比較（「最も少ない」と言える根拠はこの計算だけ）
+        staff = [r for r in cmp_rows if r["staff"]]
+        low = min((r["short"] for r in staff), default=None)
+        best = [r["no"] for r in staff if r["short"] == low]
+        txt = ("担当者が選べる案：" + "・".join(f"案{r['no']}（不足 {r['short']}{u}）" for r in staff) + "。" if staff else "担当者が選べる案はありません。")
+        if best:
+            txt += f"計算上、不足が最も少ないのは " + "・".join(f"案{n}" for n in best) + (f"（同じ {low}{u}）" if len(best) > 1 else "") + "。"
+        others = [r for r in cmp_rows if not r["staff"]]
+        if others:
+            txt += "担当者だけでは選べない案：" + "・".join(f"案{r['no']}（不足 {r['short']}{u}" + ("・社長の確認が要る" if r["president"] else "") + "）" for r in others) + "。"
+        add("calc:compare", "calc", txt)
+        compare = dict(rows=cmp_rows, best=best, low=low)
     if cur.get("waiting_for") == "president":
         add("state:president", "record", "社長の確認を待っています（担当者が送った確認）")
     if cur.get("stock_question"):
@@ -134,7 +153,9 @@ def work_state(owner: str, item: str, on_date: str = sc.DEMO_DATE) -> dict:
         add("stock", "record", s["text"])
     acts = [dict(id=a["id"], label=a["label"], note=a.get("note"), president=bool(a.get("president")), recommended=bool(a.get("recommended")))
             for a in v.get("actions") or [] if a.get("api")]
-    return dict(item=f["item"], facts=out, actions=acts, exec=v["exec"], stance=v["stance"], subject=v["subject"])
+    ends = sorted({(_hm(t["valid_until"]), h["name"]) for h in tl["held"] for x in f["messages"] for t in x["terms"] if t["id"] == h["term_id"] and t["valid_until"]})
+    deadline = ("仮押さえの期限：" + "・".join(f"{n} {hm}" for hm, n in ends)) if ends else None
+    return dict(item=f["item"], facts=out, actions=acts, exec=v["exec"], stance=v["stance"], subject=v["subject"], compare=compare, deadline=deadline)
 
 
 def preview(owner: str, item: str, priority: list[str], on_date: str = sc.DEMO_DATE) -> dict:
@@ -252,8 +273,8 @@ def tool_answer(t: Turn, inp):
     for k in ("conclusion", "next_action"):
         if not isinstance(inp.get(k), str) or not inp[k].strip():
             raise ToolError(f"{k} を書いてください")
-    if len(inp["conclusion"]) > 160:
-        raise ToolError("conclusion は短く（160字まで）")
+    if len(inp["conclusion"]) > MAX_CONCLUSION:
+        raise ToolError(f"conclusion は短く（{MAX_CONCLUSION}字まで）。注文の時刻・ルールの詳しい中身・期限切れの指示は detail に書く")
     if not isinstance(inp.get("evidence"), list):
         raise ToolError("evidence は配列です（読んだ記録の ref）")
     t.answer = inp
@@ -293,7 +314,15 @@ SYSTEM = (
     "あなたは網谷水産（仲買）の Claude AI パートナーです（Agent Dock）。浜に立つ若い担当者の仲間として、担当者の質問と頼みに答えます。"
     "道具で業務の状態と自社の Vault を読み、最後に answer で答えます。あなたの道具は読むだけで、何も送らず、何も登録しません。\n"
     "決まり：\n"
-    "- まず短い結論（1〜2文）と次の行動。詳しい説明は聞かれた時だけ detail に書く\n"
+    f"- conclusion は浜の新人に向けた短い答え（1〜2文・{MAX_CONCLUSION}字まで）。根拠の中心と、今日の方針（何をどれだけ）だけを書く。"
+    "例：社長から「魚廣の分は落とすなよ」と指示されています。今日は魚廣の 4本を確保する方針です。\n"
+    "- 注文を受けた時刻・会社のルールの詳しい中身・期限切れの指示との違いは conclusion に書かず、detail に書く（担当者が開いた時に読む）\n"
+    "- next_action は、担当者が選べる具体的な案と、その結果（守れる注文・回せる数・足りない数）を示し、確認の問いで終える。"
+    "例：案1なら、魚廣 4本を守り、順風満帆にも 4本を回せます。順風満帆は 2本不足します。配分を確認しますか？　"
+    "仮押さえの期限は書かない（サーバーが業務の記録から別に添える）。質問と下見の答えでは、何も実行していないことを保つ\n"
+    "- 「一番」「最も」など案を比べる言い方は、calc:compare（全部の案の比較）を evidence に挙げた時だけ使い、その計算どおりに書く"
+    "（担当者が選べる案の中で、計算上、不足が最も少ない案です）。同じ不足の案が複数ある時は、全部を挙げる\n"
+    "- evidence は質問に答える順に並べる（例：なぜ優先？ → 今日の社長の指示 → 会社のルール → 配分と不足の計算 → 注文の詳細）。期限切れの指示は最後\n"
     "- 根拠（evidence）は、この回に道具で読んだ記録だけを ref で挙げる（業務の状態は ref、Vault は識別子）。quote は記録の文のまま\n"
     f"- 記録にないこと（会社の方針・相手の返事・売り先の好みなど）は推測で作らない。conclusion を「{UNKNOWN}」で始め、何を誰に確かめるかを next_action に書く\n"
     "- 今の在庫・値・相手の回答・期限・数量は、業務の状態（read_work_state）からだけ答える。Vault の過去の経験の数字を、今の在庫や値として答えない\n"
@@ -307,6 +336,14 @@ SYSTEM = (
     "- 「実行しました」とは書かない。実行は、担当者が確認のボタンを押した後にサーバーが行う\n"
     "- 社長の指示と違う変更・担当者の権限の外のことは、社長の確認が要ると書く\n"
     "- 売り先は店の名前（魚廣・順風満帆）で呼ぶ。文は日本語で短く、担当者に失礼のないように書く")
+
+
+RUN_OFF_RULE = ("- 今の版では、チャットから仕事を実行できない。仕事を頼まれたら kind を request にし、合う操作の action_id を選ぶ"
+                "（サーバーが、実行できないことと、押す画面のボタンを担当者に伝える）")
+
+
+def system(run_enabled: bool) -> str:
+    return SYSTEM + ("" if run_enabled else "\n" + RUN_OFF_RULE)
 
 
 def _prompt(t: Turn, text: str, history: list[dict]) -> str:
@@ -383,7 +420,65 @@ def _norm(s: str) -> str:
     return re.sub(r"\s+", "", unicodedata.normalize("NFKC", s or ""))
 
 
-def finish(t: Turn, ask_text: str) -> tuple[dict, dict]:
+def _sentences(text: str) -> list[str]:
+    return [x for x in re.split(r"(?<=[。？！?!\n])", text) if x]
+
+
+def check_superlative(text: str, cited: bool, compare: dict | None, unit: str) -> tuple[str, list[str]]:
+    """「一番」「最も」などの比べる言い方を、全部の案の比較（calc:compare）と照合する。(直した文, 理由)。
+    根拠に比較が無い・比較に合わない文は外す。合う文はコードの言い方に替える（同じ不足の案が複数なら全部を挙げる）。"""
+    out, why = [], []
+    best = (compare or {}).get("best") or []
+    for sen in _sentences(text):
+        if not SUPERLATIVE.search(sen):
+            out.append(sen)
+            continue
+        if not cited or not best:
+            why.append(f"比べる言い方を外しました（全部の案の比較を根拠にしていない）：{sen.strip()}")
+            continue
+        nos = {int(n) for n in re.findall(r"案\s*(\d+)", unicodedata.normalize("NFKC", sen))}
+        if nos and not nos <= set(best):
+            why.append(f"比べる言い方を外しました（計算で不足が最も少ない案は {'・'.join(f'案{n}' for n in best)}）：{sen.strip()}")
+            continue
+        if len(best) > 1:
+            out.append("担当者が選べる案の中で、計算上、不足が最も少ないのは " + "・".join(f"案{n}" for n in best) + f" です（同じ {compare['low']}{unit}）。")
+        else:
+            out.append(f"案{best[0]}は、担当者が選べる案の中で、計算上、不足が最も少ない案です。")
+        if out[-1].strip() != sen.strip():
+            why.append(f"比べる言い方を、計算の言い方に替えました：{sen.strip()}")
+    return "".join(out).strip(), why
+
+
+def _merge_directives(ev: list[dict], out: dict) -> list[dict]:
+    """業務 DB の今日の指示と、その元の Vault の指示が同じ内容なら、画面では1つの指示にまとめる（識別子は両方残す）。
+    食い違えば分けたまま、食い違いを知らせ、社長に確かめるよう案内する。"""
+    by = {e["ref"]: e for e in ev}
+    drop = set()
+    for e in ev:
+        if not e["ref"].startswith("directive:"):
+            continue
+        src = e.get("src") or {}
+        vid, body = src.get("vault"), src.get("body")
+        v = by.get(vid) if vid else None
+        if v is None:
+            continue
+        if body and _norm(body) in _norm(v["text"]):
+            e["merged"] = [dict(ref=e["ref"], label="業務 DB の今日の指示", text=e["text"], at=e["at"]),
+                           dict(ref=v["ref"], label="Vault の社長の指示", text=v["text"], dates=v["dates"], validity=v["validity"])]
+            e["refs"] = [e["ref"], v["ref"]]
+            e.update(title=v["title"], validity=v["validity"], dates=v["dates"])
+            if v["quote_from"] == "ai_quote" and e["quote_from"] != "ai_quote":
+                e.update(quote=v["quote"], quote_from="ai_quote")
+            drop.add(v["ref"])
+        else:
+            e["conflict"], v["conflict"] = v["ref"], e["ref"]
+            out["conflict"] = True
+            out["notes"].append(f"社長の指示の記録が食い違っています：業務 DB の {e['ref']} と Vault の {v['ref']}。どちらも根拠として分けて出します")
+            out["next_action"] = "社長の指示の記録が食い違っています。どちらが正しいか、社長に確かめてください。"
+    return [e for e in ev if e["ref"] not in drop]
+
+
+def finish(t: Turn, ask_text: str, run_enabled: bool = False) -> tuple[dict, dict]:
     """AI の答えをサーバーで検査して、画面に出す答えを作る。(出す答え, 捨てた物と理由)。"""
     a = normalize(t.answer)
     dropped = dict(evidence=[], replaced=[], request=None)
@@ -410,6 +505,16 @@ def finish(t: Turn, ask_text: str) -> tuple[dict, dict]:
     allowed, dates = _allowed(t)
     out = dict(kind=a["kind"], kind_label=KIND_LABEL[a["kind"]], conclusion=a["conclusion"].strip(), next_action=a["next_action"].strip(),
                detail=(a.get("detail") or None), interpretation=(a.get("interpretation") or None), evidence=ev, notes=[], request=None)
+    compare, unit = (t.state or {}).get("compare"), ((t.state or {}).get("item") or {}).get("unit", "")
+    cited = any(e["ref"] == "calc:compare" for e in ev)
+    for k in ("conclusion", "next_action", "detail", "interpretation"):
+        if not out[k]:
+            continue
+        new, why = check_superlative(out[k], cited, compare, unit)
+        if why:
+            dropped["replaced"] += [dict(field=k, text=out[k], reason=w) for w in why]
+            out["notes"].append("案を比べる言い方は、全部の案の計算と照合しました")
+            out[k] = new or ("根拠の計算を開いて、案を比べてください。" if k in ("conclusion", "next_action") else None)
     for k in ("conclusion", "next_action", "detail", "interpretation"):
         if not out[k]:
             continue
@@ -427,6 +532,20 @@ def finish(t: Turn, ask_text: str) -> tuple[dict, dict]:
     if old_dir:
         out["notes"].append("期限の切れた記録は、今は効力がありません：" + "・".join(f"{e['ref']}（{e['validity']}）" for e in old_dir) +
                             ("。今有効なのは " + "・".join(e["ref"] for e in cur_dir) if cur_dir else ""))
+    ev = _merge_directives(ev, out)
+    ev = [e for e in ev if e["type"] != "not_current"] + [dict(e, past=True) for e in ev if e["type"] == "not_current"]   # 期限切れは最後（過去との違いを見る時に開く）
+    out["evidence"] = ev
+    out["deadline"] = (t.state or {}).get("deadline")
+    if out["kind"] == "request" and not run_enabled:   # 段2：チャットからは実行しない。押す画面のボタンを案内する
+        r = a.get("request") or {}
+        full = {x["id"]: x for x in mate.view(t.owner, t.item, t.on_date).get("actions") or []}
+        act = full.get(r.get("action_id")) if r.get("action_id") else None
+        dropped["request"] = dict(action_id=r.get("action_id"), confirm_text=r.get("confirm_text"), reason="チャットからの実行は止めてある（段2）")
+        out.update(kind="unsupported", kind_label=KIND_LABEL["unsupported"], conclusion=RUN_OFF_CONCLUSION, detail=None, interpretation=None, request=None,
+                   next_action=(f"進める時は、画面の［{act['label']}］を押してください。" if act and act.get("api") else "進める時は、画面のボタンから選んでください。"),
+                   suggested_action=(dict(id=act["id"], label=act["label"], president=bool(act.get("president"))) if act and act.get("api") else None))
+        out["notes"].append("チャットからの実行は、まだ使えません（何も実行していません）")
+        return out, dropped
     if out["kind"] == "request":
         r = a.get("request") or {}
         acts = {x["id"]: x for x in (work_state(t.owner, t.item, t.on_date)["actions"])}
@@ -471,7 +590,8 @@ def _turn_out(row) -> dict:
                 answer=json.loads(row["answer_json"]) if row["answer_json"] else None, error=row["error"], executed=json.loads(row["executed_json"]) if row["executed_json"] else None)
 
 
-def ask(client, owner: str, item: str, text: str, key: str, on_date: str = sc.DEMO_DATE, run_kind: str = "mock", max_calls: int = MAX_CALLS) -> dict:
+def ask(client, owner: str, item: str, text: str, key: str, on_date: str = sc.DEMO_DATE, run_kind: str = "mock", max_calls: int = MAX_CALLS,
+        run_enabled: bool = False) -> dict:
     """質問か頼みを1回処理する。同じキーで答え済みなら前の答え（repeated）。失敗は failed で残し、同じキーで送り直せる。"""
     if owner not in db.OWNER_CODES:
         raise ChatError(f"知らない会社です：{owner}")
@@ -512,7 +632,7 @@ def ask(client, owner: str, item: str, text: str, key: str, on_date: str = sc.DE
         by = {n: fn for n, _, _, fn in TOOLS}
         sch = schemas()
         while calls < max_calls and t.answer is None:
-            resp = client.create(system=SYSTEM, tools=sch, messages=messages)
+            resp = client.create(system=system(run_enabled), tools=sch, messages=messages)
             calls += 1
             c = db.connect(owner)
             try:
@@ -545,7 +665,7 @@ def ask(client, owner: str, item: str, text: str, key: str, on_date: str = sc.DE
             messages.append({"role": "user", "content": results})
         if t.answer is None:
             raise ChatError(f"呼び出しの上限（{max_calls}回）までに答えがありませんでした")
-        out, dropped = finish(t, text)
+        out, dropped = finish(t, text, run_enabled)
     except Exception as e:   # 通信の失敗・部品の不具合：入力は chat_turn に残し、同じキーで送り直せる
         c = db.connect(owner)
         try:

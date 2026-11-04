@@ -480,7 +480,15 @@ def tally(f) -> dict:
             label = f"{p['seller']} {p['quantity']}{u}：" + to
         else:
             label = "見送る（仕入れない）"
-        short_after = [dict(shop=shops.get(a["customer"], a["customer"]), quantity=a["short_after"]) for a in o["after"] if a["short_after"] > 0]
+        short_after = []   # 同じ店の注文が2つ以上ある時は、店ごとに合計する（「順風満帆 2本・順風満帆 2本」と並べない）
+        for a in o["after"]:
+            if a["short_after"] > 0:
+                shop = shops.get(a["customer"], a["customer"])
+                hit = next((x for x in short_after if x["shop"] == shop), None)
+                if hit:
+                    hit["quantity"] += a["short_after"]
+                else:
+                    short_after.append(dict(shop=shop, quantity=a["short_after"]))
         options.append(dict(option_id=o["option_id"], code=o["code"], no=no, label=label, short_after=short_after, rows=n.get("rows") or [],
                             note=("この案では足りない：" + "・".join(f"{s['shop']} {s['quantity']}{u}" for s in short_after)) if short_after else "全部の注文がそろう"))
     held_text = "・".join(f"{h['name']} {h['quantity']}{u}" for h in held)

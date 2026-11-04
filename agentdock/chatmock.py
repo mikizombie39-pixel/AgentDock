@@ -127,6 +127,28 @@ class ChatPolicy:
                 out.append(dict(ref=r, quote=None))
         return out
 
+    def _order_qty(self, shop):
+        f = next(iter(self._facts(lambda x: x["ref"].startswith("order_book:") and x["text"].startswith(shop + "（"))), None)
+        m = f and re.search(r"の注文 (\d+)本", f["text"])
+        return int(m.group(1)) if m else None
+
+    def _best_next(self, keep, other):
+        """全部の案の比較（calc:compare）で不足が最も少ない案を取り、次の行動の文を作る（数は案の計算の文から）。"""
+        c = next(iter(self._facts(lambda x: x["ref"] == "calc:compare")), None)
+        m = c and re.search(r"最も少ないのは (案\d+(?:・案\d+)*)", c["text"])
+        if not m:
+            return None, None, None
+        no = int(re.findall(r"\d+", m.group(1))[0])
+        o = next((x for x in self._facts(lambda x: x["ref"].startswith("calc:option:")) if x["text"].startswith(f"案{no}：")), None)
+        if o is None:
+            return None, None, None
+        dist = re.split(r"・この案|・全部", o["text"])[0]
+        k, ot = re.search(rf"{keep} (\d+)本", dist), re.search(rf"{other} (\d+)本", dist)
+        sh = re.search(rf"足りない：.*?{other} (\d+)本", o["text"])
+        nxt = (f"案{no}なら、{keep} {k.group(1) if k else 0}本を守り、{other}にも {ot.group(1) if ot else 0}本を回せます。" +
+               (f"{other}は {sh.group(1)}本不足します。" if sh else "") + "配分を確認しますか？")
+        return no, nxt, o["ref"]
+
     def _ans(self, kind, conclusion, next_action, evidence, detail=None, interpretation=None, request=None):
         return dict(kind=kind, conclusion=conclusion, next_action=next_action, detail=detail, interpretation=interpretation,
                     evidence=evidence, request=request)
@@ -147,9 +169,10 @@ class ChatPolicy:
                              detail=(f"{self._shop_of('料亭')}の代わりの魚の好みは、記録していません。" if no else "") + rule)
         if self.pv:
             d = self._directive_fact()
-            return self._ans("preview", self.pv["text"], "下見だけです。この配分で進めるなら、そう頼んでください。",
+            short = "".join(x + "。" for x in self.pv["text"].split("。") if x.startswith(("足りない", "全部の注文", "社長の指示")))
+            return self._ans("preview", "下見の計算です。" + short, "下見だけです。何も実行していません。進める時は、画面のボタンで選んでください。",
                              self._ev(self.pv["ref"], d and self.pv["against_directive"] and d["ref"]),
-                             interpretation="社長の指示と違う分け方は、私から社長に確かめます。" if self.pv["against_directive"] else None)
+                             detail=self.pv["text"], interpretation="社長の指示と違う分け方は、私から社長に確かめます。" if self.pv["against_directive"] else None)
         if self._has("社長") and self._has("言", "指示"):
             cur = [r for r in self.read.values() if r["use"].startswith("今有効")]
             old = [r for r in self.read.values() if not r["use"].startswith("今有効")]
@@ -168,13 +191,16 @@ class ChatPolicy:
             cur = [r for r in self.read.values() if r["category"] == "社長の指示"]
             if d and cur:
                 m = re.search(r"「(.+?)」", d["text"])
-                keep = self._shop_of("スーパー")
-                other = self._shop_of("料亭")
+                keep, other = self._shop_of("スーパー"), self._shop_of("料亭")
                 follow = next((r for r in rules if "指示に沿う" in r["title"]), None)
-                return self._ans("question", f"{keep}を先にそろえるのは、社長の今朝の指示「{m.group(1)}」があるためです。",
-                                 f"{other}を先にするなら、私が社長に確かめます。",
-                                 self._ev(d["ref"], cur[0]["id"], follow and follow["id"]),
-                                 interpretation="指示どおりの分け方なら、あなたが決めてよい決まりです。" if follow else None)
+                q = self._order_qty(keep)
+                con = f"社長から「{m.group(1)}」と指示されています。" + (f"今日は{keep}の {q}本を確保する方針です。" if q else "")
+                no, nxt, oref = self._best_next(keep, other)
+                return self._ans("question", con, nxt or f"{other}を先にするなら、私が社長に確かめます。",
+                                 self._ev(d["ref"], cur[0]["id"], follow and follow["id"], no and "calc:compare", oref,
+                                          *(x["ref"] for x in self._facts(lambda x: x["ref"].startswith("order_book:")))),
+                                 detail="注文を受けた順と、会社のルールは根拠を開くと読めます。",
+                                 interpretation=(f"案{no}は一番不足が少ない案です。" if no else None))
             base = next((r for r in rules if "優先" in r["title"]), None)
             return self._ans("question", "今日は社長の指示の記録がありません。先に受けた注文から確保する決まりで進めています。",
                              "優先を変えるなら、社長に確かめます。", self._ev(base and base["id"], *(x["ref"] for x in self._facts(lambda x: x["ref"].startswith("order_book:")))))
@@ -205,7 +231,7 @@ class ChatPolicy:
             a = next((a for a in acts if "見送" in a["label"]), None)
         elif self._has("聞いて", "確かめて"):
             a = next((a for a in acts if a["id"] == "sqconfirm_customer"), None)
-        elif self._has("進めて", "頼む"):
+        elif self._has("進めて", "頼む", "買って", "その案で"):
             m = re.search(r"案\s*(\d+)", self.q)
             opts = [a for a in acts if a["id"].startswith("opt")]
             if m and opts:

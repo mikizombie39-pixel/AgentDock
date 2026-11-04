@@ -432,7 +432,7 @@
   }
   function evGroups(a) {
     const g = [];
-    a.evidence.forEach((e) => { const l = evLabel(e); let x = g.find((y) => y.label === l); if (!x) { x = { label: l, type: e.type, items: [] }; g.push(x); } x.items.push(e); });
+    a.evidence.filter((e) => !e.past).forEach((e) => { const l = evLabel(e); let x = g.find((y) => y.label === l); if (!x) { x = { label: l, type: e.type, items: [] }; g.push(x); } x.items.push(e); });
     return g;
   }
   // 根拠を開く：該当の文・日付・確認の時刻・出所（記録にある事実／コードの計算／AI の解釈）
@@ -442,6 +442,8 @@
       const s = e.src || {};
       const rows = [{ text: e.quote, origin: e.origin === "calc" ? "calc" : "fact", q: true }];
       if (e.quote_from === "record" && e.type !== "calc" && e.quote !== e.text) rows.push({ text: e.text, origin: "fact" });
+      if (e.merged) rows.push({ text: "同じ指示の記録（1つにまとめて表示）：" + e.merged.map((m) => `${m.label} ${m.ref}`).join("・"), origin: "code" });
+      if (e.conflict) rows.push({ text: `食い違い：${e.conflict} と内容が違います。社長に確かめてください`, origin: "code" });
       if (s.vault) rows.push({ text: `Vault ${s.vault}・${s.category}・出所：${s.source}・対象：${s.subject}`, origin: "fact" },
         { text: `記録日 ${s.recorded_on}・適用 ${s.valid_from}〜${s.valid_to || "期限なし"}（実演の日 ${"2026-11-02"} に${e.validity}）`, origin: "fact" },
         { text: s.fictional, origin: "code" });
@@ -461,13 +463,15 @@
     if (!a) return "";
     let h = `<div class="q">${icon("user-round")}${esc(t.question)}</div><div class="bubble" data-turn="${t.turn_id ?? t.id}">
       <span class="kind ${esc(a.kind)}">${esc(a.kind_label)}</span>${chatKind === "mock" ? `<span class="mock">模擬の AI の答え</span>` : ""}
-      <div class="con">${esc(a.conclusion)}</div><div class="nx">${icon("arrow-right")}${esc(a.next_action)}</div>`;
+      <div class="con">${esc(a.conclusion)}</div><div class="nx">${icon("arrow-right")}${esc(a.next_action)}</div>` +
+      (a.deadline ? `<div class="dl">${icon("clock")}${esc(a.deadline)}</div>` : "");
     if (latest && (a.detail || a.interpretation)) h += `<div class="det" hidden>${a.detail ? `<div>${esc(a.detail)}</div>` : ""}${a.interpretation ? `<div class="ai">${esc(a.interpretation)}</div>` : ""}</div>`;
     if (latest && a.notes && a.notes.length) h += `<div class="notes">${a.notes.map(esc).join("<br>")}</div>`;
     if (latest) {
       h += `<div class="row2">` + evGroups(a).map((g, i) => `<button class="evchip ${esc(g.type)}" data-ev="${i}">${icon(EV_ICON[g.type] || "file-search")}${esc(g.label)}${g.items.length > 1 ? `<small>${g.items.length}件</small>` : ""}</button>`).join("") +
         (a.detail || a.interpretation ? `<button class="linkbtn" data-det="1">${icon("chevron-down")}詳しく</button>` : "") +
-        (a.evidence.length ? `<button class="linkbtn" data-evall="1">${icon("file-search")}根拠を全部開く</button>` : "") + `</div>`;
+        (a.evidence.length ? `<button class="linkbtn" data-evall="1">${icon("file-search")}根拠を全部開く</button>` : "") +
+        (a.evidence.some((e) => e.past) ? `<button class="linkbtn" data-past="1">${icon("notebook-text")}過去の指示との違い</button>` : "") + `</div>`;
       const r = a.request;
       if (r && !t.executed && !chatRun) {
         h += `<div class="reqbox"><p>${esc(r.confirm_text)}</p><small>チャットからの実行は、まだ使えません。進める時は、画面のボタン（${esc(r.label)}）を押してください。</small></div>`;
@@ -536,6 +540,7 @@
     const ev = e.target.closest("[data-ev]");
     if (ev) return openPop(ev, evCard(a, evGroups(a)[+ev.dataset.ev]));
     if (e.target.closest("[data-evall]")) return openPop(e.target.closest("[data-evall]"), evCard(a, null));
+    if (e.target.closest("[data-past]")) return openPop(e.target.closest("[data-past]"), evCard(a, { items: a.evidence.filter((x) => x.past) }));
     if (e.target.closest("[data-det]")) { const d = $("chatlog").querySelector(".det"); if (d) d.hidden = !d.hidden; return; }
     if (e.target.closest("[data-cancel]")) { t.executed = { result: { result: "やめました（何も実行していません）" }, status: 0 }; $("chatlog")._h = null; drawChat(); return; }
     const run = e.target.closest("[data-run]");

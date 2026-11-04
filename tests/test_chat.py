@@ -77,11 +77,11 @@ class DaveQuestionsTest(ChatBase):
         self.consult()
         a = self.ask("なぜ魚廣を優先するの？")["answer"]
         self.assertEqual(a["kind"], "question")
-        self.assertEqual(a["conclusion"], f"{SUPER}を先にそろえるのは、社長の今朝の指示「{SUPER}の分は落とすなよ」があるためです。")
-        self.assertEqual([(e["ref"], e["type_label"]) for e in a["evidence"]],
-                         [("directive:1", "社長の指示"), ("AM-D-20261102-01", "社長の指示"), ("AM-R-005", "会社のルール")])
-        self.assertEqual(a["evidence"][1]["validity"], "今有効")
-        self.assertEqual(a["interpretation"], "指示どおりの分け方なら、あなたが決めてよい決まりです。")   # AI の解釈は事実と分ける
+        self.assertEqual(a["conclusion"], f"社長から「{SUPER}の分は落とすなよ」と指示されています。今日は{SUPER}の 4本を確保する方針です。")
+        self.assertEqual([(e["ref"], e["type_label"]) for e in a["evidence"]][:3],
+                         [("directive:1", "社長の指示"), ("AM-R-005", "会社のルール"), ("calc:compare", "コードの計算")])
+        self.assertEqual((a["evidence"][0]["refs"], a["evidence"][0]["validity"]), (["directive:1", "AM-D-20261102-01"], "今有効"))
+        self.assertEqual(a["interpretation"], "案1は、担当者が選べる案の中で、計算上、不足が最も少ない案です。")   # AI の解釈は事実と分ける
 
         a = self.ask("社長は何と言っていた？")["answer"]
         self.assertIn(f"「{SUPER}の分は落とすなよ」", a["conclusion"])
@@ -107,13 +107,14 @@ class DaveQuestionsTest(ChatBase):
     def test_the_evidence_carries_the_date_and_the_time_it_was_checked(self):
         self.consult()
         r = self.ask("社長は何と言っていた？")
-        e = next(x for x in r["answer"]["evidence"] if x["ref"] == "AM-D-20261102-01")
-        self.assertEqual(e["dates"], ["2026-11-02", "2026-11-02", "2026-11-02"])
+        d = next(x for x in r["answer"]["evidence"] if x["ref"] == "directive:1")       # 業務 DB の指示と Vault の指示は1つにまとまる
+        self.assertEqual(d["dates"], ["2026-11-02", "2026-11-02", "2026-11-02"])
+        e = chat.turn("amiya", r["turn_id"])["fetched"]["AM-D-20261102-01"]
         self.assertEqual(e["src"]["source"], "社長の電話（模擬）")
         self.assertIn("架空", e["src"]["fictional"])
-        self.assertTrue(e["checked_at"].startswith(db.now_iso()[:10]))
-        d = next(x for x in r["answer"]["evidence"] if x["ref"] == "directive:1")
-        self.assertEqual((d["at"], d["src"]), ("2026-11-02T05:40:00+09:00", dict(db="owner", table="directive", id=1)))
+        self.assertTrue(d["checked_at"].startswith(db.now_iso()[:10]))
+        self.assertEqual((d["at"], d["src"]["table"], d["src"]["id"], d["src"]["vault"]), ("2026-11-02T05:40:00+09:00", "directive", 1, "AM-D-20261102-01"))
+        self.assertEqual([m["ref"] for m in d["merged"]], ["directive:1", "AM-D-20261102-01"])
 
 
 class ContextChangesTest(ChatBase):
@@ -190,8 +191,9 @@ class NoSideEffectTest(ChatBase):
         self.consult()
         a = self.ask("順風満帆を優先にするとどうなる？")["answer"]
         self.assertEqual(a["kind"], "preview")
-        self.assertEqual(a["conclusion"], f"今の手当て 8本（登録済み 0本・仮押さえ 8本）を {RYOTEI}→{SUPER} の順に回すと、{RYOTEI} 6本・{SUPER} 2本。"
-                                          f"足りないのは {SUPER} 2本。社長の指示の売り先が欠けるので、社長の確認が要ります。")
+        self.assertEqual(a["conclusion"], f"下見の計算です。足りないのは {SUPER} 2本。社長の指示の売り先が欠けるので、社長の確認が要ります。")
+        self.assertEqual(a["detail"], f"今の手当て 8本（登録済み 0本・仮押さえ 8本）を {RYOTEI}→{SUPER} の順に回すと、{RYOTEI} 6本・{SUPER} 2本。"
+                                      f"足りないのは {SUPER} 2本。社長の指示の売り先が欠けるので、社長の確認が要ります。")
         self.assertEqual([e["ref"] for e in a["evidence"]], ["calc:preview:1", "directive:1"])
         self.assertIsNone(a["request"])
 
@@ -349,7 +351,9 @@ class RequestTest(ChatBase):
         server.CHAT_RUN = False                                                             # 段2：質問と下見だけ
         self.consult()
         st, r = self.http("POST", "/api/chat", dict(owner="amiya", item="buri_xl", text="その案で進めて", idempotency_key="off1"))
-        self.assertEqual((st, r["run_enabled"], r["answer"]["kind"]), (200, False, "request"))   # 確認の文は出す
+        self.assertEqual((st, r["run_enabled"], r["answer"]["kind"]), (200, False, "unsupported"))   # 段2：実行しないと答え、押すボタンを案内する
+        self.assertEqual(r["answer"]["conclusion"], chat.RUN_OFF_CONCLUSION)
+        self.assertTrue(r["answer"]["suggested_action"]["label"])
         before = snapshot()
         st, out = self.run_turn(r["turn_id"], "offx")
         self.assertEqual((st, out["error"]), (403, "not_enabled"))

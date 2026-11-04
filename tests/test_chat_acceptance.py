@@ -13,6 +13,7 @@ import json
 from agentdock import chat, db, events, vault
 from agentdock.seed import scenario as sc
 from tests.test_chat import ChatBase, snapshot
+from tests.test_mate import RYOTEI, SUPER
 
 D = sc.DEMO_DATE
 Q1, Q1_OLD, Q2, Q3 = "なぜ魚廣を優先するの？", "なぜ浜見商店を優先するの？", "この配分では何本足りない？", "順風満帆の大将の好きな酒は？"
@@ -28,12 +29,36 @@ class AcceptanceTest(ChatBase):
     def test_1_why_uohiro_returns_the_current_directive_and_its_id(self):
         self.consult()
         a = self.ask(Q1)["answer"]
-        refs = {e["ref"]: e for e in a["evidence"]}
-        self.assertIn("AM-D-20261102-01", refs)                                   # Vault の社長の指示（識別子）
-        self.assertEqual((refs["AM-D-20261102-01"]["type_label"], refs["AM-D-20261102-01"]["validity"]), ("社長の指示", "今有効"))
-        self.assertIn("directive:1", refs)                                         # 業務 DB の今日の指示
-        self.assertNotIn("AM-D-20261020-01", refs)                                 # 期限切れの指示を今の根拠にしない
-        self.assertIn("落とすなよ", a["conclusion"])
+        self.assertEqual(a["conclusion"], f"社長から「{SUPER}の分は落とすなよ」と指示されています。今日は{SUPER}の 4本を確保する方針です。")   # 最初は短く
+        self.assertEqual(a["next_action"], f"案1なら、{SUPER} 4本を守り、{RYOTEI}にも 4本を回せます。{RYOTEI}は 2本不足します。配分を確認しますか？")
+        self.assertEqual(a["deadline"], "仮押さえの期限：B社 07:00・岩瀬漁協 07:00")                        # 期限はコードが別に添える
+        self.assertEqual(a["kind"], "question")                                                               # 下見・質問のまま（実行しない）
+        refs = [e["ref"] for e in a["evidence"]]
+        self.assertEqual(refs[:3], ["directive:1", "AM-R-005", "calc:compare"])                               # 指示 → ルール → 計算 → 注文
+        self.assertTrue(all(r.startswith("order_book:") for r in refs[4:]))
+        d = a["evidence"][0]
+        self.assertEqual(d["refs"], ["directive:1", "AM-D-20261102-01"])                                      # 同じ指示は1つ・識別子は両方
+        self.assertEqual(d["validity"], "今有効")
+        self.assertNotIn("AM-D-20261102-01", refs)
+        self.assertNotIn("AM-D-20261020-01", refs)                                                            # 期限切れの指示を今の根拠にしない
+        self.assertEqual(a["interpretation"], "案1は、担当者が選べる案の中で、計算上、不足が最も少ない案です。")
+
+    def test_1c_a_directive_that_differs_from_the_vault_is_not_merged(self):
+        self.consult()
+        c = db.connect("amiya")
+        try:
+            with c:
+                c.execute("UPDATE directive SET body = '順風満帆の分は落とすなよ' WHERE id = 1")
+        finally:
+            c.close()
+        a = self.ask(Q1)["answer"]
+        refs = [e["ref"] for e in a["evidence"]]
+        self.assertIn("AM-D-20261102-01", refs)                                                               # 分けたまま
+        d = next(e for e in a["evidence"] if e["ref"] == "directive:1")
+        self.assertEqual(d["conflict"], "AM-D-20261102-01")
+        self.assertNotIn("merged", d)
+        self.assertTrue(a.get("conflict"))
+        self.assertEqual(a["next_action"], "社長の指示の記録が食い違っています。どちらが正しいか、社長に確かめてください。")
 
     def test_1b_the_old_shop_name_is_not_mapped_to_uohiro(self):
         self.consult()
@@ -60,6 +85,9 @@ class AcceptanceTest(ChatBase):
         a2 = self.ask(Q2)["answer"]
         self.assertEqual(a2["detail"], self.v()["tally"]["line"])
         self.assertNotEqual(a2["detail"], a["detail"])                                       # 同じ質問でも、今の状態が変われば答えが変わる
+        o1 = next(o for o in self.v()["tally"]["options"] if o["no"] == 1)
+        self.assertEqual(o1["note"], f"この案では足りない：{RYOTEI} 4本")                     # 同じ店の注文が2つでも、店ごとに合計する
+        self.assertEqual(a2["conclusion"], f"案1の配分だと、{RYOTEI} 4本足りません。")
 
     def test_3_a_question_with_no_record_is_not_answered_with_made_up_facts(self):
         self.consult()
@@ -99,3 +127,44 @@ class AcceptanceTest(ChatBase):
         self.assertEqual(snapshot(), before)
         v1 = self.v()
         self.assertEqual((v1["stance"], v1["exec"], v1["tally"]["line"]), (v0["stance"], v0["exec"], v0["tally"]["line"]))
+
+
+    def test_6_a_request_in_step_2_is_not_run_and_says_so(self):
+        self.consult()
+        before = snapshot()
+        a = self.ask("では、その案で買っておいて")["answer"]
+        self.assertEqual((a["kind"], a["kind_label"], a["request"]), ("unsupported", "未対応", None))
+        self.assertEqual(a["conclusion"], chat.RUN_OFF_CONCLUSION)
+        self.assertTrue(a["next_action"].startswith("進める時は、画面の［"))
+        self.assertEqual(snapshot(), before)
+
+
+class SuperlativeTest(ChatBase):
+    """「一番」「最も」は、全部の案の比較（calc:compare）と照合する。"""
+
+    def compare(self, best, low=2):
+        return dict(rows=[], best=best, low=low)
+
+    def test_without_the_comparison_the_sentence_is_dropped(self):
+        txt, why = chat.check_superlative("案1が一番欠けが少ないです。魚廣は守れます。", False, self.compare([1]), "本")
+        self.assertEqual((txt, len(why)), ("魚廣は守れます。", 1))
+
+    def test_an_option_that_is_not_the_lowest_is_dropped(self):
+        txt, why = chat.check_superlative("案3が最も不足が少ない。", True, self.compare([1]), "本")
+        self.assertEqual((txt, len(why)), ("", 1))
+
+    def test_a_tie_names_all_lowest_options(self):
+        txt, _ = chat.check_superlative("案1が一番不足が少ない。", True, self.compare([1, 2]), "本")
+        self.assertEqual(txt, "担当者が選べる案の中で、計算上、不足が最も少ないのは 案1・案2 です（同じ 2本）。")
+
+    def test_the_unique_lowest_is_said_in_the_code_words(self):
+        txt, _ = chat.check_superlative("これが一番いい案です。", True, self.compare([1]), "本")
+        self.assertEqual(txt, "案1は、担当者が選べる案の中で、計算上、不足が最も少ない案です。")
+
+    def test_the_comparison_counts_every_option(self):
+        self.consult()
+        s = chat.work_state("amiya", "buri_xl")
+        v = self.v()
+        self.assertEqual(len(s["compare"]["rows"]), len([o for o in v["tally"]["options"]]))   # 全部の案を計算に入れる
+        staff = [r for r in s["compare"]["rows"] if r["staff"]]
+        self.assertEqual(s["compare"]["best"], [r["no"] for r in staff if r["short"] == min(x["short"] for x in staff)])
