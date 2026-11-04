@@ -271,6 +271,86 @@ class NumbersTest(Base):
         self.assertNotIn("3本", " ".join([v["headline"]["text"]] + [s["text"] for s in v["sub"]]))
 
 
+class NumberCheckTest(NumbersTest):
+    """AI の文の数の照合（案イ）：合う文は残る（照合済み）／合わない文は替わる／照合できない数を含む文は替わる。"""
+
+    def allowed(self):
+        self.consult()
+        f = mate.facts("amiya", "buri_xl")
+        return f, mate.tally(f), mate._allowed(f, mate.tally(f))
+
+    def test_the_rules_of_the_check(self):
+        f, tl, al = self.allowed()                                      # 注文 10本・登録 0本・仮押さえ 8本・あと 2本
+        ok = [f"{RYOTEI}の追加で 2本足りません。どう分けますか",          # 足りない数 2 ＝ あと 2本
+              f"{RYOTEI}の追加で ２本足りません",                          # 全角の数字
+              f"案1なら{RYOTEI}が 4本足りません",                          # 案ごとの足りない数 4
+              "岩瀬漁協の 1本 17,500円の条件で進めますか",                  # 「1本 17,500円」は単価の言い方・17,500円は届いた条件の値
+              "期限は 07:00 です",                                          # 条件の期限
+              "10本のうち 8本を押さえています"]
+        for t in ok:
+            self.assertEqual(mate.check_numbers(t, al), [], t)
+        bad = {f"{RYOTEI}の追加で 3本足りません": "足りない数 3本",
+               "岩瀬漁協は 1本 17,400円です": "17,400円",
+               "期限は 08:15 です": "時刻 08:15",
+               "あと 2つ足りません": "単位が無く",                           # 単位の無い数は照合できない
+               "2箱 足りません": "品目の単位",                              # ブリは本で数える
+               "全部で 12本です": "12本"}
+        for t, why in bad.items():
+            r = mate.check_numbers(t, al)
+            self.assertTrue(r and any(why in x for x in r), (t, r))
+        said, rep = mate._ai_text(f, tl, ok[0], dict(db="owner", table="workspace_turn", id=1))
+        self.assertEqual((said["origin"], rep), ("ai_checked", None))
+        said, rep = mate._ai_text(f, tl, "あと 2つ足りません", dict(db="owner", table="workspace_turn", id=1))
+        self.assertIsNone(said)
+        self.assertTrue(rep["reason"].startswith("AI の文の数を照合し、合わない数があったのでコードの文に替えました"))
+
+    def test_a_matching_ai_text_stays_with_its_origin(self):
+        orig = mockdock.Policy._present
+
+        def honest(policy, item, orders, terms):
+            name, inp = orig(policy, item, orders, terms)
+            inp = dict(inp, short_question=f"{RYOTEI}の追加で 2本足りません。どう分けますか")
+            return name, inp
+        mockdock.Policy._present = honest
+        try:
+            self.start()
+            self.worker.step()
+            self.add_ryotei()
+            self.run_all()
+        finally:
+            mockdock.Policy._present = orig
+        v = self.v()
+        self.assertEqual(v["headline"]["text"], f"{RYOTEI}の追加で 2本足りません。どう分けますか")
+        self.assertEqual((v["headline"]["origin"], v["why"]["speech_origin"]["label"]), ("ai_checked", "AI が書いた文（照合済み）"))
+        self.check_one_calculation(v)
+
+
+class ClockTest(Base):
+    def test_the_screen_shows_the_demo_morning_clock(self):
+        k = mate.clock("amiya")
+        self.assertIsNone(k["anchor"])
+        self.assertEqual(k["now_shown"], sc.DEMO_CLOCK_START)            # 始める前は朝の開始の時刻
+        self.start()
+        k = mate.clock("amiya")
+        c = db.connect("amiya")
+        try:
+            granted = c.execute("SELECT granted_at FROM delegation").fetchone()[0]
+        finally:
+            c.close()
+        self.assertEqual(k["anchor"], granted)                           # 業務の開始＝委任の記録の時刻
+        import datetime as dt
+        later = (dt.datetime.fromisoformat(granted) + dt.timedelta(minutes=12, seconds=30)).isoformat()
+        self.assertEqual(mate.shown_time(granted, k), "05:45")
+        self.assertEqual(mate.shown_time(later, k), "05:57")              # 経過した分だけ進む
+        self.assertEqual(mate.shown_time(f"{D}T05:40:00+09:00", k), "05:40")   # 実演の朝の時刻の記録はそのまま
+        self.worker.step()
+        v = self.v()
+        self.assertEqual(v["receipt"]["at_shown"], "05:45")
+        rows = [r for s in v["why"]["sections"] + v["why"]["more"] for r in s["rows"] if r["at"]]
+        self.assertTrue(rows and all(r["at_shown"] == mate.shown_time(r["at"], k) for r in rows))
+        self.assertIn("実際に記録した時刻とは違います", v["clock"]["note"])
+
+
 class MorningTest(Base):
     def test_before_start_greets_and_lists_todays_work_by_the_rule(self):
         v = self.v()

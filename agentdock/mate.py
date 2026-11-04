@@ -23,6 +23,7 @@
 import datetime
 import json
 import re
+import unicodedata
 
 from agentdock import agents, authority, consult, criteria, db, market, work
 from agentdock.seed import scenario as sc
@@ -123,7 +124,8 @@ def facts(owner: str, item: str, on_date: str = sc.DEMO_DATE, worker_error: str 
     holds = work._live_holds(owner, item, on_date)
     return dict(owner=owner, on_date=on_date, item=dict(code=it["code"], name=it["name"], short=_short_name(it["name"]), unit=unit),
                 cur=cur, orders=orders, directives=dirs, delegation=dict(dele) if dele else None, runs=runs, started=started, presents=presents,
-                acts=acts, messages=msgs, posts=posts, holds=holds, vault=vault, authority=auth, worker_error=worker_error)
+                acts=acts, messages=msgs, posts=posts, holds=holds, vault=vault, authority=auth, worker_error=worker_error,
+                clock=clock(owner, on_date))
 
 
 def _suppliers(f) -> dict:
@@ -292,25 +294,146 @@ def _orders_phrase(f, orders=None) -> str:
     return "・".join(f"{o['shop']} {o['quantity']}{u}" for o in (orders if orders is not None else f["orders"]))
 
 
-DIGITS = re.compile(r"[0-9０-９]")
+# AI の文の数の照合（2026-11-04 デイブ・案イ）：AI の文に出てくる数を、同じ場面のコードの値と比べる。
+# 全部合えば AI の文を出し（出所「AI が書いた文（照合済み）」）、1つでも合わない・照合できない数があればコードの文に替える。
+#   ・全角の数字と記号は NFKC で半角にしてから読む。桁の区切りの「,」は外す
+#   ・「HH:MM」は時刻：記録の時刻（条件の期限・注文と指示の時刻・模擬の時計で見せる時刻）と比べる
+#   ・数の後の単位で比べる先を決める：品目の単位（本・箱・kg）＝数量／「円」＝値と金額。単位の無い数・ほかの単位の数・品目と違う単位は照合できない
+#   ・数量の直後（5字以内）に「足りない」「足りません」が続く数は、足りない数（あと何本・案ごとの足りない数・注文ごとの足りない数）とだけ比べる
+#   ・「1本 17,500円」の「1本」は単価の言い方として読み飛ばす。「案1」は画面の案の続き番号と比べる
+NUM = re.compile(r"(\d{1,2}):(\d{2})|(\d[\d,]*)\s*(本|箱|kg|円)?")
+UNITS_QTY = ("本", "箱", "kg")
 
 
-def _ai_question(f):
-    """今の版の AI の短い問い（AI が書いた文・記録の番号つき）。
-    数字を含む AI の文は画面の語りかけに使わない（取引の整合性：金額と数量はコードが業務 DB から出す）。
-    使わなかった時は (None, 使わなかった文と記録の番号) を返し、理由の1枚に出所を残す。"""
+def _allowed(f, tl) -> dict:
+    """この場面でコードが持っている値（数量・足りない数・値と金額・時刻）。"""
+    qty, short, yen, times = set(), set(), set(), set()
+    for k in ("total", "registered", "held_total", "left"):
+        qty.add(tl[k])
+    short.add(tl["left"])
+    for o in f["orders"]:
+        qty.update((o["quantity"], o["registered"], o["secured"], o["short"]))
+        short.add(o["short"])
+        yen.update(x for x in (o["ceiling_yen"], o["sell_price_yen"]) if x)
+        times.add(o["received_at"][11:16])
+    for h in tl["held"] + tl["reply_only"]:
+        qty.add(h["quantity"])
+        yen.add(h["unit_price_yen"])
+    for x in f["messages"]:
+        for t in x["terms"]:
+            qty.add(t["quantity"])
+            yen.add(t["unit_price_yen"])
+            if t["valid_until"]:
+                times.add(t["valid_until"][11:16])
+    for o in f["cur"].get("options") or []:
+        n = o["numbers"]
+        if n["purchase"]:
+            qty.add(n["purchase"]["quantity"])
+            yen.update((n["purchase"]["unit_price_yen"], n["purchase_yen"]))
+        qty.update(l["quantity"] for l in n["lines"])
+        for a in o["after"]:
+            qty.update((a["short_after"], a["secured_after"]))
+            short.add(a["short_after"])
+    for s in f["cur"].get("stock") or []:
+        qty.add(s["quantity"])
+    if f["cur"].get("stock_question"):
+        qty.add(f["cur"]["stock_question"]["quantity"])
+    for d in f["directives"]:
+        times.add(d["received_at"][11:16])
+    times.add(f["clock"]["now_shown"])
+    return dict(qty=qty, short=short, yen=yen, time=times, unit=f["item"]["unit"], option_no={o["no"] for o in tl["options"]})
+
+
+def check_numbers(text: str, allowed: dict) -> list[str]:
+    """AI の文の数のうち、照合できない・合わない数の理由（空なら全部合った）。"""
+    t = unicodedata.normalize("NFKC", text)
+    out = []
+    for m in NUM.finditer(t):
+        if m.group(1):
+            hhmm = f"{int(m.group(1)):02d}:{m.group(2)}"
+            if hhmm not in allowed["time"]:
+                out.append(f"時刻 {hhmm} は記録にありません")
+            continue
+        v, unit = int(m.group(3).replace(",", "")), m.group(4)
+        if m.start() > 0 and t[m.start() - 1] == "案" and unit is None:   # 「案1」は画面の案の続き番号
+            if v not in allowed["option_no"]:
+                out.append(f"案{v} は画面の案にありません")
+            continue
+        if v == 1 and unit == allowed["unit"] and re.match(r"\s*(あたり)?\s*[\d,]+\s*円", t[m.end():]):
+            continue   # 「1本 17,500円」の「1本」は単価の言い方（数量ではない）
+        if unit is None:
+            out.append(f"数 {v} は単位が無く、照合できません")
+        elif unit == "円":
+            if v not in allowed["yen"]:
+                out.append(f"{v:,}円 はコードの値にありません")
+        elif unit != allowed["unit"]:
+            out.append(f"{v}{unit} は品目の単位（{allowed['unit']}）と違い、照合できません")
+        elif re.search(r"足り(な|ま)", t[m.end():m.end() + 5]):
+            if v not in allowed["short"]:
+                out.append(f"足りない数 {v}{unit} はコードの計算（{'・'.join(str(x) for x in sorted(allowed['short']) if x)}{unit}）と合いません")
+        elif v not in allowed["qty"]:
+            out.append(f"{v}{unit} はコードの数量にありません")
+    return out
+
+
+def _ai_text(f, tl, text, ref):
+    """AI の文を照合して出す。数が無ければ AI の文、全部合えば「照合済み」、合わなければ (None, 使わなかった文と理由)。"""
+    if not text:
+        return None, None
+    if not re.search(r"[0-9０-９]", text):
+        return _said(text, "ai", ref), None
+    bad = check_numbers(text, _allowed(f, tl))
+    if bad:
+        return None, dict(text=text, ref=ref, reason="AI の文の数を照合し、合わない数があったのでコードの文に替えました：" + "／".join(bad))
+    return _said(text, "ai_checked", ref), None
+
+
+def _ai_question(f, tl):
+    """今の版の AI の短い問い（AI が書いた文・記録の番号つき）を、照合して返す。(語りかけ, 使わなかった時の記録)。"""
     cur = f["cur"]
     if cur.get("waiting_for") != "staff" or not f["presents"]:
         return None, None
     t = f["presents"][-1]
     lay = json.loads(t["layout_json"] or "{}")
-    q = lay.get("short_question") or lay.get("ask_human")
-    if not q:
-        return None, None
-    ref = dict(db="owner", table="workspace_turn", id=t["id"])
-    if DIGITS.search(q):
-        return None, dict(text=q, ref=ref, reason="数字を含む AI の文は使わず、コードの計算の文に替えました")
-    return _said(q, "ai", ref), None
+    return _ai_text(f, tl, lay.get("short_question") or lay.get("ask_human"), dict(db="owner", table="workspace_turn", id=t["id"]))
+
+
+# ── 模擬の時計（2026-11-04 デイブ・案ア）：記録の時刻は実際の時計のまま DB に残し、画面に出す時だけ実演の朝の時計に写す ──
+#   見せる時刻 ＝ 実演の朝の開始（scenario.DEMO_CLOCK_START）＋（記録の時刻 − 業務の開始の実際の時刻）
+#   業務の開始の実際の時刻＝委任の記録の時刻（無ければ、実演の日でない最初の出来事の時刻・その次に最初の AI の起動の時刻）
+#   実演の日の日付で書かれた記録（朝の注文 05:00・社長の指示 05:40・条件の期限 07:00 など）は、もともと実演の時計なのでそのまま出す
+
+def clock(owner: str, on_date: str = sc.DEMO_DATE) -> dict:
+    con = db.connect(owner)
+    try:
+        r = con.execute("SELECT granted_at FROM delegation WHERE trade_date = ? ORDER BY id LIMIT 1", (on_date,)).fetchone()
+        anchor = r[0] if r else None
+        if anchor is None:
+            r = con.execute("SELECT min(at) FROM biz_event WHERE at NOT LIKE ?", (on_date + "%",)).fetchone()
+            anchor = r[0]
+        if anchor is None:
+            r = con.execute("SELECT min(started_at) FROM agent_run").fetchone()
+            anchor = r[0]
+    finally:
+        con.close()
+    start = f"{on_date}T{sc.DEMO_CLOCK_START}:00+09:00"
+    now = db.now_iso()
+    out = dict(anchor=anchor, start=start, on_date=on_date)
+    out["now_shown"] = shown_time(now, out) if anchor else sc.DEMO_CLOCK_START
+    out["now_real"] = now
+    out["note"] = (f"模擬の時計です。実際に記録した時刻とは違います。業務の開始（委任）を朝 {sc.DEMO_CLOCK_START} に合わせ、"
+                   "そこから経過した分だけ進めています。")
+    return out
+
+
+def shown_time(ts: str | None, ck: dict) -> str | None:
+    """記録の時刻を、画面に出す模擬の時計の「HH:MM」に写す。"""
+    if not ts:
+        return None
+    if ts.startswith(ck["on_date"]) or not ck["anchor"]:
+        return ts[11:16]
+    d = datetime.datetime.fromisoformat(ck["start"]) + (datetime.datetime.fromisoformat(ts) - datetime.datetime.fromisoformat(ck["anchor"]))
+    return d.strftime("%H:%M")
 
 
 def tally(f) -> dict:
@@ -383,10 +506,10 @@ def view(owner: str, item: str, on_date: str = sc.DEMO_DATE, worker_error: str |
     cur = f["cur"]
     short = _short_total(f)
     head, sub, ask, actions = None, [], None, []
-    aiq, replaced = _ai_question(f)
     mid = _mid_orders(f)
     sup = _suppliers(f)
     tl = tally(f)
+    aiq, replaced = _ai_question(f, tl)
 
     if ex == "before_start":
         vol = order_volume(owner, on_date)
@@ -483,7 +606,7 @@ def view(owner: str, item: str, on_date: str = sc.DEMO_DATE, worker_error: str |
     return dict(owner=owner, item=f["item"], subject=subject(f), stance=st, stance_label=STANCE_LABEL.get(st), rule=rule, refs=refs,
                 exec=ex, exec_label=EXEC_LABEL[ex], stop=stop, who=who, headline=head, sub=sub, ask=ask, actions=actions,
                 why=why_card(f, st, ex, head, tl, replaced), receipt=_fresh_receipt(f), tally=tl, taken=taken(f, ex), others=others(owner, item, on_date),
-                orgs=list(orgs.values()), net=net, op=_op(f, ex), president=pres, busy=_running(f) is not None)
+                orgs=list(orgs.values()), net=net, op=_op(f, ex), president=pres, busy=_running(f) is not None, clock=f["clock"])
 
 
 def _op(f, ex):
@@ -531,7 +654,8 @@ def _choices(f, tl):
             acts.append(dict(id=f"sq{c['code']}", label=c["label"], kind="primary" if c["code"] == q["recommended"] else "secondary",
                              recommended=c["code"] == q["recommended"],
                              api=dict(path="/api/stock_answer", body=dict(question_id=q["question_id"], choice=c["code"], role="staff"))))
-        return acts, _said(q["text"], "ai", dict(db="owner", table="stock_question", id=q["question_id"]))
+        said, _ = _ai_text(f, tl, q["text"], dict(db="owner", table="stock_question", id=q["question_id"]))
+        return acts, said or _said(f"引当のない在庫 {q['quantity']}{f['item']['unit']}の扱いを決めてください。", "calc")
     d = next(d for d in cur.get("drafts") or [] if d["status"] == "draft")
     acts = [dict(id=f"dr{d['draft_id']}a", label="この文で伝える", kind="primary", api=dict(path="/api/draft", body=dict(draft_id=d["draft_id"], action="approve", role="staff"))),
             dict(id=f"dr{d['draft_id']}d", label="使わない", kind="secondary", api=dict(path="/api/draft", body=dict(draft_id=d["draft_id"], action="discard", role="staff")))]
@@ -545,7 +669,8 @@ def _row(text, origin, at=None, ref=None):
 
 
 ORIGIN_LABEL = {"reply": "相手から届いた回答", "calc": "コードの計算", "vault": "Vault の記録", "candidate": "まだ確認していない候補",
-                "directive": "社長の指示（記録）", "record": "業務の記録", "ai": "AI が書いた文", "code": "コードの決まった文"}
+                "directive": "社長の指示（記録）", "record": "業務の記録", "ai": "AI が書いた文", "ai_checked": "AI が書いた文（照合済み）",
+                "code": "コードの決まった文"}
 
 
 def why_card(f, st, ex, head, tl=None, replaced=None) -> dict:
@@ -655,7 +780,10 @@ def why_card(f, st, ex, head, tl=None, replaced=None) -> dict:
         lead = "任された範囲で、照会を進めています。"
         sections = [("照会先と回答", history), ("足りない数と注文", orders), ("社長の指示と権限", dir_rows)]
         more = [("在庫", stock), ("Vault の記録", vault)]
-    keep = lambda xs: [dict(title=t, rows=r) for t, r in xs if r]   # noqa: E731
+    ck = f["clock"]
+
+    def keep(xs):   # 時刻は模擬の時計で見せる（実際の記録の時刻 at も残す）
+        return [dict(title=t, rows=[dict(r, at_shown=shown_time(r["at"], ck)) for r in rows]) for t, rows in xs if rows]
     return dict(lead=lead, sections=keep(sections), more=keep(more),
                 speech_origin=dict(origin=head["origin"], label=ORIGIN_LABEL[head["origin"]], ref=head["ref"], replaced=replaced) if head else None,
                 origins=ORIGIN_LABEL)
@@ -704,6 +832,7 @@ def receipt(f) -> dict | None:
     after = [r for r in f["runs"] if r["ended_at"] and _t(r["started_at"]) >= _t(out["at"]) and r["summary"] and r["outcome"] not in STOP_OUTCOMES]
     if after:
         out["ai"] = _said(after[-1]["summary"], "ai", dict(db="owner", table="agent_run", id=after[-1]["id"]))
+    out["at_shown"] = shown_time(out["at"], f["clock"])
     return out
 
 
@@ -824,7 +953,7 @@ def tender_view(owner: str, code: str, on_date: str = sc.DEMO_DATE) -> dict:
                 why=dict(lead="入札の仕事が、本物の処理のどこまでつながっているかです。",
                          sections=[dict(title="接続の状態", rows=[_row(f"{r['label']}：{r['text']}", "record" if r["connected"] else "candidate") for r in t["rows"]])],
                          more=[], speech_origin=dict(origin="code", label=ORIGIN_LABEL["code"], ref=None), origins=ORIGIN_LABEL),
-                receipt=None, taken=[], others=[])
+                receipt=None, taken=[], others=[], clock=clock(owner, on_date))
 
 
 # ── 今日の仕事の流れ（今日の記録から、コードの決まりで並べる）──────────────────
@@ -903,7 +1032,7 @@ def morning(owner: str, on_date: str = sc.DEMO_DATE) -> dict:
             c = 0
         return (j["done"], c, _t(j["deadline"]) if j["deadline"] else 10 ** 12, not j["directive"], STEPS.index(j["step"]))
     jobs.sort(key=key)
-    return dict(owner=owner, date=on_date, steps=list(STEPS), jobs=jobs, delegated=dele is not None,
+    return dict(owner=owner, date=on_date, steps=list(STEPS), jobs=jobs, delegated=dele is not None, clock=clock(owner, on_date),
                 rule="手の要る順（あなたが決める仕事と締切のある仕事 → AI に任せてよい仕事 → 社長を待つ仕事）。同じ区分は締切・社長の指示・工程の順")
 
 

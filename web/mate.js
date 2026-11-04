@@ -39,6 +39,7 @@
   async function tick() {
     try {
       V = await getJSON(`/api/mate?owner=${OWNER}&item=${encodeURIComponent(ITEM)}`);
+      if (V.clock) $("clocktext").textContent = `模擬の時計 ${V.clock.now_shown}`;
       if (V.exec === "before_start" && ROLE === "staff") await drawMorning(); else drawTalk();
     } catch (e) { /* keep the last view */ }
     setTimeout(tick, 1000);
@@ -257,7 +258,7 @@
     setHTML("receipt", r && mine ? receiptHTML(r) : "");
   }
   function receiptHTML(r) {
-    return `<div class="receipt">${icon("circle-check")}<div>${esc(r.text)}${r.ai ? `<small>AI の文：${esc(r.ai.text)}</small>` : ""}<small>サーバーの記録 ${esc(r.ref.table)} ${r.ref.id ?? ""}・${hm(r.at)}</small></div></div>`;
+    return `<div class="receipt">${icon("circle-check")}<div>${esc(r.text)}${r.ai ? `<small>AI の文：${esc(r.ai.text)}</small>` : ""}<small>サーバーの記録 ${esc(r.ref.table)} ${r.ref.id ?? ""}・${esc(r.at_shown || hm(r.at))}（模擬の時計）</small></div></div>`;
   }
   function celebrate(anchor) {
     if (REDUCED || !anchor) return;
@@ -324,11 +325,12 @@
   }
   function renderPop(c, keepMore) {
     const pop = $("pop"), open = keepMore && pop.querySelector(".moresecs") && !pop.querySelector(".moresecs").hidden;
-    const sec = (s) => `<h4>${esc(s.title)}</h4>` + s.rows.map((r) => `<div class="prow"><span class="o ${esc(r.origin)}">${esc((c.origins || {})[r.origin] || r.origin)}</span><span>${esc(r.text)}</span>
-      ${r.at ? `<span class="at">${hm(r.at)}</span>` : ""}</div>`).join("");
+    // 時刻は模擬の時計（at_shown）。詳しい経緯の中では、実際に記録した時刻も並べる
+    const sec = (s, real) => `<h4>${esc(s.title)}</h4>` + s.rows.map((r) => `<div class="prow"><span class="o ${esc(r.origin)}">${esc((c.origins || {})[r.origin] || r.origin)}</span><span>${esc(r.text)}</span>
+      ${r.at ? `<span class="at">${esc(r.at_shown || hm(r.at))}${real && r.at_shown && !String(r.at).startsWith(c.on_date || "2026-11-02") ? `<span class="real">（実際の記録 ${esc(String(r.at).slice(11, 19))}）</span>` : ""}</span>` : ""}</div>`).join("");
     const html = `<div class="ph">${icon("notebook-text")}こう考えた理由<button id="popclose">${icon("x")}閉じる</button></div>
-      <div class="lead">${esc(c.lead)}</div>${c.sections.map(sec).join("")}
-      ${c.more && c.more.length ? `<button class="more" id="popmore">${icon("chevron-down")}詳しい経緯と Vault の記録</button><div class="moresecs" ${open ? "" : "hidden"}>${c.more.map(sec).join("")}</div>` : ""}
+      <div class="lead">${esc(c.lead)}</div>${c.sections.map((s) => sec(s, false)).join("")}
+      ${c.more && c.more.length ? `<button class="more" id="popmore">${icon("chevron-down")}詳しい経緯と Vault の記録</button><div class="moresecs" ${open ? "" : "hidden"}>${c.more.map((s) => sec(s, true)).join("")}</div>` : ""}
       ${c.speech_origin ? `<div class="origin">いまの語りかけの出所：${esc(c.speech_origin.label)}${c.speech_origin.ref ? `（${esc(c.speech_origin.ref.table)} ${c.speech_origin.ref.id}）` : ""}
         ${c.speech_origin.replaced ? `<br>${esc(c.speech_origin.replaced.reason)}（AI の文「${esc(c.speech_origin.replaced.text)}」・${esc(c.speech_origin.replaced.ref.table)} ${c.speech_origin.replaced.ref.id}）` : ""}</div>` : ""}`;
     if (pop._h !== html) { pop.innerHTML = html; pop._h = html; }
@@ -393,6 +395,17 @@
     const r = await fetch("/api/order", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(V.op.body) });
     if (!r.ok) $("opbtn").textContent = "（実演の操作）入れられませんでした";
     $("opbtn").disabled = false;
+  });
+  // 模擬の時計：触れると、実際に記録した時刻とは違うことと、写し方が開く
+  $("clockbtn").addEventListener("click", () => {
+    const k = V && V.clock;
+    if (!k) return;
+    openPop($("clockbtn"), { lead: k.note, sections: [{ title: "時刻", rows: [
+      { text: `画面の時刻（模擬の時計）：${k.now_shown}`, origin: "code" },
+      { text: `実際の時刻：${String(k.now_real).slice(11, 19)}`, origin: "record" },
+      { text: k.anchor ? `業務の開始の実際の時刻：${String(k.anchor).slice(11, 19)} → 画面では ${String(k.start).slice(11, 16)}` : "業務はまだ始まっていません", origin: "record" },
+      { text: "朝の注文・社長の指示・条件の期限は、もともと実演の朝の時刻で記録しているので、そのまま出します", origin: "code" }] }],
+      more: [], speech_origin: null, origins: { code: "コードの決まり", record: "業務の記録" } });
   });
   $("flowbtn").addEventListener("click", async () => {
     const m = await getJSON(`/api/morning?owner=${OWNER}`);

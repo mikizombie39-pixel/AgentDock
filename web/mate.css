@@ -18,6 +18,10 @@ button:disabled { cursor: default; opacity: .5; }
 .brand b { font-size: 27px; letter-spacing: .01em; }
 .brand small { font-size: 13px; color: var(--mute); }
 .brand .mock { margin-left: 8px; }
+.clockbtn { border: 1px dashed var(--mute); background: transparent; border-radius: 12px; padding: 2px 10px; font-size: 12px; color: var(--mute);
+  display: inline-flex; gap: 4px; align-items: center; font-variant-numeric: tabular-nums; }
+.clockbtn .ic { width: 14px; height: 14px; }
+.prow .real { font-size: 11px; color: var(--mute); white-space: nowrap; }
 .brand nav { margin-left: auto; display: flex; gap: 8px; }
 .brand nav a, .brand nav button { font-size: 12px; color: var(--mute); text-decoration: none; border: 1px solid var(--line); background: var(--paper);
   border-radius: 14px; padding: 4px 11px; display: inline-flex; gap: 4px; align-items: center; }
