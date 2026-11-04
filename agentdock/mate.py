@@ -25,7 +25,7 @@ import json
 import re
 import unicodedata
 
-from agentdock import agents, authority, consult, criteria, db, market, work
+from agentdock import agents, authority, consult, criteria, db, market, results, work
 from agentdock.seed import scenario as sc
 
 STANCE_LABEL = {"bold": "強気", "struggle": "苦戦", "careful": "慎重", "sorry": "残念", "relief": "安堵"}
@@ -33,7 +33,11 @@ STANCE_RULE = {"bold": "別の仕入先がある", "struggle": "選択肢が少�
                "sorry": "交渉が成立しなかった", "relief": "必要な数量と条件がそろった"}
 EXEC_LABEL = {"before_start": "始める前", "running": "実行中", "your_turn": "あなたの判断待ち", "president": "社長確認中",
               "stopped": "停止", "registered": "登録済み", "idle": "見張り中"}
-STEPS = ("注文を確認", "買い付け", "振分け", "出荷")
+# 工程の帯（SAL 2026-11-04・デイブ 18:50）：品目ごとに、実際の処理に合わせた工程。処理につながっていない段は「未接続」と出す
+BAND_STEPS = {"relative": ("注文の確認", "落札結果の照合", "不足分の手配", "振分け・承認", "結果の引継ぎ"),
+              "tender": ("注文の確認", "入札", "落札結果の照合", "振分け", "結果の引継ぎ")}
+# 今日の仕事の並べ方の「工程の順」（工程の名前を帯に合わせる前と同じ順位）
+STEP_RANK = {"注文の確認": 0, "入札": 1, "落札結果の照合": 1, "不足分の手配": 1, "振分け・承認": 2, "振分け": 2, "結果の引継ぎ": 3}
 STOP_OUTCOMES = ("error", "max_turns", "refusal")
 PRESIDENT = "社長（網谷さん）"
 
@@ -641,6 +645,7 @@ def view(owner: str, item: str, on_date: str = sc.DEMO_DATE, worker_error: str |
     return dict(owner=owner, item=f["item"], subject=subject(f), stance=st, stance_label=STANCE_LABEL.get(st), rule=rule, refs=refs,
                 exec=ex, exec_label=EXEC_LABEL[ex], stop=stop, who=who, headline=head, sub=sub, ask=ask, actions=actions,
                 why=why_card(f, st, ex, head, tl, replaced), receipt=_fresh_receipt(f), tally=tl, taken=taken(f, ex), others=others(owner, item, on_date),
+                band=band(owner, item, on_date, worker_error, f), band_others=band_others(owner, item, on_date),
                 orgs=list(orgs.values()), net=net, op=_op(f, ex), president=pres, busy=_running(f) is not None, clock=f["clock"])
 
 
@@ -975,6 +980,17 @@ def others(owner: str, item: str, on_date: str) -> list[dict]:
     return out
 
 
+def band_others(owner: str, item: str, on_date: str) -> list[dict]:
+    """帯の下の一行（ほかの仕事）：今日の注文がある品目のうち、開いている品目の外。"""
+    con = db.connect(owner)
+    try:
+        codes = [r["code"] for r in con.execute("SELECT DISTINCT i.code FROM order_book o JOIN item i ON i.id = o.item_id WHERE o.order_date = ? ORDER BY i.id",
+                                                (on_date,))]
+    finally:
+        con.close()
+    return [band(owner, c, on_date) for c in codes if c != item]
+
+
 def _item_name(owner, code):
     con = db.connect(owner)
     try:
@@ -1047,8 +1063,103 @@ def tender_view(owner: str, code: str, on_date: str = sc.DEMO_DATE) -> dict:
                 why=dict(lead="入札の仕事が、本物の処理のどこまでつながっているかです。",
                          sections=[dict(title="接続の状態", rows=[_row(f"{r['label']}：{r['text']}", "record" if r["connected"] else "candidate") for r in t["rows"]])],
                          more=[], speech_origin=dict(origin="code", label=ORIGIN_LABEL["code"], ref=None), origins=ORIGIN_LABEL),
-                receipt=None, taken=[], others=[], clock=clock(owner, on_date))
+                receipt=None, taken=[], others=[], clock=clock(owner, on_date),
+                band=band(owner, code, on_date), band_others=band_others(owner, code, on_date))
 
+
+# ── 工程の帯（今日の記録から、コードが各段の状態を決める）──────────────────
+
+def _results_for(owner: str, code: str, on_date: str) -> list[dict]:
+    """漁協から届いた今日の結果（せり・入札）のうち、この品目の行。"""
+    con = db.connect(owner)
+    try:
+        return [r for r in results._received(con, on_date) if r["item"] == code]
+    finally:
+        con.close()
+
+
+def band(owner: str, code: str, on_date: str = sc.DEMO_DATE, worker_error: str | None = None, f: dict | None = None) -> dict:
+    """品目の工程の帯。各段の状態＝done（済み）・current（いま）・todo（これから）・skipped（今日は無い）。
+    connected=False の段は本物の処理につながっていない（未接続）。工程が進むのは記録が変わった時だけ（時間では進めない）。
+    mode は現在地の印の動き方：before（始める前）・working（AI が働いている）・you（あなたの判断待ち）・president（社長確認中）・
+    stopped（停止）・unconnected（未接続の段で止まっている）・watch（見張り中）・done（登録まで済んだ）"""
+    tender = tender_item(owner, code)
+    names = BAND_STEPS["tender" if tender else "relative"]
+    steps = [dict(name=n, state="todo", connected=True, note=None) for n in names]
+    S = {x["name"]: x for x in steps}
+    S["結果の引継ぎ"]["connected"] = False
+    got = _results_for(owner, code, on_date)
+    ex = None
+    if tender:
+        t = tender_status(owner, code, on_date)
+        u, name = t["unit"], t["name"]
+        S["入札"]["connected"] = t["connected"]
+        S["振分け"]["connected"] = False
+        con = db.connect(owner)
+        try:
+            dele = con.execute("SELECT id FROM delegation WHERE trade_date = ? LIMIT 1", (on_date,)).fetchone()
+        finally:
+            con.close()
+        S["注文の確認"]["note"] = f"注文 {len(t['orders'])}件"
+        mode = "before"
+        if dele is None:
+            S["注文の確認"].update(state="current", note="一緒に確かめる前")
+        else:
+            S["注文の確認"]["state"] = "done"
+            S["入札"].update(state="current", note="未接続" if not t["connected"] else t["status"])
+            mode = "unconnected" if not t["connected"] else "working"
+        if got:   # 入札の結果が届いていれば、照合は済み
+            for n in ("注文の確認", "入札"):
+                S[n]["state"] = "done"
+            won = sum(r["quantity"] for r in got if r["is_own"])
+            S["落札結果の照合"].update(state="done", note=f"落札 {won}{u}")
+    else:
+        f = f or facts(owner, code, on_date, worker_error)
+        u, name = f["item"]["unit"], f["item"]["short"]
+        ex, _ = exec_state(f)
+        S["注文の確認"]["note"] = f"注文 {len(f['orders'])}件"
+        mode = "before"
+        if ex == "before_start":
+            S["注文の確認"].update(state="current", note="一緒に確かめる前")
+        else:
+            S["注文の確認"]["state"] = "done"
+            if got:
+                won = sum(r["quantity"] for r in got if r["is_own"])
+                kind = "せり" if all(str(r["lot_no"]).startswith("A-") for r in got) else "市場"
+                S["落札結果の照合"].update(state="done", note=f"{kind}の落札 {won}{u}")
+            elif f["runs"]:   # 結果が届かないまま手配が始まった：今日の結果は無い（未着と不足を分ける）
+                S["落札結果の照合"].update(state="skipped", note="今日の結果は届いていません")
+            else:
+                S["落札結果の照合"].update(state="current", note="漁協の結果を待っています")
+                mode = "watch"
+            if got or f["runs"]:
+                tl = tally(f)
+                cur = f["cur"]
+                held = f"仮押さえ {tl['held_total']}{u}" if tl["held_total"] else None
+                if ex == "registered":
+                    S["不足分の手配"].update(state="done", note=held)
+                    S["振分け・承認"].update(state="done", note="登録済み")
+                    mode = "done"
+                elif ex in ("your_turn", "president"):
+                    S["不足分の手配"].update(state="done", note=held)
+                    S["振分け・承認"].update(state="current", note="配分を相談中・あなたの判断待ち" if ex == "your_turn" else "社長確認中")
+                    mode = "you" if ex == "your_turn" else "president"
+                else:
+                    who = _counterparts(f)
+                    note = {"stopped": "停止", "running": (f"{'・'.join(who)}に照会中" if who else "照会の準備中"), "idle": "見張り中"}.get(ex, EXEC_LABEL.get(ex))
+                    if ex == "running" and _mid_orders(f):
+                        note = "追加注文で照会し直し中"
+                    S["不足分の手配"].update(state="current", note=note)
+                    mode = {"stopped": "stopped", "running": "working"}.get(ex, "watch")
+    cur_i = next((i for i, x in enumerate(steps) if x["state"] == "current"), None)
+    here = steps[cur_i] if cur_i is not None else None
+    if here:
+        summary = f"{name}：{here['name']}" + (f"（{here['note']}）" if here["note"] else "")
+    elif mode == "done":
+        summary = f"{name}：登録済み（結果の引継ぎは未接続）"
+    else:
+        summary = f"{name}：{EXEC_LABEL.get(ex, '') if ex else ''}"
+    return dict(item=code, name=name, tender=tender, steps=steps, current=cur_i, mode=mode, summary=summary)
 
 # ── 今日の仕事の流れ（今日の記録から、コードの決まりで並べる）──────────────────
 
@@ -1085,20 +1196,20 @@ def morning(owner: str, on_date: str = sc.DEMO_DATE) -> dict:
         con.close()
     jobs = []
 
-    def add(key, step, title, count, reason, who, dest, deadline=None, directive=False, connected=True, done=False):
+    def add(key, step, title, count, reason, who, dest, deadline=None, directive=False, connected=True, done=False, rank=None):
         if count <= 0:
             return
-        jobs.append(dict(key=key, step=step, title=title, count=count, reason=reason, who=who,
+        jobs.append(dict(key=key, step=step, rank=STEP_RANK[step] if rank is None else rank, title=title, count=count, reason=reason, who=who,
                          who_label={"you": "あなたが決める", "ai": "AI に任せてよい", "president": "社長を待つ"}[who],
                          dest=dest, deadline=deadline, directive=directive, connected=connected, done=done))
-    add("check", "注文を確認", "今朝の注文と社長の指示を確かめる", n_orders + len(dirs), f"注文 {n_orders}件・社長の指示 {len(dirs)}件", "you", "check",
+    add("check", "注文の確認", "今朝の注文と社長の指示を確かめる", n_orders + len(dirs), f"注文 {n_orders}件・社長の指示 {len(dirs)}件", "you", "check",
         done=dele is not None)
     for it in items:
         name, u = _short_name(it["name"]), sc.unit_label(it["unit"])
         if tender_item(owner, it["code"]):
             t = tender_status(owner, it["code"], on_date)
             q = sum(o["quantity"] for o in t["orders"])
-            add(f"tender:{it['code']}", "買い付け", f"{name} {q}{u}の入札", q,
+            add(f"tender:{it['code']}", "入札", f"{name} {q}{u}の入札", q,
                 ("条件内で入札する" + ("" if t["connected"] else "（未接続）")), "ai", it["code"], deadline=t["closes_at"],
                 directive=any(o["customer"] in dir_customers for o in t["orders"]), connected=t["connected"])
             continue
@@ -1108,25 +1219,25 @@ def morning(owner: str, on_date: str = sc.DEMO_DATE) -> dict:
         shops = "・".join(f"{o['shop']} {o['quantity']}{u}" for o in f["orders"])
         directive = any(o["customer"] in dir_customers for o in f["orders"])
         if ex == "your_turn":
-            add(f"ask:{it['code']}", "買い付け" if f["cur"].get("waiting_for") else "振分け", f"{name}：AI の相談に答える", 1,
-                "AI があなたの判断を待っています", "you", it["code"], directive=directive)
+            add(f"ask:{it['code']}", "振分け・承認", f"{name}：AI の相談に答える", 1,
+                "AI があなたの判断を待っています", "you", it["code"], directive=directive, rank=1 if f["cur"].get("waiting_for") else 2)
         if ex == "president":
-            add(f"pres:{it['code']}", "買い付け", f"{name}：社長の確認", 1, "社長の答えを待っています", "president", it["code"], directive=directive)
-        add(f"buy:{it['code']}", "買い付け", f"{name} {short}{u}の買い付け（照会）", short, f"{shops}・あと {short}{u}", "ai", it["code"], directive=directive)
+            add(f"pres:{it['code']}", "振分け・承認", f"{name}：社長の確認", 1, "社長の答えを待っています", "president", it["code"], directive=directive, rank=1)
+        add(f"buy:{it['code']}", "不足分の手配", f"{name} {short}{u}の買い付け（照会）", short, f"{shops}・あと {short}{u}", "ai", it["code"], directive=directive)
         spare = sum(s["quantity"] for s in f["cur"].get("stock") or [])
-        add(f"spare:{it['code']}", "振分け", f"{name}：引当のない在庫 {spare}{u}の扱い", spare, "売り先の当てのない在庫です",
+        add(f"spare:{it['code']}", "振分け・承認", f"{name}：引当のない在庫 {spare}{u}の扱い", spare, "売り先の当てのない在庫です",
             "you" if f["cur"].get("stock_question") else "ai", it["code"])
         reg = sum(o["registered"] for o in f["orders"])
-        add(f"sort:{it['code']}", "振分け", f"{name} {reg}{u}を注文ごとに分ける", reg, "登録した仕入れ（振分けの処理は未接続）", "ai", it["code"], connected=False)
+        add(f"sort:{it['code']}", "振分け・承認", f"{name} {reg}{u}を注文ごとに分ける", reg, "登録した仕入れ（振分けの処理は未接続）", "ai", it["code"], connected=False)
     cls = {"you": 0, "ai": 1, "president": 2}
 
     def key(j):
         c = cls[j["who"]]
         if j["deadline"] and c == 1:
             c = 0
-        return (j["done"], c, _t(j["deadline"]) if j["deadline"] else 10 ** 12, not j["directive"], STEPS.index(j["step"]))
+        return (j["done"], c, _t(j["deadline"]) if j["deadline"] else 10 ** 12, not j["directive"], j["rank"])
     jobs.sort(key=key)
-    return dict(owner=owner, date=on_date, steps=list(STEPS), jobs=jobs, delegated=dele is not None, clock=clock(owner, on_date),
+    return dict(owner=owner, date=on_date, bands=[band(owner, it["code"], on_date) for it in items], jobs=jobs, delegated=dele is not None, clock=clock(owner, on_date),
                 rule="手の要る順（あなたが決める仕事と締切のある仕事 → AI に任せてよい仕事 → 社長を待つ仕事）。同じ区分は締切・社長の指示・工程の順")
 
 

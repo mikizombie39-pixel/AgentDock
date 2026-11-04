@@ -40,6 +40,7 @@
     try {
       V = await getJSON(`/api/mate?owner=${OWNER}&item=${encodeURIComponent(ITEM)}`);
       if (V.clock) $("clocktext").textContent = `模擬の時計 ${V.clock.now_shown}`;
+      if (V.band) drawBand(V.band, V.band_others || []);
       if (V.exec === "before_start" && ROLE === "staff") await drawMorning(); else drawTalk();
     } catch (e) { /* keep the last view */ }
     setTimeout(tick, 1000);
@@ -48,7 +49,7 @@
   // ═════ the morning ═════
   async function drawMorning() {
     $("talk").hidden = true; $("morning").hidden = false; $("flowbtn").hidden = true;
-    if (!M) { M = await getJSON(`/api/morning?owner=${OWNER}`); flowOnce(); }
+    if (!M) { M = await getJSON(`/api/morning?owner=${OWNER}`); }
     const key2 = phase;
     if ($("morning").dataset.phase === key2) return;
     $("morning").dataset.phase = key2;
@@ -57,19 +58,88 @@
     if (phase === "delegate") { drawSideOrders(); drawPropose(); }
   }
 
-  // 朝の見通し：注文を確認 → 買い付け → 振分け → 出荷（流れが走る絵で一度だけ）
-  function flowOnce() {
-    const steps = M.steps;
-    $("flowline").innerHTML = steps.map((s, i) => `<span class="node" data-i="${i}">${esc(s)}</span>` + (i < steps.length - 1 ? `<span class="seg"><i></i></span>` : "")).join("") +
-      `<span class="lbl">今朝の見通し</span>`;
-    const nodes = [...$("flowline").querySelectorAll(".node")], segs = [...$("flowline").querySelectorAll(".seg i")];
-    if (REDUCED) { nodes.forEach((n) => n.classList.add("lit")); segs.forEach((s) => (s.style.width = "100%")); return; }
-    nodes.forEach((n, i) => setTimeout(() => {
-      n.classList.add("lit");
-      if (segs[i]) segs[i].animate([{ width: "0%" }, { width: "100%" }], { duration: 420, fill: "forwards", easing: "ease-in-out" });
-      if (i > 0) setTimeout(() => nodes[i - 1].classList.remove("lit"), 300);
-    }, 300 + i * 520));
-    setTimeout(() => { nodes.forEach((n) => n.classList.remove("lit")); nodes[0].classList.add("lit"); }, 300 + steps.length * 520 + 400);
+  // ═════ 工程の帯（上部に常時）═════
+  // 形は記録から決まる（GET /api/mate の band）。動き：最初に線が現在地まで走る／待つ間も現在地の輪が脈打ち、済みの線の上を光が流れる／
+  // 記録が変わって段が進んだ時だけ、済みになった丸が跳ね、線が次の段まで伸びる。入力欄や読んでいる内容は動かさない
+  const BAND_WORD = { done: "済み", current: "いま", todo: "これから", skipped: "今日は無し" };
+  const BAND_ICON = { you: "hand", president: "hourglass", working: "loader", stopped: "octagon-x", unconnected: "octagon-pause", watch: "eye", before: "clipboard-list", done: "circle-check" };
+  let BAND = null;
+  function bandPct(b) {
+    const n = b.steps.length;
+    let at = b.current;
+    if (at == null) { at = -1; b.steps.forEach((s, i) => { if (s.state === "done") at = i; }); }
+    return at <= 0 ? 0 : (at / (n - 1)) * 100;
+  }
+  function drawBand(b, others) {
+    const el = $("band"), n = b.steps.length;
+    const first = el._item !== b.item;
+    if (first) {
+      el.style.gridTemplateColumns = `repeat(${n}, 1fr)`;
+      el.innerHTML = `<div class="track" style="left:${50 / n}%;right:${50 / n}%"><div class="fill"><i class="comet"></i></div><div class="ahead"><i></i></div></div>` +
+        b.steps.map((s, i) => `<div class="bstep" data-i="${i}"><div class="dot"></div><div class="bname">${esc(s.name)}</div><div class="bword"></div><div class="bnote"></div></div>`).join("");
+      el._item = b.item; BAND = null;
+    }
+    el.dataset.mode = b.mode;
+    const nodes = [...el.querySelectorAll(".bstep")];
+    b.steps.forEach((s, i) => {
+      const nd = nodes[i];
+      const cls = `bstep ${s.state}${s.connected ? "" : " nc"}${i === b.current ? " m-" + b.mode : ""}`;
+      if (nd.className !== cls) nd.className = cls;
+      const ic = s.state === "done" ? "circle-check" : i === b.current ? BAND_ICON[b.mode] || "eye" : !s.connected ? "octagon-pause" : "";
+      const dot = nd.querySelector(".dot");
+      if (dot._ic !== ic) { dot.innerHTML = ic ? icon(ic) : ""; dot._ic = ic; }
+      const word = !s.connected && s.state !== "done" ? "未接続" : BAND_WORD[s.state];
+      const w = nd.querySelector(".bword"); if (w.textContent !== word) w.textContent = word;
+      const note = s.state === "current" || s.state === "done" || s.state === "skipped" ? s.note || "" : "";
+      const nt = nd.querySelector(".bnote"); if (nt.textContent !== (note === word ? "" : note)) nt.textContent = note === word ? "" : note;
+    });
+    const fill = el.querySelector(".fill"), ahead = el.querySelector(".ahead");
+    const pct = bandPct(b);
+    const seg = 100 / (n - 1);
+    ahead.style.left = pct + "%"; ahead.style.width = (b.current != null && b.current < n - 1 ? seg : 0) + "%";
+    const prev = BAND;
+    if (first || !prev) {   // 開いた時：線が現在地まで走り、済みの段が順に灯る
+      if (REDUCED) fill.style.width = pct + "%";
+      else {
+        fill.animate([{ width: "0%" }, { width: pct + "%" }], { duration: 300 + pct * 9, easing: "ease-in-out", fill: "forwards" }).onfinish = () => { fill.style.width = pct + "%"; };
+        nodes.forEach((nd, i) => { if (b.steps[i].state === "done" || i === b.current) pop(nd.querySelector(".dot"), 180 + i * (pct * 9 / Math.max(1, b.current ?? n))); });
+      }
+    } else if (prev.current !== b.current || bandPct(prev) !== pct) {   // 記録が変わって段が動いた
+      const from = bandPct(prev);
+      if (REDUCED) fill.style.width = pct + "%";
+      else {
+        fill.animate([{ width: from + "%" }, { width: pct + "%" }], { duration: 700, easing: "cubic-bezier(.3,.7,.3,1)", fill: "forwards" }).onfinish = () => { fill.style.width = pct + "%"; };
+        nodes.forEach((nd, i) => { if (b.steps[i].state === "done" && prev.steps[i] && prev.steps[i].state !== "done") { pop(nd.querySelector(".dot"), 0); burst(nd.querySelector(".dot")); } });
+        if (b.current != null) pop(nodes[b.current].querySelector(".dot"), 650);
+      }
+    } else if (prev.mode !== b.mode && b.current != null && !REDUCED) {   // 同じ段で状態が変わった（判断待ち → 社長確認中 など）
+      pop(nodes[b.current].querySelector(".dot"), 0);
+    }
+    BAND = b;
+    const oh = others.length ? `<span>ほかの仕事：</span>` + others.map((o) => {
+      const nc = o.mode === "unconnected" || o.mode === "stopped";
+      return `<button data-item="${esc(o.item)}" class="${nc ? "nc" : ""}">${icon(o.tender ? "package" : "fish")}${esc(o.summary)}${o.mode === "done" ? "" : '<i class="pip"></i>'}</button>`;
+    }).join("") : "";
+    setHTML("bandothers", oh);
+  }
+  function pop(dot, delay) {
+    if (REDUCED || !dot) return;
+    dot.animate([{ transform: "scale(.6)" }, { transform: "scale(1.3)" }, { transform: "" }], { duration: 520, delay, easing: "ease-out" });
+  }
+  function burst(anchor) {
+    if (REDUCED || !anchor) return;
+    const card = $("card"), cr = card.getBoundingClientRect(), a = anchor.getBoundingClientRect();
+    const x0 = a.left - cr.left + a.width / 2, y0 = a.top - cr.top + a.height / 2;
+    for (let k = 0; k < 12; k++) {
+      const d = document.createElement("i");
+      d.className = "confetti";
+      d.style.background = ["#3B6E77", "#2F6B4F", "#C9A24A"][k % 3];
+      d.style.left = x0 + "px"; d.style.top = y0 + "px";
+      card.appendChild(d);
+      const ang = (k / 12) * Math.PI * 2, dist = 22 + Math.random() * 18;
+      d.animate([{ transform: "translate(0,0) scale(1)", opacity: 1 }, { transform: `translate(${Math.cos(ang) * dist}px,${Math.sin(ang) * dist}px) scale(.5)`, opacity: 0 }],
+        { duration: 650, easing: "cubic-bezier(.2,.7,.3,1)" }).onfinish = () => d.remove();
+    }
   }
 
   // 今日の仕事：何もない所から、一つずつ現れる（砂が集まる）
@@ -207,8 +277,6 @@
     drawAsk(isPres);
     drawReceipt();
     setHTML("taken", (V.taken || []).length ? `${icon("bot")}${esc(V.taken.join("　/　"))}` : "");
-    setHTML("others", (V.others || []).length ? `<span>ほかの仕事：</span>` + V.others.map((o) => `<button data-item="${esc(o.item)}">${icon(o.connected ? "fish" : "package")}${esc(o.name)} · <span class="${o.connected ? "" : "nc"}">${esc(o.status)}</span></button>`).join("")
-      + (V.tender ? `<button data-item="buri_xl">${icon("fish")}ブリに戻る</button>` : "") : (V.tender ? `<button data-item="buri_xl">${icon("fish")}ブリに戻る</button>` : ""));
     $("opbtn").hidden = !(V.op && !isPres);
     if (V.op) $("opbtn").textContent = V.op.label;
     if (popFor === "why" && !$("pop").hidden) renderPop(V.why, true);
@@ -388,7 +456,7 @@
       document.querySelectorAll("#acts .dbtn").forEach((x) => (x.disabled = false));
     }
   });
-  $("others").addEventListener("click", (e) => {
+  $("bandothers").addEventListener("click", (e) => {
     const b = e.target.closest("button[data-item]");
     if (b) location.search = `?item=${encodeURIComponent(b.dataset.item)}` + (ROLE === "president" ? "&role=president" : "");
   });

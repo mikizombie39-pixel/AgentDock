@@ -3,7 +3,7 @@
   起きる順は出来事の時刻（マイクロ秒）で決まる。どの組織が何の出来事で起きるかは agents.WAKE。
   安全装置：起動の数の上限（max_runs）と、場面全体の呼び出しの上限（max_total_calls）。
 """
-from agentdock import agents, broadcast, db, events, network
+from agentdock import agents, broadcast, db, events, network, results
 from agentdock.seed import scenario as sc
 
 MAX_RUNS = 16
@@ -46,16 +46,19 @@ def apply_variant(name: str) -> None:
 
 
 def start(on_date: str = sc.DEMO_DATE, variant: str = "normal", item: str = "aji") -> dict:
-    """順1：漁協の資料を3社に届ける。順2：品目の注文が入る（アジ：網谷水産と B社／ブリ：網谷水産に料亭の追加の注文）。"""
+    """順0：朝のせりの結果を漁協が全員へ届ける（各社の仲間が注文と突き合わせる）。順1：漁協の資料を3社に届ける。
+    順2：品目の注文が入る（アジ：網谷水産と B社／ブリ：網谷水産に料亭の追加の注文）。
+    入札の結果は届けない：AI が入札する道具が無い（mate.TENDER_TOOL）ので、網谷水産の入札は記録に無い"""
     if item not in sc.SCENE_ORDERS:
         raise ValueError(item)
+    out_results = results.publish([r for r in results.today_results(on_date) if r["method"] == "auction"])
     iw = db.connect("iwase")
     try:
         bid = broadcast.publish(broadcast.compose(iw, on_date))
     finally:
         iw.close()
     network.announce_material(bid)
-    out = dict(broadcast_id=bid)
+    out = dict(broadcast_id=bid, results_fingerprint=out_results)
     orders = sc.SCENE_ORDERS[item]
     if variant == "b_declines":   # B社の掲示は朝から出ている。料亭の注文はその後に取り消された
         out["b_post"] = network.post("buyer_b", "buy", "aji", 5, 5, 1650, "アジを 5kg 買いたいです。今朝のうちに受け渡しできれば助かります。",

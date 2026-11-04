@@ -15,7 +15,7 @@ from pathlib import Path
 import urllib.error
 import urllib.request
 
-from agentdock import agents, db, deal, disclosure, events, live, mate, mockdock, network, scene, server
+from agentdock import agents, db, deal, disclosure, events, live, mate, mockdock, network, results, scene, server
 from agentdock.companion import MockClient, Reply
 from agentdock.seed import build
 from agentdock.seed import scenario as sc
@@ -380,7 +380,7 @@ class MorningTest(Base):
         self.assertEqual(m["jobs"][0]["who"], "you")
         t = next(j for j in m["jobs"] if j["key"] == "tender:shiroebi")
         self.assertFalse(t["connected"])
-        self.assertEqual(m["steps"], ["注文を確認", "買い付け", "振分け", "出荷"])
+        self.assertEqual([j["step"] for j in m["jobs"]], ["注文の確認", "不足分の手配", "入札"])   # 工程の名前は帯と同じ
 
     def test_president_wait_goes_below_ai_work_and_your_turn_goes_first(self):
         self.start()
@@ -423,6 +423,87 @@ class MorningTest(Base):
         self.assertTrue(rows["注文"]["connected"])
         v = mate.tender_view("amiya", "shiroebi")
         self.assertEqual((v["exec"], v["exec_label"]), ("unconnected", "未接続"))
+
+
+class BandTest(Base):
+    """工程の帯（SAL 2026-11-04・デイブ 18:50）：品目ごとの工程・記録が変わった時だけ進む・未接続の段は明示する。"""
+
+    def b(self, code="buri_xl"):
+        x = mate.band("amiya", code)
+        return x, {s["name"]: (s["state"], s["note"]) for s in x["steps"]}
+
+    def test_buri_and_shiroebi_have_their_own_steps(self):
+        x, _ = self.b()
+        self.assertEqual([s["name"] for s in x["steps"]], ["注文の確認", "落札結果の照合", "不足分の手配", "振分け・承認", "結果の引継ぎ"])
+        y, _ = self.b("shiroebi")
+        self.assertEqual([s["name"] for s in y["steps"]], ["注文の確認", "入札", "落札結果の照合", "振分け", "結果の引継ぎ"])
+        self.assertEqual([s["name"] for s in y["steps"] if not s["connected"]], ["入札", "振分け", "結果の引継ぎ"])   # 未接続を明示する
+        self.assertEqual([s["name"] for s in x["steps"] if not s["connected"]], ["結果の引継ぎ"])
+        self.assertEqual((x["mode"], x["current"]), ("before", 0))
+
+    def test_the_buri_band_follows_the_records(self):
+        self.start()                                                          # 委任・朝のせりの結果が届く・注文の出来事
+        x, s = self.b()
+        self.assertEqual(s["注文の確認"][0], "done")
+        self.assertEqual(s["落札結果の照合"], ("done", "せりの落札 0本"))      # せり 12本のうち、網谷水産の落札は 0本（未着ではない）
+        self.worker.step()                                                    # 漁協と B社に照会
+        x, s = self.b()
+        self.assertEqual((x["mode"], s["不足分の手配"][0]), ("working", "current"))
+        self.assertIn("照会中", s["不足分の手配"][1])
+        self.add_ryotei()
+        self.run_all()                                                        # 相談（あなたの判断待ち）
+        x, s = self.b()
+        self.assertEqual((x["mode"], x["current"]), ("you", 3))
+        self.assertEqual(s["振分け・承認"], ("current", "配分を相談中・あなたの判断待ち"))
+        self.assertEqual(s["不足分の手配"], ("done", "仮押さえ 8本"))
+        self.assertEqual(x["summary"], "ブリ：振分け・承認（配分を相談中・あなたの判断待ち）")
+        a = self.option(self.v(), f"：{RYOTEI} 6本")
+        time.sleep(1.05)
+        self.assertEqual(self.decide(a, "s9")["result"], "needs_president")
+        x, s = self.b()
+        self.assertEqual((x["mode"], s["振分け・承認"]), ("president", ("current", "社長確認中")))
+
+    def test_registered_then_the_handover_is_not_connected(self):
+        self.start()
+        self.run_all()                                                        # 料亭の注文なし：漁協 4本で魚廣 4本
+        a = self.v()["actions"][0]
+        time.sleep(1.05)
+        self.assertEqual(self.decide(a, "r1")["result"], "registered")
+        self.run_all()
+        x, s = self.b()
+        self.assertEqual((x["mode"], x["current"]), ("done", None))
+        self.assertEqual(s["振分け・承認"], ("done", "登録済み"))
+        self.assertEqual(s["結果の引継ぎ"][0], "todo")
+        self.assertEqual(x["summary"], "ブリ：登録済み（結果の引継ぎは未接続）")
+
+    def test_stopped_shows_on_the_band(self):
+        self.start()
+        self.worker.step()
+        x = mate.view("amiya", "buri_xl", worker_error="呼び出しの上限に達しました")["band"]
+        self.assertEqual((x["mode"], x["steps"][2]["state"], x["steps"][2]["note"]), ("stopped", "current", "停止"))
+
+    def test_shiroebi_stays_at_the_unconnected_tender(self):
+        self.start()
+        y, s = self.b("shiroebi")
+        self.assertEqual((y["mode"], s["入札"], s["落札結果の照合"][0]), ("unconnected", ("current", "未接続"), "todo"))   # 入札の結果は届けていない
+        self.assertEqual(y["summary"], "シロエビ：入札（未接続）")
+
+    def test_the_mate_view_and_the_morning_carry_the_bands(self):
+        v = self.v()
+        self.assertEqual(v["band"]["item"], "buri_xl")
+        self.assertEqual([o["summary"] for o in v["band_others"]], ["シロエビ：注文の確認（一緒に確かめる前）"])
+        m = mate.morning("amiya")
+        self.assertEqual([b["item"] for b in m["bands"]], ["buri_xl", "shiroebi"])
+        self.assertEqual(mate.tender_view("amiya", "shiroebi")["band"]["item"], "shiroebi")
+
+    def test_publishing_the_morning_auction_twice_adds_nothing(self):
+        self.start()
+        results.publish([r for r in results.today_results() if r["method"] == "auction"])   # 同じ結果をもう一度送る
+        c = db.connect("amiya")
+        try:
+            self.assertEqual(c.execute("SELECT count(*) FROM auction_result_in").fetchone()[0], 2)   # B社 4本・ほかの仲買 2本
+        finally:
+            c.close()
 
 
 class ShopNameTest(unittest.TestCase):

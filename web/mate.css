@@ -59,12 +59,6 @@ hr.rule { border: 0; border-top: 1px solid var(--line); margin: 0 0 18px; }
 .job .rs { font-size: 12px; color: var(--mute); grid-column: 1 / 3; }
 .job.done { opacity: .55 !important; }
 .job .nc { color: var(--stop); font-weight: bold; }
-.flow { display: flex; align-items: center; gap: 0; margin: 0 0 18px; font-size: 13px; color: var(--mute); position: relative; height: 34px; }
-.flow .node { padding: 6px 12px; border-radius: 16px; border: 1px solid var(--line); background: var(--paper); position: relative; z-index: 1; transition: all .35s; }
-.flow .node.lit { border-color: var(--teal); color: var(--ink); background: var(--tealb); }
-.flow .seg { width: 46px; height: 2px; background: var(--line); position: relative; }
-.flow .seg i { position: absolute; left: 0; top: 0; height: 2px; width: 0; background: var(--teal); }
-.flow .lbl { margin-left: 14px; font-size: 12px; }
 
 .agent { display: flex; align-items: center; gap: 14px; margin-bottom: 14px; }
 .agent .mini { width: 52px; height: 52px; border-radius: 14px; background: var(--tealb); display: grid; place-items: center; overflow: hidden; }
@@ -164,9 +158,6 @@ hr.rule { border: 0; border-top: 1px solid var(--line); margin: 0 0 18px; }
 .receipt.pending { background: var(--paper); border: 1px solid var(--line); }
 .receipt.bad { background: #FBF1EE; color: var(--stop); }
 .confetti { position: absolute; width: 7px; height: 7px; border-radius: 50%; pointer-events: none; }
-.others { margin-top: 18px; display: flex; gap: 10px; align-items: center; font-size: 13px; color: var(--mute); }
-.others button { border: 1px solid var(--line); background: var(--paper); border-radius: 16px; padding: 5px 12px; font-size: 13px; display: inline-flex; gap: 6px; align-items: center; }
-.others .nc { color: var(--stop); font-weight: bold; }
 .taken { margin-top: 10px; font-size: 13px; color: var(--teal); display: flex; gap: 6px; align-items: center; }
 .opbtn { margin-top: 18px; border: 1px dashed var(--mute); background: transparent; border-radius: 10px; padding: 6px 12px; font-size: 12px; color: var(--mute); }
 .tenderrows { margin-top: 14px; font-size: 14px; }
@@ -367,3 +358,62 @@ hr.rule { border: 0; border-top: 1px solid var(--line); margin: 0 0 18px; }
 }
 /* チャットの答えの下：仮押さえの期限（コードが業務の記録から添える） */
 #chatlog .dl { display: flex; align-items: center; gap: 6px; margin-top: 4px; font-size: 13px; opacity: .85; }
+
+/* ── 工程の帯（上部に常時・SAL 2026-11-04 / デイブ 18:50「動きをなるべく取り入れる」）──
+   済み＝塗りの丸と ✓／いま＝大きな丸と輪が脈打つ（判断待ちは暖色・社長確認中は灰青・停止は赤で静止）／これから＝白抜き／未接続＝赤の破線の丸。
+   線は済みの所まで塗り、塗りの上を光が流れる。AI が働く間は、次の段へ向かう点が動く。工程が進むのは記録が変わった時だけ */
+.band { position: relative; display: grid; grid-template-columns: repeat(5, 1fr); margin: 18px 0 4px; height: 104px; }
+.band .track { position: absolute; left: 10%; right: 10%; top: 17px; height: 4px; border-radius: 2px; background: var(--line); }
+.band .fill { position: absolute; left: 0; top: 0; bottom: 0; width: 0; border-radius: 2px; background: var(--teal); overflow: hidden; }
+.band .comet { position: absolute; top: -2px; width: 60px; height: 8px; left: -60px; border-radius: 4px;
+  background: linear-gradient(90deg, rgba(255,255,255,0), rgba(255,255,255,.85), rgba(255,255,255,0)); animation: comet 3.2s ease-in-out infinite; }
+.band .ahead { position: absolute; top: 0; height: 4px; display: none; }
+.band[data-mode="working"] .ahead { display: block; }
+.band .ahead i { position: absolute; top: -3px; width: 10px; height: 10px; border-radius: 50%; background: var(--teal); left: 0; animation: ahead 1.9s ease-in-out infinite; }
+.bstep { position: relative; display: flex; flex-direction: column; align-items: center; text-align: center; z-index: 1; }
+.bstep .dot { width: 38px; height: 38px; border-radius: 50%; display: grid; place-items: center; background: var(--paper); border: 2px solid var(--line); color: var(--mute);
+  position: relative; transition: background .35s, border-color .35s, color .35s, transform .35s; }
+.bstep .dot .ic { width: 18px; height: 18px; }
+.bstep .bname { margin-top: 6px; font-size: 14px; color: var(--mute); font-weight: bold; white-space: nowrap; }
+.bstep .bword { font-size: 11px; color: var(--mute); margin-top: 2px; }
+.bstep .bnote { font-size: 12px; color: var(--mute); margin-top: 1px; max-width: 184px; line-height: 1.35; text-wrap: balance; word-break: auto-phrase; line-break: strict; }
+.bstep.done .dot { background: var(--teal); border-color: var(--teal); color: #fff; }
+.bstep.done .bname { color: var(--ink); }
+.bstep.skipped .dot { border-style: dotted; }
+.bstep.nc .dot { border: 2px dashed var(--stop); color: var(--stop); }
+.bstep.nc .bword { color: var(--stop); font-weight: bold; }
+.bstep.current .dot { transform: scale(1.18); background: var(--tealb); border-color: var(--teal); color: var(--teal); }
+.bstep.current .bname { color: var(--ink); font-size: 15px; }
+.bstep.current .bword { color: var(--teal); font-weight: bold; }
+.bstep.current .bnote { color: var(--ink); background: var(--tealb); border-radius: 10px; padding: 2px 9px; margin-top: 3px; }
+.bstep.current .dot::after { content: ""; position: absolute; inset: -6px; border-radius: 50%; border: 2px solid var(--teal); animation: ring 1.8s ease-out infinite; }
+.bstep.current.m-working .dot .ic { animation: spin 1.6s linear infinite; }
+.bstep.current.m-you .dot { background: #F6EBD6; border-color: var(--warm); color: var(--warm); animation: nudge 1.4s ease-in-out infinite; }
+.bstep.current.m-you .dot::after { border-color: var(--warm); animation-duration: 1.2s; }
+.bstep.current.m-you .bword { color: var(--warm); }
+.bstep.current.m-you .bnote { background: #F6EBD6; color: #5E4718; font-weight: bold; }
+.bstep.current.m-president .dot { background: #E6EBF0; border-color: var(--slate); color: var(--slate); }
+.bstep.current.m-president .dot::after { border-color: var(--slate); animation-duration: 2.8s; }
+.bstep.current.m-president .dot .ic { animation: flip 3s ease-in-out infinite; }
+.bstep.current.m-president .bword { color: var(--slate); }
+.bstep.current.m-president .bnote { background: #E6EBF0; }
+.bstep.current.m-watch .dot .ic { animation: look 3s ease-in-out infinite; }
+.bstep.current.m-watch .dot::after { animation-duration: 3s; }
+.bstep.current.m-stopped .dot, .bstep.current.m-unconnected .dot { background: #FBF1EE; border-color: var(--stop); color: var(--stop); }
+.bstep.current.m-unconnected .dot { border-style: dashed; }
+.bstep.current.m-stopped .dot::after, .bstep.current.m-unconnected .dot::after { animation: none; border: 0; }
+.bstep.current.m-stopped .bword, .bstep.current.m-unconnected .bword { color: var(--stop); }
+.bstep.current.m-stopped .bnote, .bstep.current.m-unconnected .bnote { background: #FBF1EE; color: var(--stop); font-weight: bold; }
+.band[data-mode="stopped"] .comet, .band[data-mode="unconnected"] .comet { animation: none; display: none; }
+.bandothers { display: flex; gap: 8px; align-items: center; font-size: 13px; color: var(--mute); margin: 0 0 12px; min-height: 28px; }
+.bandothers button { border: 1px solid var(--line); background: var(--paper); border-radius: 14px; padding: 3px 12px; font-size: 13px; display: inline-flex; gap: 6px; align-items: center; color: var(--ink); }
+.bandothers button .ic { width: 15px; height: 15px; }
+.bandothers button .pip { width: 8px; height: 8px; border-radius: 50%; background: var(--teal); animation: wait 2.4s ease-out infinite; }
+.bandothers button.nc { color: var(--stop); border-color: var(--stop); }
+.bandothers button.nc .pip { background: var(--stop); animation: none; }
+@keyframes ring { 0% { opacity: .75; transform: scale(.9); } 100% { opacity: 0; transform: scale(1.45); } }
+@keyframes comet { 0% { left: -60px; } 70%, 100% { left: 100%; } }
+@keyframes ahead { 0% { left: 0; opacity: 0; } 20% { opacity: 1; } 80% { opacity: 1; } 100% { left: calc(100% - 10px); opacity: 0; } }
+@media (prefers-reduced-motion: reduce) {
+  .band .comet, .band .ahead i, .bstep .dot, .bstep .dot::after, .bstep .dot .ic, .bandothers .pip { animation: none !important; }
+}
