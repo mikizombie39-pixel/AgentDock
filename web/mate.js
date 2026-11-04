@@ -61,13 +61,13 @@
   // ═════ 工程の帯（上部に常時）═════
   // 形は記録から決まる（GET /api/mate の band）。動き：最初に線が現在地まで走る／待つ間も現在地の輪が脈打ち、済みの線の上を光が流れる／
   // 記録が変わって段が進んだ時だけ、済みになった丸が跳ね、線が次の段まで伸びる。入力欄や読んでいる内容は動かさない
-  const BAND_WORD = { done: "済み", current: "いま", todo: "これから", skipped: "今日は無し" };
+  const BAND_WORD = { done: "済み", partial: "照会完了", current: "いま", todo: "これから", skipped: "今日は無し" };   // partial＝照会は終えたが不足が残る（済みと言わない）
   const BAND_ICON = { you: "hand", president: "hourglass", working: "loader", stopped: "octagon-x", unconnected: "octagon-pause", watch: "eye", before: "clipboard-list", done: "circle-check" };
   let BAND = null;
   function bandPct(b) {
     const n = b.steps.length;
     let at = b.current;
-    if (at == null) { at = -1; b.steps.forEach((s, i) => { if (s.state === "done") at = i; }); }
+    if (at == null) { at = -1; b.steps.forEach((s, i) => { if (s.state === "done" || s.state === "partial") at = i; }); }
     return at <= 0 ? 0 : (at / (n - 1)) * 100;
   }
   function drawBand(b, others) {
@@ -85,12 +85,12 @@
       const nd = nodes[i];
       const cls = `bstep ${s.state}${s.connected ? "" : " nc"}${i === b.current ? " m-" + b.mode : ""}`;
       if (nd.className !== cls) nd.className = cls;
-      const ic = s.state === "done" ? "circle-check" : i === b.current ? BAND_ICON[b.mode] || "eye" : !s.connected ? "octagon-pause" : "";
+      const ic = s.state === "done" ? "circle-check" : s.state === "partial" ? "circle-alert" : i === b.current ? BAND_ICON[b.mode] || "eye" : !s.connected ? "octagon-pause" : "";
       const dot = nd.querySelector(".dot");
       if (dot._ic !== ic) { dot.innerHTML = ic ? icon(ic) : ""; dot._ic = ic; }
       const word = !s.connected && s.state !== "done" ? "未接続" : BAND_WORD[s.state];
       const w = nd.querySelector(".bword"); if (w.textContent !== word) w.textContent = word;
-      const note = s.state === "current" || s.state === "done" || s.state === "skipped" ? s.note || "" : "";
+      const note = s.state === "current" || s.state === "done" || s.state === "partial" || s.state === "skipped" ? s.note || "" : "";
       const nt = nd.querySelector(".bnote"); if (nt.textContent !== (note === word ? "" : note)) nt.textContent = note === word ? "" : note;
     });
     const fill = el.querySelector(".fill"), ahead = el.querySelector(".ahead");
@@ -330,6 +330,7 @@
     const sel = opts.find((a) => a.id === SEL);
     const rec = opts.find((a) => a.recommended && !a.disabled);
     const at = sel ? 2 : 1;
+    const reg = (V.tally && V.tally.registered) || 0;   // 登録済みがある時は「何も登録しない」と言わず、追加の買い付けに限って言う（SAL 2026-11-04）
     const step = (n, t, s) => `<li class="${n < at ? "done" : n === at ? "on" : ""}"><b>${["", "①", "②", "③"][n]} ${esc(t)}</b><small>${esc(s)}</small></li>`;
     const chev = `<span class="chev" aria-hidden="true"><i>›</i><i>›</i><i>›</i></span>`;
     const card = (a) => {
@@ -346,13 +347,13 @@
     };
     let pv;
     if (!sel) {
-      pv = `<div class="pv0"><span class="back">${icon("arrow-right")}</span><div><b>左の案を選ぶと、ここに配分を下見します。</b><small>選んでも、まだ何も登録しません。</small></div></div>`;
+      pv = `<div class="pv0"><span class="back">${icon("arrow-right")}</span><div><b>左の案を選ぶと、ここに配分を下見します。</b><small>${reg ? "案を選ぶだけでは、追加の買い付けは登録しません。" : "選んでも、まだ何も登録しません。"}</small></div></div>`;
     } else {
       const most = Math.max(1, ...(sel.alloc || []).map((x) => x.ordered));
       const bars = (sel.alloc || []).map((x) => `<div class="bar"><span class="nm">${esc(x.shop)}</span>
         <span class="lane"><span class="track" style="width:${(x.ordered / most) * 100}%"><i style="width:${x.ordered ? (x.secured / x.ordered) * 100 : 0}%"></i></span></span>
         <span class="q">${x.secured} / ${x.ordered}${u}</span><span class="st ${x.short ? "short" : "ok"}">${x.short ? `${x.short}${u} 足りない` : "確保"}</span></div>`).join("");
-      pv = `<div class="pvh"><small>② 下見（まだ登録していません）</small><b>${esc(sel.title)}</b></div>
+      pv = `<div class="pvh"><small>② 下見（${reg ? "追加の買い付けはまだ登録していません" : "まだ登録していません"}）</small><b>${esc(sel.title)}</b></div>
         ${(sel.buys || []).length ? `<table class="buyt"><thead><tr><th>仕入先</th><th>数量</th><th>単価</th><th>金額</th></tr></thead><tbody>` +
           sel.buys.map((b) => `<tr><td><span class="sn">${icon("ship")}${esc(b.seller)}</span></td><td>${b.quantity}${u}</td><td>${yen(b.unit_price_yen)}</td><td>${yen(b.amount_yen)}</td></tr>`).join("") +
           `</tbody><tfoot><tr><td colspan="3">合計</td><td>${yen(sel.purchase_yen)}</td></tr></tfoot></table>` : ""}
@@ -368,7 +369,7 @@
         : sel.choice === "president" ? `${esc(sel.title)}案です。社長の確認が要る案なので、よければ私が社長に確かめます。`
         : sel.choice === "reject" ? "今回は仕入れを見送る案です。よければ見送ります。仮押さえは手放します。"
         : `${esc(sel.title)}案です。内容を確認して、よければ購入を承認してください。`}</div>
-      <ol class="dsteps">${step(1, "案を選ぶ", "まだ何も登録しません")}${chev}${step(2, "配分を確かめる", "右に下見が出ます")}${chev}${step(3, "承認する", "ここで初めて登録します")}</ol>
+      <ol class="dsteps">${step(1, "案を選ぶ", reg ? "追加の買い付けは登録しません" : "まだ何も登録しません")}${chev}${step(2, "配分を確かめる", "右に下見が出ます")}${chev}${step(3, "承認する", reg ? "ここで追加分を登録します" : "ここで初めて登録します")}</ol>
       <div class="dgrid"><div class="opts">${opts.map(card).join("")}</div><div class="pv ${sel ? "on" : ""}">${pv}</div></div></div>`;
   }
 

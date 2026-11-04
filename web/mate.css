@@ -530,3 +530,6 @@ hr.rule { border: 0; border-top: 1px solid var(--line); margin: 0 0 18px; }
 .buyt .sn { display: inline-flex; gap: 6px; align-items: center; }
 .buyt tfoot td { border-top: 1.5px solid var(--ink); font-weight: bold; font-size: 15px; }
 .rfold { margin-top: 10px; color: var(--mute); }
+.bstep.partial .dot { background: #F6EBD6; border-color: var(--warm); color: var(--warm); }   /* 照会は終えたが不足が残る：済みの色にしない */
+.bstep.partial .bname { color: var(--ink); }
+.bstep.partial .bword { color: var(--warm); font-weight: bold; }

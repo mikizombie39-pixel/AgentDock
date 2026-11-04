@@ -261,10 +261,11 @@ def stance(f) -> tuple[str | None, str | None, dict]:
     if cur.get("waiting_for") == "president":
         return None, None, {}
     mid = _mid_orders(f)
+    # 慎重の説明は、いまの理由を言う（SAL 2026-11-04：一律に「注文や条件が変わった」としない）
     if mid:
-        return "careful", STANCE_RULE["careful"], dict(orders=[o["order_id"] for o in mid])
+        return "careful", "追加の注文が入った", dict(orders=[o["order_id"] for o in mid])
     if run and run["kind"] == "human_choice" and run["source"] == "consultation":
-        return "careful", STANCE_RULE["careful"], dict(changed_by="consultation")
+        return "careful", "あなたの答えで条件が変わった", dict(changed_by="consultation")
     d = _last_decline(f)
     if d and short > 0:
         return "sorry", STANCE_RULE["sorry"], dict(message=d["id"])
@@ -272,7 +273,7 @@ def stance(f) -> tuple[str | None, str | None, dict]:
     if dec and short > 0 and cur.get("waiting_for") == "staff":
         rec = next((o for o in cur.get("options") or [] if o["recommended"]), None)
         if not rec or any(a["short_after"] > 0 for a in rec["after"]):
-            return "careful", STANCE_RULE["careful"], dict(declined=[x["id"] for x in dec])
+            return "careful", ("追加分が不足している" if any(o["registered"] for o in f["orders"]) else "注文の分が不足している"), dict(declined=[x["id"] for x in dec])
     if f["orders"] and short == 0 and any(o["registered"] < o["quantity"] for o in f["orders"]):
         return "relief", STANCE_RULE["relief"], dict(orders=[o["order_id"] for o in f["orders"]])
     if cur.get("waiting_for") == "staff" and short > 0:
@@ -602,6 +603,14 @@ def view(owner: str, item: str, on_date: str = sc.DEMO_DATE, worker_error: str |
         head = _said(f"{PRESIDENT}に確認しています。")
         sub = [_said("・".join(why) + "。" if why else "社長の判断が要る案です。"), _said("答えが来たら続けます。待つ間、ほかの仕事を進めてかまいません。")]
         ask = _said("今は、あなたが答える仕事ではありません。")
+    elif ex == "idle" and tl["left"] and _closed_draft(f):   # 下書きに答えた後：不足は残ったまま、AI は見張りに戻る（「別の浜を当たる」と言わない・SAL 2026-11-04 通しの確認）
+        cd = _closed_draft(f)
+        shop = sc.shop(owner, cd["customer"])
+        head = _said(f"{shop}に伝える文を決めました。" if cd["status"] == "approved" else f"{shop}への連絡の下書きは、使わないことにしました。")
+        sub = [_said(tl["line"], "calc")]
+        if cd["status"] == "approved":
+            sub.append(_said("連絡はあなたから送ってください。Agent Dock は売り先に送りません。"))
+        sub.append(_said("新しい返事や注文が届いたら、声をかけます。"))
     elif ex in ("running", "idle") and part:   # 一部登録の後（AI が次の相談を出すまで）：何が済んで何が残ったか（態度の文より先）
         head = _said(part["done"])
         sub = [_said(part["rest"])] if part["rest"] else []
@@ -624,8 +633,14 @@ def view(owner: str, item: str, on_date: str = sc.DEMO_DATE, worker_error: str |
             sub.append(_said("あなたの答えで条件が変わったので、相手に問い合わせ直します。"))
     elif st == "sorry":
         d = next(x for x in f["messages"] if x["id"] == refs["message"])
-        head = _said("難しかったです。別の浜を当たります。")
-        sub = [_said(f"{sc.OWNERS[d['from_owner']]['name']}から、断りの返事が届きました。")]
+        dr = next((x for x in cur.get("drafts") or [] if x["status"] == "draft"), None) if ex == "your_turn" else None
+        if dr:   # 断りの後に AI が売り先への連絡の下書きを出した：見出しは「別の浜を当たる」でなく、いま人に求めること（SAL 2026-11-04 通しの確認）
+            head = _said(f"{sc.shop(owner, dr['customer'])}に、足りない見込みを伝えますか。")
+            sub = [_said(f"{sc.OWNERS[d['from_owner']]['name']}から、断りの返事が届きました。"), _said(tl["line"], "calc"),
+                   _said("下書きは AI が作りました。伝えるかどうかは、あなたが決めます。")]
+        else:
+            head = _said("難しかったです。別の浜を当たります。")
+            sub = [_said(f"{sc.OWNERS[d['from_owner']]['name']}から、断りの返事が届きました。")]
         if d.get("reason"):
             sub.append(_said(f"相手の理由：{d['reason']}", "reply", dict(db="market", table="network_message", id=d["id"])))
     elif st == "relief":
@@ -879,9 +894,10 @@ def why_card(f, st, ex, head, tl=None, replaced=None) -> dict:
                     f"{'・'.join(o['shop'] for o in others_short)}を優先するには、社長への確認が必要です。")
         elif st == "careful" and _round_declines(f) and _short_total(f) > 0:
             names = "・".join(sorted({sc.OWNERS[x["from_owner"]]["name"] for x in _round_declines(f)}))
-            lead = f"{names}から断りの返事が届き、条件が変わったためです。足りない分をどう手配するか、あなたと相談しています。"
+            lack = (f"{'追加分が' if tl['registered'] else ''}あと {tl['left']}{u}不足している" if tl["left"] else "条件が変わった")   # いまの理由（SAL 2026-11-04）
+            lead = f"{names}から断りの返事が届き、{lack}ためです。足りない分をどう手配するか、あなたと相談しています。"
         elif st == "careful":
-            lead = "注文や条件が変わったので、足りない数と相手の回答を確かめ直しています。"
+            lead = ("追加の注文が入ったので" if _mid_orders(f) else "あなたの答えで条件が変わったので") + "、足りない数と相手の回答を確かめ直しています。"
         else:
             lead = f"注文の合計 {tl['total']}{u}に対して、あと {tl['left']}{u}足りません。どう分けるか、あなたの判断が要ります。"
         sections = [("足りない数と注文", orders), ("社長の指示と権限", dir_rows), ("相手の回答と値", replies), ("在庫", stock), ("案（コードの計算）", opts)]
@@ -897,7 +913,10 @@ def why_card(f, st, ex, head, tl=None, replaced=None) -> dict:
         sections = [("値と上限（コードの計算）", calc), ("相手の回答と値", replies), ("まだ確認していない候補", cands), ("社長の指示と権限", dir_rows)]
         more = [("足りない数と注文", orders), ("Vault の記録", vault)]
     elif st == "sorry":
-        lead = "相手から断りの返事が届いたためです。ほかに当たれる先を探します。"
+        lead = ("相手から断りの返事が届いたためです。足りない見込みを売り先に伝えるかどうか、あなたが決めます。"
+                if ex == "your_turn" and any(x["status"] == "draft" for x in cur.get("drafts") or [])
+                else f"相手から断りの返事が届いたためです。あと {tl['left']}{f['item']['unit']}不足したまま、売り先への連絡はあなたが決めました。" if ex == "idle" and tl["left"] and _closed_draft(f)
+                else "相手から断りの返事が届いたためです。ほかに当たれる先を探します。")
         sections = [("相手の回答", replies), ("まだ確認していない候補", cands), ("足りない数と注文", orders)]
         more = [("社長の指示と権限", dir_rows), ("Vault の記録", vault)]
     elif st == "relief":
@@ -942,7 +961,8 @@ def receipt(f) -> dict | None:
         elif k == "needs_president":
             text = f"受け取りました。{PRESIDENT}に確認を送りました。答えが来たら続けます。"
         elif k == "rejected":
-            text = "受け取りました。この案は見送りました。" + rest
+            # 見送りでは AI は起きない（相談を閉じる）。「別の仕入先を当たります」と約束しない（SAL 2026-11-04 通しの確認）
+            text = "受け取りました。この案は見送り、仮押さえは手放しました。" + (("・".join(f"{o['shop']} {o['short']}{u}" for o in short) + "は足りないままです。") if short else "")
         elif k == "decision":
             con = db.connect(f["owner"])
             try:
@@ -1016,9 +1036,29 @@ def fail_reason_short(reason: str | None) -> str:
     return "相手の確認が通らなかった"
 
 
+def _closed_draft(f):
+    """人が最後に決めた売り先への連絡の下書き（答えを待つ下書きが無く、決めた後に AI が動いていない時だけ）。"""
+    drafts = f["cur"].get("drafts") or []
+    if any(d["status"] == "draft" for d in drafts) or _running(f):
+        return None
+    done = [d for d in drafts if d["status"] in ("approved", "discarded") and d.get("decided_at")]
+    if not done:
+        return None
+    d = max(done, key=lambda x: _t(x["decided_at"]))
+    last = [_t(x["at"]) for x in (f["acts"] or [])] + [_t(x["at"]) for x in (f["presents"] or [])]
+    return d if not last or _t(d["decided_at"]) >= max(last) else None
+
+
 def _fresh_receipt(f):
     """受け取った内容は、その後に AI が新しい相談を出すまで見せる（古い受領を次の判断の横に残さない）。"""
     r = receipt(f)
+    cd = _closed_draft(f)
+    if cd and (not r or _t(cd["decided_at"]) >= _t(r["at"])):   # 最後の判断が下書きの決定
+        shop = sc.shop(f["owner"], cd["customer"])
+        return dict(at=cd["decided_at"], text=f"受け取りました。{shop}への連絡の下書きを" + ("使うと決めました。" if cd["status"] == "approved" else "使わないと決めました。"),
+                    ref=dict(db="owner", table="customer_draft", id=cd["draft_id"]), at_shown=shown_time(cd["decided_at"], f["clock"]))
+    if r and any(d["status"] == "draft" and _t(d["created_at"]) >= _t(r["at"]) for d in f["cur"].get("drafts") or []):
+        return None   # AI が後から売り先への連絡の下書きを出した：前の受領（「別の仕入先を当たります」）を下書きの問いの横に残さない
     if r and f["presents"] and _t(f["presents"][-1]["at"]) > _t(r["at"]) + 1:
         return None
     return r
@@ -1222,14 +1262,20 @@ def band(owner: str, code: str, on_date: str = sc.DEMO_DATE, worker_error: str |
                     S["振分け・承認"].update(state="done", note="登録済み")
                     mode = "done"
                 elif ex in ("your_turn", "president"):
-                    S["不足分の手配"].update(state="done", note=held)
-                    S["振分け・承認"].update(state="current", note="配分を相談中・あなたの判断待ち" if ex == "your_turn" else "社長確認中")
+                    if tl["left"]:   # 不足が残る：済みとせず、終えた範囲（照会・仮押さえ）と残りを示す（SAL 2026-11-04）
+                        S["不足分の手配"].update(state="partial", note="・".join(x for x in (held, f"あと {tl['left']}{u}不足") if x))
+                    else:
+                        S["不足分の手配"].update(state="done", note=held)
+                    what = "配分" if cur.get("waiting_for") == "staff" else "売り先への連絡" if any(d["status"] == "draft" for d in cur.get("drafts") or [])                         else "在庫の扱い" if cur.get("stock_question") else "配分"
+                    S["振分け・承認"].update(state="current", note=f"{what}を相談中・あなたの判断待ち" if ex == "your_turn" else "社長確認中")
                     mode = "you" if ex == "your_turn" else "president"
                 else:
                     who = _counterparts(f)
                     note = {"stopped": "停止", "running": (f"{'・'.join(who)}に照会中" if who else "照会の準備中"), "idle": "見張り中"}.get(ex, EXEC_LABEL.get(ex))
                     if ex == "running" and _mid_orders(f):
                         note = "追加注文で照会し直し中"
+                    if ex == "idle" and tl["left"]:   # 見張りに戻っても、不足が残ることを言う
+                        note = f"あと {tl['left']}{u}不足・見張り中"
                     S["不足分の手配"].update(state="current", note=note)
                     mode = {"stopped": "stopped", "running": "working"}.get(ex, "watch")
     cur_i = next((i for i, x in enumerate(steps) if x["state"] == "current"), None)

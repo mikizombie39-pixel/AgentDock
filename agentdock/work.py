@@ -460,7 +460,8 @@ def current(owner: str, item: str, on_date: str = sc.DEMO_DATE, at: str | None =
                 continue
             decided = r["status"] != "draft" and cut(r["decided_at"]) if at is not None else True
             drafts.append(dict(draft_id=r["id"], customer=r["customer"], substitute=r["sub"], body=r["body"], reason=r["reason"],
-                               status=r["status"] if decided else "draft", created_at=r["created_at"], decided_by=r["decided_by"] if decided else None))
+                               status=r["status"] if decided else "draft", created_at=r["created_at"], decided_by=r["decided_by"] if decided else None,
+                               decided_at=r["decided_at"] if decided else None))
         ask["drafts"] = drafts
         # 引当のない在庫（売り先の当てのない数量）と、その扱いの問い
         ask["stock"] = _stock_lines(con, it, orders, unit, at)

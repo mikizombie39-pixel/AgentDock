@@ -15,7 +15,7 @@ from pathlib import Path
 import urllib.error
 import urllib.request
 
-from agentdock import agents, db, deal, disclosure, events, live, mate, mockdock, network, results, scene, server
+from agentdock import agents, consult, db, deal, disclosure, events, live, mate, mockdock, network, results, scene, server
 from agentdock.companion import MockClient, Reply
 from agentdock.seed import build
 from agentdock.seed import scenario as sc
@@ -104,7 +104,7 @@ class StanceTest(Base):
         self.worker.step()
         self.add_ryotei()                                                    # 順風満帆の追加注文（AI が働き始めた後）
         v = self.v()
-        self.assertEqual((v["stance"], v["rule"]), ("careful", "注文や条件が変わった"))
+        self.assertEqual((v["stance"], v["rule"]), ("careful", "追加の注文が入った"))   # 慎重の説明は、いまの理由
         self.assertEqual(v["headline"]["text"], "待ってください。確認し直します。")
         self.assertIn(f"{RYOTEI}から追加の注文 6本が入りました。", [s["text"] for s in v["sub"]])
         self.run_all()
@@ -455,7 +455,7 @@ class BandTest(Base):
         x, s = self.b()
         self.assertEqual((x["mode"], x["current"]), ("you", 3))
         self.assertEqual(s["振分け・承認"], ("current", "配分を相談中・あなたの判断待ち"))
-        self.assertEqual(s["不足分の手配"], ("done", "仮押さえ 8本"))
+        self.assertEqual(s["不足分の手配"], ("partial", "仮押さえ 8本・あと 2本不足"))   # 不足が残る間は済みにしない（SAL 2026-11-04）
         self.assertEqual(x["summary"], "ブリ：振分け・承認（配分を相談中・あなたの判断待ち）")
         a = self.option(self.v(), f"：{RYOTEI} 6本")
         time.sleep(1.05)
@@ -558,12 +558,48 @@ class RoundStoryTest(Base):
         self.assertEqual(deal.decide("amiya", p["case_id"], p["option_id"], "approve", p["fingerprint"], "rs2", actor="president")["result"], "registered")
         self.run_all()                                                      # 漁協は残りなしで断り・B社は 2本 → 次の相談
         v = self.v()
-        self.assertEqual((v["exec"], v["stance"], v["rule"]), ("your_turn", "careful", "注文や条件が変わった"))   # 笑顔の基本の姿にしない
+        self.assertEqual((v["exec"], v["stance"], v["rule"]), ("your_turn", "careful", "追加分が不足している"))   # 笑顔の基本の姿にしない・説明はいまの理由
         self.assertEqual(v["headline"], dict(text="岩瀬漁協では追加分を確保できませんでした。B社からは 2本を仮押さえできています。", origin="calc", ref=None))
         subs = [s["text"] for s in v["sub"]]
         self.assertEqual(subs[0], f"{SUPER} 2本を確保する案ですが、残り 2本は不足します。")
         self.assertEqual(subs[1], f"10本の注文に対し、6本を登録済み（{RYOTEI} 6本）・2本を仮押さえ（B社 2本）。あと 2本不足。")   # 買う案が1つなので「どの案でも」は言わない
-        self.assertEqual(v["why"]["lead"], "岩瀬漁協から断りの返事が届き、条件が変わったためです。足りない分をどう手配するか、あなたと相談しています。")
+        self.assertEqual(v["why"]["lead"], "岩瀬漁協から断りの返事が届き、追加分があと 2本不足しているためです。足りない分をどう手配するか、あなたと相談しています。")
+        st = next(x for x in v["band"]["steps"] if x["name"] == "不足分の手配")   # 不足が残る間は「済み」にしない（SAL 2026-11-04）
+        self.assertEqual((st["state"], st["note"]), ("partial", "仮押さえ 2本・あと 2本不足"))
+        said = json.dumps(dict(h=v["headline"], s=v["sub"], a=v["ask"], w=v["why"], b=v["band"]), ensure_ascii=False)
+        for word in ("そろいました", "終わりました", "全部の注文がそろいます"):
+            self.assertNotIn(word, said)
+
+    def test_to_the_end_the_shortage_is_never_called_done(self):
+        """通しの確認（SAL 2026-11-04）：断り → 次の相談 → 登録 → 下書き → 終了。不足が残る間は、完了の言葉も「別の浜を当たる」約束も出さない。"""
+        self.test_after_a_decline_the_companion_tells_what_happened_and_the_next_move()
+        v = self.v()
+        rec = next(a for a in v["actions"] if str(a.get("id", "")).startswith("opt") and a.get("recommended"))
+        time.sleep(1.05)
+        self.assertEqual(self.decide(rec, "rs3")["result"], "registered")
+        self.run_all()                                                      # B社も断り → 売り先への連絡の下書き
+        v = self.v()
+        self.assertEqual((v["exec"], v["stance"]), ("your_turn", "sorry"))
+        self.assertEqual(v["headline"]["text"], f"{SUPER}に、足りない見込みを伝えますか。")   # 「別の浜を当たります」と言わない
+        st = {x["name"]: x for x in v["band"]["steps"]}
+        self.assertEqual(st["振分け・承認"]["note"], "売り先への連絡を相談中・あなたの判断待ち")
+        self.assertIsNone(v["receipt"])                                     # 前の受領（「別の仕入先を当たります」）を下書きの横に残さない
+        dr = next(a for a in v["actions"] if a.get("kind") == "primary")
+        c = db.connect("amiya")
+        try:
+            consult.decide_draft(c, int(dr["api"]["body"]["draft_id"]), "approve", "staff")
+        finally:
+            c.close()
+        self.run_all()
+        v = self.v()
+        self.assertEqual(v["exec"], "idle")
+        self.assertEqual(v["headline"]["text"], f"{SUPER}に伝える文を決めました。")
+        self.assertEqual(v["receipt"]["text"], f"受け取りました。{SUPER}への連絡の下書きを使うと決めました。")
+        self.assertEqual(v["receipt"]["at_shown"], mate.shown_time(v["receipt"]["at"], mate.facts("amiya", "buri_xl", D)["clock"]))   # 模擬の時計で見せる
+        self.assertEqual({x["name"]: x["note"] for x in v["band"]["steps"]}["不足分の手配"], "あと 2本不足・見張り中")
+        said = json.dumps(dict(h=v["headline"], s=v["sub"], a=v["ask"], w=v["why"], r=v["receipt"], b=v["band"]), ensure_ascii=False)
+        for word in ("そろいました", "終わりました", "全部の注文がそろ", "別の浜を当たります", "別の仕入先を当たります", "ほかに当たれる先を探します"):
+            self.assertNotIn(word, said)
 
 
 class ShopNameTest(unittest.TestCase):
