@@ -14,7 +14,7 @@ import argparse
 import datetime
 import sys
 
-from agentdock import db, market
+from agentdock import db, market, vault
 from agentdock.seed import prices, sales, scenario as sc
 
 
@@ -83,18 +83,13 @@ def _fill_owner(con, code: str, public_rows, scene_c: bool, with_aji_s: bool = F
             "INSERT INTO landing (item_id, landing_date, kind, quantity, size_note, caught_at, area, water_temp_c) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
             [(item[i], tomorrow, k, q, s, c, a, w) for i, k, q, s, c, a, w in keep(sc.LANDINGS.get(code, []), 0)])
         _fill_autonomy(con, code, item, cust, now)
-        role, place = sc.DIRECTIVE_FROM.get(code, ("president", ""))
-        con.executemany(
-            "INSERT INTO directive (issued_by, issued_from, via, body, kind, customer_id, item_id, trade_date, received_at, status) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'active')",
-            [(role, place, via, body.format(shop=sc.shop(code, c)), k, cust[c], item[i] if i else None, sc.DEMO_DATE,
-              f"{sc.DEMO_DATE}T{at}:00+09:00") for c, i, k, body, via, at in sc.DIRECTIVES.get(code, [])])
+        _fill_vault(con, code, item, cust)
         con.execute("INSERT INTO audit_event (at, actor, event, detail) VALUES (?, 'system', 'seed', ?)",
                     (now, "scene_c" if scene_c else "main"))
 
 
 def _fill_autonomy(con, code: str, item: dict, cust: dict, now: str) -> None:
-    """本編（自律の場面）の種：数量ごとの最低の値・在庫・案内してよい売り先・売れ方・Vault。"""
+    """本編（自律の場面）の種：数量ごとの最低の値・在庫・案内してよい売り先・売れ方（Vault は _fill_vault でファイルから）。"""
     con.executemany("INSERT INTO quote_rule (item_id, min_qty, floor_yen, valid_from) VALUES (?, ?, ?, ?)",
                     [(item[i], q, f, sc.HISTORY_FROM) for i, q, f in sc.QUOTE_RULES.get(code, [])])
     con.executemany("INSERT INTO stock (item_id, quantity, status, lot_no, stock_date, updated_at, unit_cost_yen, unallocated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
@@ -115,11 +110,36 @@ def _fill_autonomy(con, code: str, item: dict, cust: dict, now: str) -> None:
     con.executemany(
         "INSERT INTO sales_history (customer_id, item_id, sale_date, ordered_qty, sold_qty, unit_price_yen) VALUES (?, ?, ?, ?, ?, ?)",
         [(cust[c], item[i], d, o, s_, p) for c, i, d, o, s_, p in sc.AJI_SALES_HISTORY.get(code, [])])
+
+
+# Vault の分類 → 索引の種類（vault_note.kind）
+VAULT_KIND = {"会社のルール": "policy", "仕入れの知識": "customer", "履歴・経験": "case"}
+
+
+def _fill_vault(con, code: str, item: dict, cust: dict) -> None:
+    """Vault のファイル（vault/<会社>/）から、索引（vault_note）と今日の社長の指示（directive）を作る。
+    ほかの会社の記録は読まない。ルールの文の金額が権限の表と食い違えば止める。指示の言葉の店の名前が種の店の名前と違えば止める。"""
+    recs = vault.load(code)
+    bad = vault.rule_amount_mismatches(code, recs)
+    if bad:
+        raise vault.VaultError("; ".join(bad))
     con.executemany(
-        "INSERT INTO vault_note (kind, title, body, item_id, customer_id, author, source, written_on, applies_when) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-        [(k, t, b, item[i] if i else None, cust[c] if c else None, a, s, w, aw)
-         for k, t, b, i, c, a, s, w, aw in sc.VAULT_NOTES.get(code, [])])
+        "INSERT INTO vault_note (kind, title, body, item_id, customer_id, author, source, written_on, applies_when, vault_id, category, valid_from, valid_to, status) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        [(VAULT_KIND[r["category"]], r["title"], r["body"], item[r["item"]] if r.get("item") else None, cust[r["customer"]] if r.get("customer") else None,
+          r["source"], f"Vault {r['id']}", r["recorded_on"], r["subject"], r["id"], r["category"], r["valid_from"], r["valid_to"], r["status"])
+         for r in recs if r["category"] != "社長の指示" and (not r.get("item") or r["item"] in item)])
+    rows = []
+    for r in vault.directives(code, sc.DEMO_DATE):
+        body = vault.words(r["body"])
+        shop = sc.shop(code, r["customer"])
+        if shop not in body:
+            raise vault.VaultError(f"{r['id']}: 指示の言葉「{body}」に、種の店の名前（{shop}）がありません")
+        rows.append((r["issued_by"], r["issued_from"], r["via"], body, r["directive_kind"], cust[r["customer"]], item[r["item"]] if r.get("item") else None,
+                     sc.DEMO_DATE, f"{sc.DEMO_DATE}T{r.get('received_at') or '00:00'}:00+09:00", r["id"]))
+    con.executemany(
+        "INSERT INTO directive (issued_by, issued_from, via, body, kind, customer_id, item_id, trade_date, received_at, status, vault_id) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?)", rows)
 
 
 def archive_vault(folder):

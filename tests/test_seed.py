@@ -8,7 +8,7 @@ import sqlite3
 import tempfile
 import unittest
 
-from agentdock import criteria, db
+from agentdock import criteria, db, vault
 from agentdock.seed import build, prices
 from agentdock.seed import scenario as sc
 
@@ -119,10 +119,13 @@ class SeedTest(unittest.TestCase):
         self.assertEqual([tuple(r) for r in stock], [(15, "for_sale")])
         self.assertEqual(15 * 1500, 22500)
         self.assertEqual(a.execute("SELECT name FROM customer WHERE allow_contact = 1").fetchall()[0][0], "料亭")
-        kinds = sorted(r[0] for r in a.execute("SELECT kind FROM vault_note"))
-        self.assertEqual(kinds, ["case", "case", "customer", "customer", "policy"])   # 2つ目の customer はスーパーの欠品の慣行（品目を問わない）
+        # Vault の索引はファイルから作る（2026-11-04）。アジの場面の 4件（経験 2・売り先 1・方針 1）と、スーパーの欠品の慣行（品目を問わない）もファイルにある
+        kinds = sorted(r[0] for r in a.execute("SELECT v.kind FROM vault_note v LEFT JOIN item i ON i.id = v.item_id WHERE i.code = 'aji' OR v.vault_id IN ('AM-R-006', 'AM-E-006')"))
+        self.assertEqual(kinds, ["case", "case", "case", "customer", "policy"])   # 欠品の慣行は「履歴・経験」の記録（AM-E-006）
+        self.assertEqual({r[0] for r in a.execute("SELECT vault_id FROM vault_note")},
+                         {r["id"] for r in vault.load("amiya") if r["category"] != "社長の指示"})
         self.assertEqual(a.execute("SELECT count(*) FROM vault_note WHERE applies_when IS NULL OR source = ''").fetchone()[0], 0)
-        self.assertEqual(s.execute("SELECT count(*) FROM vault_note").fetchone()[0], 0)
+        self.assertEqual([r[0] for r in s.execute("SELECT vault_id FROM vault_note")], ["IW-R-001"])   # 漁協の索引は漁協の Vault だけ
         ryotei = a.execute("SELECT count(*) FROM sales_history h JOIN item i ON i.id = h.item_id "
                            "JOIN customer c ON c.id = h.customer_id WHERE i.code = 'aji' AND c.name = '料亭'").fetchone()[0]
         self.assertEqual(ryotei, 5)

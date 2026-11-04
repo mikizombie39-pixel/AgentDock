@@ -400,7 +400,7 @@ class VariantTest(unittest.TestCase):
 
     def test_vault_changed(self):
         scene.apply_variant("vault_changed")
-        self.assertIn("休業", self.one("amiya", "SELECT body FROM vault_note WHERE kind = 'customer'")[0][0])
+        self.assertIn("休業", self.one("amiya", "SELECT body FROM vault_note WHERE vault_id = 'AM-S-006'")[0][0])   # アジの場面の料亭の記録だけを替える
 
     def test_b_declines(self):
         scene.apply_variant("b_declines")

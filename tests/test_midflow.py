@@ -161,7 +161,7 @@ class VaultAndDraftTest(tb.Base):
 
     def test_the_practice_note_is_for_the_supermarket_and_not_attributed_to_a_person(self):
         (row,) = tb.q("amiya", "SELECT v.item_id, c.name, v.author, v.source FROM vault_note v LEFT JOIN customer c ON c.id = v.customer_id WHERE v.title = ?", (self.NOTE,))
-        self.assertEqual(row, (None, "スーパー", "仲買の慣行（聞き取り・模擬）", "聞き取り（模擬）"))
+        self.assertEqual(row, (None, "スーパー", "仲買の慣行（聞き取り・模擬）", "Vault AM-E-006"))   # 出所は Vault の記録の source・識別子は索引の source
 
     def test_options_cite_vault_notes_by_checked_id(self):
         def present(refs):

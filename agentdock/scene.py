@@ -32,7 +32,7 @@ def apply_variant(name: str) -> None:
     if name == "price_up":
         ex("iwase", "UPDATE quote_rule SET floor_yen = 1640 WHERE min_qty = 15")
     elif name == "vault_changed":
-        ex("amiya", "UPDATE vault_note SET title = ?, body = ?, written_on = ?, applies_when = ? WHERE kind = 'customer'",
+        ex("amiya", "UPDATE vault_note SET title = ?, body = ?, written_on = ?, applies_when = ? WHERE vault_id = 'AM-S-006'",
            ("料亭は改装のため休業中", "料亭は 2026-10-30 から 11 月中旬まで改装で休業している。この間は仕入れの案内をしない。",
             "2026-11-01", "料亭にアジを案内する時"))
     elif name == "b_declines":

@@ -11,6 +11,7 @@ import tempfile
 import threading
 import time
 import unittest
+from pathlib import Path
 import urllib.error
 import urllib.request
 
@@ -425,12 +426,26 @@ class MorningTest(Base):
 
 
 class ShopNameTest(unittest.TestCase):
+    """店の名前は種の1か所（SHOP_NAMES）。社長の指示の言葉の正本は Vault の記録なので、店の名前を変える時は Vault の指示の言葉も直す。
+    片方だけ変えると build が止まる（食い違ったまま画面と AI の文に出さない・2026-11-04）。"""
+
     def test_one_place_changes_the_screen_and_the_ai_text(self):
+        import shutil
+        from agentdock import vault
         old = sc.SHOP_NAMES["amiya"]["スーパー"]
         sc.SHOP_NAMES["amiya"]["スーパー"] = "試しの商店"
-        with tempfile.TemporaryDirectory() as tmp:
+        with tempfile.TemporaryDirectory() as tmp, tempfile.TemporaryDirectory() as vroot:
             os.environ["AGENTDOCK_DATA"] = tmp
             try:
+                with self.assertRaises(vault.VaultError) as e:   # Vault の指示の言葉は「魚廣」のまま
+                    build.main([])
+                self.assertIn("試しの商店", str(e.exception))
+                shutil.rmtree(tmp)
+                os.makedirs(tmp)
+                shutil.copytree(vault.DEFAULT_ROOT, vroot, dirs_exist_ok=True)
+                f = next(Path(vroot).rglob("AM-D-20261102-01.md"))
+                f.write_bytes(f.read_bytes().decode("utf-8").replace(old, "試しの商店").encode("utf-8"))
+                os.environ["AGENTDOCK_VAULT"] = vroot
                 self.assertEqual(build.main([]), 0)
                 cs = mate.check_sheet("amiya")
                 self.assertEqual(cs["directives"][0]["body"], "試しの商店の分は落とすなよ")
@@ -443,6 +458,7 @@ class ShopNameTest(unittest.TestCase):
             finally:
                 sc.SHOP_NAMES["amiya"]["スーパー"] = old
                 os.environ.pop("AGENTDOCK_DATA", None)
+                os.environ.pop("AGENTDOCK_VAULT", None)
 
 
 class HttpTest(Base):
