@@ -5,6 +5,7 @@ Claude が決めるもの：何が重要か・どのカードを出すか・ど�
 
 Claude の文の中の金額は使わない。文に書かれた金額が計算と合わなければ、ボードに出さずに書き直してもらう。
 """
+import datetime
 import hashlib
 import json
 
@@ -359,6 +360,18 @@ def _card_data(con, owner: str, card: dict) -> dict:
 
 def build(con, owner: str, item_code: str, on_date: str, payload: dict, run_id: int, now: str) -> dict:
     """Claude の present_options の入力から磁石ボードを作る。作れなければ BoardError（Claude に理由を返す）。"""
+    # この起動が始まった後に、人がこの品目の案件で決めたこと（承認・差し戻し・見送り・登録）があれば、この起動では案を出さない。
+    # 決定を知らない案が「組み直した案」として出て、古い案が承認される（2026-11-05 本物の通しの撮り直し）。決定を受けた起動が出し直す
+    started = con.execute("SELECT started_at FROM agent_run WHERE id = ?", (run_id,)).fetchone()
+    if started and started[0]:
+        sec = lambda s: int(datetime.datetime.fromisoformat(s).timestamp())   # noqa: E731
+        later = [d for d in con.execute("SELECT d.action, d.actor, d.at FROM case_decision d JOIN deal_case c ON c.id = d.case_id JOIN item i ON i.id = c.item_id "
+                                        "WHERE i.code = ? AND c.trade_date = ? ORDER BY d.id", (item_code, on_date)) if sec(d[2]) > sec(started[0])]
+        if later:
+            who = {"president": "社長", "staff": "担当者"}
+            what = {"approve": "承認", "return": "差し戻し", "reject": "見送り", "hold": "保留"}
+            raise BoardError([f"この起動が始まった後に、{'・'.join(who.get(a, a) + 'の' + what.get(x, x) for x, a, _ in later)}がありました。"
+                              "この起動では案を出しません。do_nothing で終えてください（決定を受けた起動が、決定に沿って案を出し直します）"])
     orders = [a["ref_id"] for o in payload["options"] for a in o["allocations"] if a["kind"] == "order"]
     oid = orders[0] if orders else None
     if oid is None:

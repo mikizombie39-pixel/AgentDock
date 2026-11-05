@@ -5,7 +5,7 @@ import hashlib
 import json
 import time
 
-from agentdock import db, stage, trace, vault
+from agentdock import db, stage, trace, vault, workspace
 from tests.test_mate import RYOTEI, SUPER, Base
 
 
@@ -97,3 +97,27 @@ class TraceTest(Base):
         self.assertEqual(v["title"], "AM-E-006「欠品になりそうな時は、早めに魚廣に伝え、代わりの品を提案する」")
         self.assertIn(f"照合番号（SHA-256 の先頭 12桁）：{digest}", v["lines"])
         self.assertEqual((v["kind"], v["origin"]), ("experience", "record"))
+
+
+class StaleRunTest(TraceTest):
+    """起動が始まった後に人が決めた時は、その起動は案を出せない（2026-11-05 本物の通しの撮り直し：差し戻しを知らない起動の案が
+    「組み直した案」として出て、担当者がそれを承認した）。決定を受けた起動が出し直す。"""
+    test_no_registered_trade_yet = None
+    test_one_line_from_the_trade_to_the_stock = None
+    test_vault_refs_show_the_file_and_its_fingerprint = None
+
+    def test_a_run_that_started_before_a_decision_cannot_present(self):
+        self.register_after_return()
+        c = db.connect("amiya")
+        try:
+            with c:
+                rid = c.execute("INSERT INTO agent_run (role, event_id, started_at, outcome, model, run_kind) VALUES ('buyer', NULL, ?, NULL, 'm', 'mock')",
+                                ("2026-11-05T00:00:00+09:00",)).lastrowid
+            with self.assertRaises(workspace.BoardError) as e:
+                workspace.build(c, "amiya", "buri_xl", "2026-11-02", dict(options=[]), rid, "2026-11-02T06:00:00+09:00")
+        finally:
+            c.close()
+        msg = " ".join(e.exception.args[0]) if isinstance(e.exception.args[0], list) else str(e.exception)
+        self.assertIn("この起動が始まった後に", msg)
+        self.assertIn("社長の差し戻し", msg)
+        self.assertIn("do_nothing", msg)
