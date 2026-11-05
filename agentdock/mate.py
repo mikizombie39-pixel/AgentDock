@@ -109,6 +109,9 @@ def facts(owner: str, item: str, on_date: str = sc.DEMO_DATE, worker_error: str 
         for r in con.execute("SELECT answered_at AS at, answered_by AS who, 'stock_answer' AS kind, id FROM stock_question "
                              "WHERE item_id = ? AND status = 'answered'", (it["id"],)):
             acts.append(dict(r))
+        for r in con.execute("SELECT requested_at AS at, requested_by AS who, 'retry' AS kind, id, short_quantity FROM retry_request "
+                             "WHERE item_id = ? AND trade_date = ?", (it["id"], on_date)):   # もう一度当たってもらう（行き止まりを人が開いた）
+            acts.append(dict(r))
         acts.sort(key=lambda a: (_t(a["at"]), a["id"]))
         vault = [dict(r) for r in con.execute("SELECT id, title, author, written_on, applies_when FROM vault_note WHERE item_id = ? OR item_id IS NULL ORDER BY id",
                                               (it["id"],))]
@@ -125,10 +128,16 @@ def facts(owner: str, item: str, on_date: str = sc.DEMO_DATE, worker_error: str 
     finally:
         m.close()
     posts = [p for p in market.requests_visible_to(owner, item, _demo_now(on_date)) if p["side"] == "sell"]
+    m = db.connect(db.MARKET)
+    try:   # 自社が出した買いの掲示（受付中・期限の内）：ほかの仲買が応じれば AI が起きる＝まだ当たっている先がある
+        own_posts = [dict(r) for r in m.execute("SELECT id, quantity, unit_price_yen, valid_until FROM deal_request WHERE owner = ? AND item_code = ? AND side = 'buy' "
+                                                "AND status = 'open' AND trade_date = ? AND valid_until > ? ORDER BY id", (owner, item, on_date, _demo_now(on_date)))]
+    finally:
+        m.close()
     holds = work._live_holds(owner, item, on_date)
     return dict(owner=owner, on_date=on_date, item=dict(code=it["code"], name=it["name"], short=_short_name(it["name"]), unit=unit),
                 cur=cur, orders=orders, directives=dirs, delegation=dict(dele) if dele else None, runs=runs, started=started, presents=presents,
-                acts=acts, messages=msgs, posts=posts, holds=holds, vault=vault, authority=auth, worker_error=worker_error,
+                acts=acts, messages=msgs, posts=posts, own_posts=own_posts, holds=holds, vault=vault, authority=auth, worker_error=worker_error,
                 clock=clock(owner, on_date))
 
 
@@ -155,6 +164,20 @@ def _running(f):
     if q:
         return dict(kind=q[0]["kind"], source=q[0]["source"], queued=True)
     return None
+
+
+def _dead(f, tl, ex) -> bool:
+    """行き止まり：AI は止まっていて（見張り中）、足りない数が残り、返事を待つ照会も、受付中の自社の買いの掲示も無い。
+    この時の「任せてかまいません」は事実と違う（新しい出来事が来ない限り、AI はもう動かない）。"""
+    return ex == "idle" and tl["left"] > 0 and not f.get("own_posts")
+
+
+def dead_end(owner: str, item: str, on_date: str = sc.DEMO_DATE) -> int | None:
+    """行き止まりなら足りない数、そうでなければ None（「もう一度当たってもらう」の受け付けの前に、サーバーが確かめる）。"""
+    f = facts(owner, item, on_date)
+    ex, _ = exec_state(f)
+    tl = tally(f)
+    return tl["left"] if _dead(f, tl, ex) else None
 
 
 def _first_run_at(f):
@@ -638,6 +661,16 @@ def view(owner: str, item: str, on_date: str = sc.DEMO_DATE, worker_error: str |
             if tl["registered"]:
                 sub.append(_said(f"登録済みの {tl['registered']}{f['item']['unit']}はそのままです。", "calc"))
             sub.append(_said("社長の理由に沿って、案を組み直しています。"))
+    elif _dead(f, tl, ex):   # 不足が残り、どこにも当たっていない（見送りの後など）：任せてよいと言わず、人に当たり直しを決めてもらう（2026-11-04 通し）
+        cd = _closed_draft(f)
+        head = _said(f"あと {tl['left']}{u}足りないままです。いまは、どこにも当たっていません。", "calc")
+        sub = [_said(tl["line"], "calc")]
+        if cd and cd["status"] == "approved":
+            sub.append(_said(f"{sc.shop(owner, cd['customer'])}への連絡は、あなたから送ってください。Agent Dock は売り先に送りません。"))
+        sub.append(_said("もう一度当たってもらうかどうかは、あなたが決めます。新しい返事や注文が届いた時も、声をかけます。"))
+        actions = [dict(id="retry", label="もう一度、仕入れ先を当たってもらう", kind="primary",
+                        api=dict(path="/api/retry", body=dict(item=f["item"]["code"], role="staff")))]
+        ask = _said(f"足りない {tl['left']}{u}を、もう一度当たってもらいますか。", "calc")
     elif ex == "idle" and tl["left"] and _closed_draft(f):   # 下書きに答えた後：不足は残ったまま、AI は見張りに戻る（「別の浜を当たる」と言わない・SAL 2026-11-04 通しの確認）
         cd = _closed_draft(f)
         shop = sc.shop(owner, cd["customer"])
@@ -1020,10 +1053,12 @@ def receipt(f) -> dict | None:
             text = f"受け取りました。{what}の条件で、相手に問い合わせ直します。"
         elif k == "stock_answer":
             text = "受け取りました。答えの扱いで続けます。"
+        elif k == "retry":
+            text = f"受け取りました。足りない {last['short_quantity']}{u}の仕入れ先を、もう一度当たります。"
         else:
             text = "受け取りました。"
         out = dict(at=last["at"], text=text, ref=dict(db="owner", table="case_decision" if k in ("registered", "partial", "needs_president", "rejected", "stale", "returned") else
-                                                       ("human_decision" if k == "decision" else "stock_question"), id=last["id"]))
+                                                       ("human_decision" if k == "decision" else "retry_request" if k == "retry" else "stock_question"), id=last["id"]))
     after = [r for r in f["runs"] if r["ended_at"] and _t(r["started_at"]) >= _t(out["at"]) and r["summary"] and r["outcome"] not in STOP_OUTCOMES]
     if after:
         out["ai"] = _said(after[-1]["summary"], "ai", dict(db="owner", table="agent_run", id=after[-1]["id"]))

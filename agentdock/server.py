@@ -21,6 +21,7 @@ GET  /api/verify?owner=amiya                         ← 技術の検証（Claud
 POST /api/start    {"variant", "item"}                ← 業務を始める（漁協の資料と品目の注文を入れる・1回だけ・item は aji か buri_xl）
 POST /api/order    {"owner", "customer", "item", "quantity", "idempotency_key"}  ← 作業の途中で売り先の注文が入る（実演の操作・売値は売り先の表から）
 POST /api/draft    {"owner", "draft_id", "action": "approve"|"discard", "role"}  ← 売り先への連絡の下書きを人が決める（送るのは人）
+POST /api/retry   {"owner", "item", "idempotency_key", "role"}  ← 不足が残り、どこにも当たっていない時に、AI にもう一度当たってもらう（出来事を書き、AI を起こす）
 POST /api/stock_answer {"owner", "question_id", "choice", "idempotency_key", "role"}  ← 引当のない在庫の扱いの問いに人が答える（出来事を書き、AI を起こす）
 GET  /api/mate?owner=amiya&item=buri_xl             ← 仲間との対話の画面（態度・実行の状態・語りかけ・行動・理由の1枚を1つの返り値で）
 GET  /api/morning?owner=amiya                       ← 今日の仕事の流れ（コードの決まりで並べる）と「一緒に確認する」の中身
@@ -91,6 +92,16 @@ def dispatch(owner: str, path: str, body: dict, key: str) -> tuple[int, dict]:
         if path == "/api/draft":
             try:
                 return 200, consult.decide_draft(c, int(body["draft_id"]), str(body["action"]), str(body.get("role") or "staff"))
+            except consult.ConsultError as e:
+                raise Rejected(str(e)) from None
+        if path == "/api/retry":   # 行き止まりかどうかはコードが今の記録で確かめる（画面が古くても、当たっている先がある時は受け付けない）
+            item = str(body["item"])
+            prev = c.execute("SELECT 1 FROM retry_request WHERE idempotency_key = ?", (key,)).fetchone()
+            short = mate.dead_end(owner, item)
+            if short is None and prev is None:
+                raise Rejected("いまは当たり直しを頼めません（足りない数が無いか、AI が当たっている最中です）")
+            try:
+                return 200, consult.request_retry(c, item, sc.DEMO_DATE, short or 1, key, str(body.get("role") or "staff"))
             except consult.ConsultError as e:
                 raise Rejected(str(e)) from None
     finally:
@@ -217,6 +228,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._draft()
         if u.path == "/api/stock_answer":
             return self._stock_answer()
+        if u.path == "/api/retry":
+            return self._act("/api/retry")
         if u.path == "/api/delegate":
             return self._delegate()
         if u.path == "/api/chat":

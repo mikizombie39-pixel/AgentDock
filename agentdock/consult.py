@@ -383,3 +383,29 @@ def revalidated(con, task_id: int, briefing_fingerprint: str) -> None:
     with con:
         con.execute("UPDATE task SET state = 'running', updated_at = ? WHERE id = ?", (db.now_iso(), task_id))
         _audit(con, "companion", "task_revalidated", task_id, f"v{t['version']} briefing {briefing_fingerprint[:12]}")
+
+
+def request_retry(con, item_code: str, on_date: str, short_quantity: int, key: str, role: str = "staff") -> dict:
+    """不足が残り、どこにも当たっていない時に、担当者が AI にもう一度当たってもらう（行き止まりを人が開く）。
+    頼んだ記録と、AI を起こす出来事 human_choice（source retry）を同じトランザクションで書く。同じ key の繰り返しは前の結果。
+    行き止まりかどうか（不足の数・当たっている先が無いこと）は、呼ぶ側がコードの計算（mate.dead_end）で確かめてから渡す。"""
+    prev = con.execute("SELECT id, event_id FROM retry_request WHERE idempotency_key = ?", (key,)).fetchone()
+    if prev is not None:
+        return dict(result="requested", retry_id=prev["id"], event_id=prev["event_id"], repeated=True)
+    try:
+        authority.limit_for(con, role)   # 表に無い役割は止める
+    except authority.AuthorityError as e:
+        raise ConsultError(str(e)) from None
+    it = con.execute("SELECT id FROM item WHERE code = ?", (item_code,)).fetchone()
+    if it is None:
+        raise KeyError(item_code)
+    if short_quantity <= 0:
+        raise ConsultError("足りない数がありません")
+    at = db.now_iso()
+    with con:
+        rid = con.execute("INSERT INTO retry_request (item_id, trade_date, short_quantity, requested_by, requested_at, idempotency_key) VALUES (?, ?, ?, ?, ?, ?)",
+                          (it["id"], on_date, short_quantity, role, at, key)).lastrowid
+        eid = events._insert(con, "human_choice", dict(source="retry", retry_id=rid, item=item_code, quantity=short_quantity, requested_by=role), events._now())
+        con.execute("UPDATE retry_request SET event_id = ? WHERE id = ?", (eid, rid))
+        _audit(con, "owner", "retry_requested", None, f"retry {rid} item {item_code} short {short_quantity} by {role}")
+    return dict(result="requested", retry_id=rid, event_id=eid, repeated=False)

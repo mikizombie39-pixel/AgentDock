@@ -611,7 +611,10 @@ class RoundStoryTest(Base):
         self.run_all()
         v = self.v()
         self.assertEqual(v["exec"], "idle")
-        self.assertEqual(v["headline"]["text"], f"{SUPER}に伝える文を決めました。")
+        # 返事を待つ照会も自社の掲示も無い：行き止まり。任せてよいと言わず、当たり直しを人に決めてもらう（2026-11-05 残りの 5）
+        self.assertEqual(v["headline"]["text"], "あと 2本足りないままです。いまは、どこにも当たっていません。")
+        self.assertIn(f"{SUPER}への連絡は、あなたから送ってください。Agent Dock は売り先に送りません。", [x["text"] for x in v["sub"]])
+        self.assertEqual([a["id"] for a in v["actions"]], ["retry"])
         self.assertEqual(v["receipt"]["text"], f"受け取りました。{SUPER}への連絡の下書きを使うと決めました。")
         self.assertEqual(v["receipt"]["at_shown"], mate.shown_time(v["receipt"]["at"], mate.facts("amiya", "buri_xl", D)["clock"]))   # 模擬の時計で見せる
         self.assertEqual({x["name"]: x["note"] for x in v["band"]["steps"]}["不足分の手配"], "あと 2本不足・見張り中")

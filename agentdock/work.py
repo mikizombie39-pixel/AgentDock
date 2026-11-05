@@ -709,7 +709,7 @@ def _times(con, owner, item, on_date) -> list[str]:
     for sql in ("SELECT at FROM biz_event", "SELECT created_at FROM deal_case", "SELECT at FROM case_decision", "SELECT decided_at FROM human_decision",
                 "SELECT created_at FROM customer_draft", "SELECT decided_at FROM customer_draft", "SELECT updated_at FROM stock",
                 "SELECT unallocated_at FROM stock", "SELECT created_at FROM stock_question", "SELECT answered_at FROM stock_question",
-                "SELECT closed_at FROM stock_question", "SELECT at FROM workspace_turn"):
+                "SELECT closed_at FROM stock_question", "SELECT at FROM workspace_turn", "SELECT requested_at FROM retry_request"):
         ts += [r[0] for r in con.execute(sql)]
     out, seen = [], set()
     for t in sorted((t for t in ts if t), key=_t):

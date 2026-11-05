@@ -78,6 +78,11 @@ class Policy:
             return [ [("read_thread", B)], [("wait_for_replies", dict(reason="ほかの返事を待つ"))] ]
         if need <= 0:
             return [ [("read_orders", B)], [("do_nothing", dict(reason="満たしていない注文はありません"))] ]
+        if not live_terms and "もう一度当たるよう頼みました" in prompt:         # 行き止まりを担当者が開いた：漁協と B社に問い合わせ直す
+            return [ [("read_orders", B), ("read_thread", B)],
+                    [("send_inquiry", dict(to_owner="iwase", side="buy", item_code=item, quantity=need, unit_price_yen=17500, request_id=None,
+                                           message=f"もう一度、ブリを {need}本お願いできますか。", reason="担当者から当たり直しを頼まれたため"))],
+                    [("wait_for_replies", dict(reason="返事を待つ"))] ]
         if not live_terms and "出来事：取引を登録しました" in prompt:          # 登録の後の残り：当たれる先に問い合わせ直す
             return [ [("read_orders", B), ("read_thread", B)],
                     [("send_inquiry", dict(to_owner="iwase", side="buy", item_code=item, quantity=need, unit_price_yen=17500, request_id=None,

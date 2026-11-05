@@ -960,6 +960,15 @@ def situation(owner: str, event: dict, on_date: str) -> tuple[str, str]:
                 "offer_to_buyers": "post_request（side は sell）で、ほかの仲買に譲る掲示を出してください。値は自社の最低の値（read_stock の resale_floor）以上です。",
                 "keep": "そのまま持ちます。do_nothing で終えてください。"}[p["choice"]]
         head = (f"出来事：{who}が引当のない在庫の扱いを答えました（問い {p['question_id']}）：「{p['label']}」。\n" + _spare_lines(owner, item) + "\n" + todo)
+    elif event["kind"] == "human_choice" and p.get("source") == "retry":   # 行き止まりを担当者が開いた：もう一度当たる
+        item = p["item"]
+        left = [o for o in _open_orders(owner, item) if o["remaining"] > 0]
+        head = ("出来事：担当者が、足りない分の仕入れ先をもう一度当たるよう頼みました（いまは、返事を待つ照会も、受付中の自社の掲示もありません）。\n" +
+                ("満たしていない注文：" + "・".join(f"{o['customer']} {o['quantity']}{o['unit']}（注文 {o['order_id']}）のうち {o['remaining']}{o['unit']}" for o in left) + "。"
+                 if left else "") +
+                "前に断った相手と、手放した条件は下のやり取りのとおりです。任された範囲（照会・条件内の入札・再交渉）で、"
+                "漁協やほかの仲買に問い合わせ直すか、ほかの組織の掲示を探すか、買いの掲示を出してください。当てが無ければ、その事情を担当者に伝えてください。"
+                "登録済みの取引と、人が決めた配分は変えません。")
     elif event["kind"] == "human_choice" and p.get("source") == "president_return":   # 社長の差し戻し（理由つき）
         item = p["item"]
         head = (f"出来事：社長（網谷さん）が、担当者の送った案「{p.get('label') or ''}」を差し戻しました（案件 {p['case_id']}）。"
