@@ -220,6 +220,7 @@ hr.rule { border: 0; border-top: 1px solid var(--line); margin: 0 0 18px; }
 .reqbox small { display: block; color: var(--mute); font-size: 12px; margin: -4px 0 10px; }
 .reqbox .btnrow button { padding: 12px 18px; font-size: 15px; }
 .chatmore { margin-top: 4px; }
+.chatmore[hidden] { display: none; }   /* .linkbtn の display が hidden を上書きしていた（対話が1件でも「0件」が出た） */
 .chathist { margin-top: 6px; border-left: 3px solid var(--line); padding-left: 12px; max-height: 360px; overflow: auto; }
 .chathist .h { font-size: 13px; padding: 6px 0; border-bottom: 1px solid #ECE6DA; }
 .chathist .h b { display: block; font-weight: normal; color: var(--mute); }
