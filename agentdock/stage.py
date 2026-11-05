@@ -1,4 +1,4 @@
-"""Adaptive Workspace の段階と経過：業務 DB の事実から、コードが決める（演出の台本は使わない）。
+"""磁石ボードの段階と経過：業務 DB の事実から、コードが決める（演出の台本は使わない）。
 
 - 段階（待機・注文・情報収集・条件整理・判断・正式処理・完了・例外）は、出来事・Claude の起動・案件の状態から決める
 - 経過（画面に現れるカードと、組織の間を動く情報）は、実際に記録された行だけから作る
@@ -48,6 +48,7 @@ def _ts(s: str) -> float:
 def _items(con, m) -> list[dict]:
     out = []
     ev_kind = {}
+    names = {r[0]: r[1] or r[0] for r in con.execute("SELECT name, shop_name FROM customer")}   # 文に出すのは店の名前（案A）
     for e in con.execute("SELECT id, at, kind, payload_json FROM biz_event ORDER BY id"):
         p = json.loads(e["payload_json"])
         ev_kind[e["id"]] = e["kind"]
@@ -55,7 +56,7 @@ def _items(con, m) -> list[dict]:
         if e["kind"] == "order_new":
             it = con.execute("SELECT name, unit FROM item WHERE code = ?", (p["item"],)).fetchone()
             out.append(dict(key=k, at=e["at"], kind="order", ref=p["order_id"], item=p["item"],
-                            text=f"新しい注文を確認しました：{p['customer']}から {it['name'] if it else p['item']} {p['quantity']}{sc.unit_label(it['unit']) if it else ''}"))
+                            text=f"新しい注文を確認しました：{names.get(p['customer'], p['customer'])}から {it['name'] if it else p['item']} {p['quantity']}{sc.unit_label(it['unit']) if it else ''}"))
         elif e["kind"] == "info_received" and p.get("source") == "broadcast":
             out.append(dict(key=k, at=e["at"], kind="packet", frm=p.get("from_owner", "iwase"), to=OWNER, text="岩瀬漁協から今日の資料が届きました"))
         elif e["kind"] == "info_received" and p.get("source") == "deal_request":
@@ -111,9 +112,11 @@ def _items(con, m) -> list[dict]:
         qs = "・".join(f"{q}{_unit(con, msg['item_code'])}" for q, _ in terms) if terms else ""
         out.append(dict(key=f"msg:{msg['id']}", at=msg["created_at"], kind="packet", frm=msg["from_owner"], to=msg["to_owner"], msg_kind=msg["kind"],
                         text=f"{_name(msg['from_owner'])} → {_name(msg['to_owner'])}：{what}" + (f"（{qs}）" if qs else "")))
-    for d in con.execute("SELECT id, action, at, result FROM case_decision ORDER BY id"):
+    for d in con.execute("SELECT id, action, actor, at, result FROM case_decision ORDER BY id"):
+        # 社長の差し戻し（return・2026-11-04）と社長の判断も、誰がしたかの記録のとおりに書く（差し戻しの後に流れの口が落ちていた・2026-11-05）
+        who = "社長" if d["actor"] == "president" else "担当者"
         out.append(dict(key=f"dec:{d['id']}", at=d["at"], kind="decision", action=d["action"], result=d["result"],
-                        text={"approve": "担当者が承認しました", "hold": "担当者が保留にしました", "reject": "担当者が見送りました"}[d["action"]]))
+                        text=who + {"approve": "が承認しました", "hold": "が保留にしました", "reject": "が見送りました", "return": "が差し戻しました"}[d["action"]]))
     for a in con.execute("SELECT id, at, event, detail FROM audit_event WHERE event IN ('case_step', 'market_api', 'case_registered', 'case_incomplete') ORDER BY id"):
         d = json.loads(a["detail"])
         if a["event"] == "case_step":
@@ -180,11 +183,12 @@ def flow(owner: str = OWNER) -> dict:
     try:
         items = _items(con, m)
         stage, busy = _stage(con, items)
+        shops = {r[0]: r[1] or r[0] for r in con.execute("SELECT name, shop_name FROM customer")}   # 画面に出す店の名前（案A）
     finally:
         con.close()
         m.close()
     orgs = [dict(code=c, name=o["name"], own=c == owner) for c, o in sc.OWNERS.items()]
-    return dict(stage=stage, stage_label=STAGE_LABEL[stage], busy=busy, items=items, orgs=orgs)
+    return dict(stage=stage, stage_label=STAGE_LABEL[stage], busy=busy, items=items, orgs=orgs, shops=shops)
 
 
 def verify(owner: str = OWNER) -> dict:
@@ -197,8 +201,10 @@ def verify(owner: str = OWNER) -> dict:
         steps = [dict(r) for r in con.execute("SELECT run_id, seq, tool, input_json, substr(result_text, 1, 400) AS result_text, is_error, at "
                                               "FROM agent_step ORDER BY run_id, seq")]
         api = [dict(at=r["at"], **json.loads(r["detail"])) for r in con.execute("SELECT at, detail FROM audit_event WHERE event = 'market_api' ORDER BY id")]
-        trades = [dict(r) for r in m.execute("SELECT trade_id, seller, buyer, quantity, unit_price_yen, status, created_at FROM trade "
-                                             "WHERE seller = ? OR buyer = ? ORDER BY id", (owner, owner))]
+        trades = [dict(r) for r in m.execute("SELECT t.trade_id, t.seller, t.buyer, t.quantity, t.unit_price_yen, t.status, t.created_at, l.item_code "
+                                             "FROM trade t JOIN lot l ON l.id = t.lot_id WHERE t.seller = ? OR t.buyer = ? ORDER BY t.id", (owner, owner))]
+        for t in trades:   # 数の単位は品目の単位（ブリは本・シロエビは箱）。画面に kg と決めて書かない（2026-11-05）
+            t["unit"] = _unit(con, t["item_code"])
         audit = [dict(r) for r in con.execute("SELECT at, actor, event, detail FROM audit_event ORDER BY id DESC LIMIT 60")]
     finally:
         con.close()

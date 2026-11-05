@@ -27,6 +27,12 @@ SECTIONS = ("waiting", "read", "done", "network", "left")
 CLOSED_CASE = ("registered", "rejected", "partial")
 
 
+def shops(con) -> dict:
+    """売り先の区分の名前 → 画面に出す店の名前（customer.shop_name・無ければ区分の名前）。
+    区分の名前（スーパー・料亭）は道具と記録の鍵のまま使い、人に見せる名前だけを店の名前にする（案A・2026-11-05 デイブ）。"""
+    return {r[0]: r[1] or r[0] for r in con.execute("SELECT name, shop_name FROM customer")}
+
+
 def _t(s) -> int:
     """並べる時刻（秒）。記録の時刻は秒までの物とマイクロ秒までの物が混ざるので、秒で比べ、同じ秒は記録の順を保つ。"""
     try:
@@ -72,12 +78,13 @@ def view(owner: str, item: str, on_date: str = sc.DEMO_DATE) -> dict:
                  + _consultations(con, it, on_date) + _approvals(con, it, on_date) + _left(con, it, on_date)
                  + _stock_left(con, it) + _stock_questions(con, it) + _stock_allocs(con, it))
         activity = _activity(con, owner, item)
+        names = shops(con)
     finally:
         con.close()
     rank = {s: i for i, s in enumerate(SECTIONS)}
     items.sort(key=lambda x: (_t(x["at"]), rank[x["section"]], x["key"]))
     return dict(owner=owner, owner_name=sc.OWNERS[owner]["name"], date=on_date,
-                item=dict(code=it["code"], name=it["name"], unit=sc.unit_label(it["unit"])), items=items, activity=activity)
+                item=dict(code=it["code"], name=it["name"], unit=sc.unit_label(it["unit"])), items=items, activity=activity, shops=names)
 
 
 # ── 読み取ったこと（AI が道具で読んだ時刻に現れる）──────────────────────
@@ -436,7 +443,8 @@ def current(owner: str, item: str, on_date: str = sc.DEMO_DATE, at: str | None =
                 held_for[a["order_id"]] = held_for.get(a["order_id"], 0) + n
                 left_hold -= n
         asking = _open_inquiries(owner, item, on_date, at)
-        lines = [_order_line(o, held_for.get(o["id"], 0), holds, unit, asking) for o in orders]
+        names = shops(con)
+        lines = [_order_line(o, held_for.get(o["id"], 0), holds, unit, asking, names.get(o["customer"])) for o in orders]
         hold_lines = [] if decision and decision.get("allocations") else [
             dict(h, text=f"{h['seller_name']}が {h['quantity']}{unit}を 1{unit} {h['unit_price_yen']:,}円で押さえています（期限 {h['valid_until'][11:16]}）。"
                          "どの注文に回すかは未定です") for h in holds]
@@ -466,8 +474,8 @@ def current(owner: str, item: str, on_date: str = sc.DEMO_DATE, at: str | None =
         # 引当のない在庫（売り先の当てのない数量）と、その扱いの問い
         ask["stock"] = _stock_lines(con, it, orders, unit, at)
         ask["stock_question"], ask["stock_decision"] = _stock_question_at(con, it, at, cut)
-        out = dict(owner=owner, item=dict(code=it["code"], name=it["name"], unit=unit), lines=lines, holds=hold_lines,
-                   decision=dict(decision, text=consult.decision_text(decision, unit)) if decision else None, **ask)
+        out = dict(owner=owner, item=dict(code=it["code"], name=it["name"], unit=unit), lines=lines, holds=hold_lines, shops=names,
+                   decision=dict(decision, text=consult.decision_text(decision, unit, names)) if decision else None, **ask)
     finally:
         con.close()
     return out
@@ -522,8 +530,9 @@ def _stock_lines(con, it, orders, unit, at):
     for cust, n in groups.items():
         if cust:
             waiting_order = any(o["customer"] == cust and o["quantity"] > o["registered"] for o in orders)
-            text = (f"引当のない在庫 {n}{unit}：{cust}に回すつもりで仕入れました（" +
-                    (f"{cust}の注文に、まだ充てていません）" if waiting_order else f"{cust}の注文はまだありません）"))
+            name = shops(con).get(cust, cust)   # 文に出すのは店の名前
+            text = (f"引当のない在庫 {n}{unit}：{name}に回すつもりで仕入れました（" +
+                    (f"{name}の注文に、まだ充てていません）" if waiting_order else f"{name}の注文はまだありません）"))
         else:
             text = f"引当のない在庫 {n}{unit}：売り先が決まっていません"
         out.append(dict(intended_customer=cust, quantity=n, state="spare", text=text))
@@ -598,22 +607,23 @@ def _open_inquiries(owner, item, on_date, at=None) -> list[str]:
     return list(dict.fromkeys(sc.OWNERS[r[0]]["name"] for r in rows))
 
 
-def _order_line(o, held, holds, unit, asking=()):
+def _order_line(o, held, holds, unit, asking=(), shop=None):
     q, reg = o["quantity"], o["registered"]
+    name = shop or o["customer"]   # 文に出すのは店の名前（customer は鍵のまま返す）
     fs = o.get("from_stock", 0)
     secured = reg + held
     seller = holds[0]["seller_name"] if holds else ""
     detail = "・".join(x for x in ((f"登録済み {reg - fs}{unit}" if reg - fs else ""), (f"在庫から {fs}{unit}" if fs else ""),
                                    (f"{seller}が押さえ中 {held}{unit}" if held else "")) if x)
     if secured >= q:
-        text = f"{o['customer']}の注文 {q}{unit}を確保しています（{detail}）"
+        text = f"{name}の注文 {q}{unit}を確保しています（{detail}）"
         state = "secured"
     elif secured > 0:
-        text = f"{o['customer']}の注文 {q}{unit}のうち {secured}{unit}を確保しています（{detail}）。{q - secured}{unit} 足りません" + (
+        text = f"{name}の注文 {q}{unit}のうち {secured}{unit}を確保しています（{detail}）。{q - secured}{unit} 足りません" + (
             f"（{'・'.join(asking)}に問い合わせ中）" if asking else "")
         state = "short"
     else:
-        text = f"{o['customer']}の {q}{unit}は、{'・'.join(asking)}に問い合わせ中です" if asking else f"{o['customer']}の {q}{unit}は、まだそろっていません"
+        text = f"{name}の {q}{unit}は、{'・'.join(asking)}に問い合わせ中です" if asking else f"{name}の {q}{unit}は、まだそろっていません"
         state = "none"
     return dict(order_id=o["id"], customer=o["customer"], quantity=q, registered=reg, held=held, secured=secured, short=max(0, q - secured),
                 state=state, text=text)

@@ -1,4 +1,4 @@
-// Agent Dock: Adaptive Workspace (magnet board).
+// Agent Dock: the magnet board.
 // The stage and every happening come from /api/flow (facts recorded in the business DBs); the board composition comes from
 // /api/board (Claude chose it with the compose tools, code checked it). Every amount is computed by code. Nothing here is scripted:
 // a card moves only when a recorded fact arrives, and the processing steps light only from recorded step rows.
@@ -7,6 +7,9 @@
   const OWNER = "amiya";
   const $ = (id) => document.getElementById(id);
   const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+  // 売り先は店の名前で出す（区分の名前「スーパー」「料亭」は記録の鍵・案A 2026-11-05）。対応表は /api/flow・/api/board が返す
+  let SHOPS = {};
+  const shop = (c) => esc(SHOPS[c] || c);
   const yen = (v) => (v === null || v === undefined) ? "—" : `${Number(v).toLocaleString("ja-JP")}円`;
   const NOREC = "記録なし";
   const unit = () => esc(board?.item?.unit || "");   // the item's unit from the business DB (本・kg・箱)
@@ -227,8 +230,8 @@
         <div class="n">期限 ${esc((d.valid_until || "").slice(11, 16))}</div>${note}`;
       case "vault": return `<div class="k">社長の経験（Vault）</div><div class="mid">${esc(d.title)}</div>${big ? `<div class="n">${esc(d.body)}</div>` : ""}
         <div class="n">${esc(d.author)}・${esc(d.written_on)}　適用：${esc(d.applies_when)}</div>${note}`;
-      case "order": return `<div class="k">注文</div><div class="mid">${esc(d.customer)}から ${esc(d.item)} ${d.quantity}${esc(d.unit)}</div>${note}`;
-      case "customer": return `<div class="k">売り先</div><div class="mid">${esc(d.name)}</div><div class="n">これまで ${d.times}回・${d.min_sold}〜${d.max_sold}${unit()}</div>${note}`;
+      case "order": return `<div class="k">注文</div><div class="mid">${shop(d.customer)}から ${esc(d.item)} ${d.quantity}${esc(d.unit)}</div>${note}`;
+      case "customer": return `<div class="k">売り先</div><div class="mid">${shop(d.name)}</div><div class="n">これまで ${d.times}回・${d.min_sold}〜${d.max_sold}${unit()}</div>${note}`;
       case "post": return `<div class="k">仲買の掲示</div><div class="mid">${esc(d.owner)}：${d.quantity}${unit()}・${yen(d.unit_price_yen)}／${unit()}</div>${note}`;
       default: return `<div class="k">メモ</div>${note}`;
     }
@@ -248,11 +251,11 @@
     const rows = [];
     if (n.purchase) rows.push(`<div>仕入れ：${esc(n.purchase.seller_name)} ${n.purchase.quantity}${unit()} × ${yen(n.purchase.unit_price_yen)}</div><div class="v">−${yen(n.purchase_yen)}</div>`);
     if (full) {
-      for (const l of n.lines) rows.push(`<div>売り：${esc(l.to)} ${l.quantity}${unit()} × ${yen(l.unit_price_yen)}<span class="cert ${l.certainty}">${CERT[l.certainty] || ""}</span></div><div class="v">${yen(l.revenue_yen)}</div>`);
+      for (const l of n.lines) rows.push(`<div>売り：${shop(l.to)} ${l.quantity}${unit()} × ${yen(l.unit_price_yen)}<span class="cert ${l.certainty}">${CERT[l.certainty] || ""}</span></div><div class="v">${yen(l.revenue_yen)}</div>`);
       const steps = [...new Set(n.lines.map((l) => l.process && l.process.step).filter(Boolean))];
       rows.push(`<div>加工${steps.length ? `（${steps.map(esc).join("・")}）` : ""}</div><div class="v">−${yen(n.process_cost_yen)}</div>`);
     } else {
-      rows.push(`<div>売り先：${n.lines.map((l) => `${esc(l.to)} ${l.quantity}${unit()}<span class="cert ${l.certainty}">${CERT[l.certainty] || ""}</span>`).join("　") || "なし"}</div><div class="v"></div>`);
+      rows.push(`<div>売り先：${n.lines.map((l) => `${shop(l.to)} ${l.quantity}${unit()}<span class="cert ${l.certainty}">${CERT[l.certainty] || ""}</span>`).join("　") || "なし"}</div><div class="v"></div>`);
     }
     rows.push(`<div class="t">粗利（${esc(n.profit_kind || "見込み")}）</div><div class="v t">${yen(gp)}</div>`);
     let extra = "";
@@ -386,7 +389,7 @@
         return `<div>${r.side === "buy" ? `${esc(r.counterparty)}から ${r.quantity}${unit()} を仕入れ` : `${esc(r.counterparty)}へ ${r.quantity}${unit()} を売り`}（${yen(r.unit_price_yen)}／${unit()}）
           <div class="s ${both ? "" : "bad"}">市場の取引帳簿に登録・${both ? "売り手と買い手の両方の帳簿" : "帳簿は片側だけ（照合が要ります）"}・${esc(r.trade_id)}</div></div>`;
       }
-      if (r.kind === "order_fill") return `<div>${esc(r.counterparty)}の注文に ${r.quantity}${unit()}<div class="s">自社の帳簿で注文に引き当て済み（注文の状態：${{ filled: "充足", partly_filled: "一部充足" }[r.order_status] || esc(r.order_status)}）</div></div>`;
+      if (r.kind === "order_fill") return `<div>${shop(r.counterparty)}の注文に ${r.quantity}${unit()}<div class="s">自社の帳簿で注文に引き当て済み（注文の状態：${{ filled: "充足", partly_filled: "一部充足" }[r.order_status] || esc(r.order_status)}）</div></div>`;
       return `<div>引き当てのない在庫 ${r.quantity}${unit()}<div class="s bad">売れたことにはしていません</div></div>`;
     }).join("");
     const chosen = board?.options.find((o) => o.chosen);
@@ -550,16 +553,16 @@
   const GROUNDS_Q = "勧める案の根拠を、コードの計算・社長の経験・Claude の提案に分けて教えてください";
   function changeText(ch) {
     if (!ch) return NOREC;
-    const parts = (ch.allocations || []).map((x) => `${esc(x.customer)} ${x.quantity}${unit()}`);
+    const parts = (ch.allocations || []).map((x) => `${shop(x.customer)} ${x.quantity}${unit()}`);
     return `仕入れ ${ch.quantity}${unit()}` + (parts.length ? `（${parts.join("・")}）` : "");
   }
   function openChange() {
     const prim = board.options.find((o) => o.code === board.layout?.primary);
     const now = {};
     for (const x of (prim?.plan?.allocations || [])) if (x.kind === "order") now[x.ref_id] = (now[x.ref_id] || 0) + x.quantity;
-    const rows = (board.orders || []).map((o) => `<tr><td>${esc(o.customer)}</td><td class="num">注文 ${o.quantity}${unit()}</td>
+    const rows = (board.orders || []).map((o) => `<tr><td>${shop(o.customer)}</td><td class="num">注文 ${o.quantity}${unit()}</td>
       <td class="num"><input type="number" min="0" step="1" data-order="${o.order_id}" value="${now[o.order_id] || 0}">${unit()}</td></tr>`)
-      .concat((board.leads || []).map((c) => `<tr><td>${esc(c)}</td><td class="num">注文なし</td>
+      .concat((board.leads || []).map((c) => `<tr><td>${shop(c)}</td><td class="num">注文なし</td>
       <td class="num"><input type="number" min="0" step="1" data-customer="${esc(c)}" value="0">${unit()}</td></tr>`)).join("");
     openDrawer("数量・配分を変えて交渉し直す", `<table class="tbl"><thead><tr><th>売り先</th><th class="num">今日の注文</th><th class="num">仕入れて回す数</th></tr></thead>
       <tbody>${rows}</tbody></table><div class="n" id="chgsum"></div>
@@ -630,6 +633,7 @@
     try {
       const b = await (await fetch(`/api/board?owner=${OWNER}`)).json();
       const k = b.case ? `${b.case.id}-${b.case.version}-${b.case.status}-${b.layout_turn}-${(b.decisions || []).length}-${(b.options || []).map((o) => o.executable + (o.changed ? "c" : "")).join("")}` : "none";
+      Object.assign(SHOPS, b.shops || {});
       if (force || k !== lastBoardKey) { board = b.case ? b : null; lastBoardKey = k; return true; }
     } catch (e) { /* keep the last board */ }
     return false;
@@ -637,6 +641,7 @@
   async function poll() {
     try {
       flow = await (await fetch(`/api/flow?owner=${OWNER}`)).json();
+      Object.assign(SHOPS, flow.shops || {});
     } catch (e) { return; }
     const fresh = flow.items.filter((i) => !seen.has(i.key));
     fresh.forEach((i) => seen.add(i.key));

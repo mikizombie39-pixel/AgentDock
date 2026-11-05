@@ -280,9 +280,9 @@ def latest_decision(con, case_id: int):
     return d
 
 
-def decision_text(d: dict, unit: str = "") -> str:
-    """決定の中身（AI と画面に返す）：誰が・どの版で・数量と配分。"""
-    parts = "・".join(f"{a['customer']} {a['quantity']}{unit}" for a in d["allocations"] or [])
+def decision_text(d: dict, unit: str = "", names: dict | None = None) -> str:
+    """決定の中身（AI と画面に返す）：誰が・どの版で・数量と配分。names を渡すと売り先を店の名前で書く（画面に出す時・案A）。"""
+    parts = "・".join(f"{(names or {}).get(a['customer'], a['customer'])} {a['quantity']}{unit}" for a in d["allocations"] or [])
     return f"{WHO.get(d['decided_by'], d['decided_by'])}の決定（版 {d['version']}）：仕入れ {d['quantity']}{unit}" + (f"（{parts}）" if parts else "")
 
 

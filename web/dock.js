@@ -15,6 +15,9 @@
   let REPLAY_T = null;          // replay clock (seconds); null in live
   const $ = (id) => document.getElementById(id);
   const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+  // 売り先は店の名前で出す（区分の名前「スーパー」「料亭」は記録の鍵・案A 2026-11-05）。対応表は /api/work・/api/current が返す
+  let SHOPS = {};
+  const shop = (c) => esc(SHOPS[c] || c);
   const NOREC = "記録なし";
   const yen = (v) => (v === null || v === undefined) ? NOREC : `${Number(v).toLocaleString("ja-JP")}円`;
   const hms = (s) => (s ? String(s).slice(11, 19) : "");
@@ -70,7 +73,7 @@
     const d = it.data, live = MODE === "live";
     const hd = (ic, label) => `<div class="hd">${icon(ic)}<span>${label}</span><span class="at">${hms(it.at)}</span>${srcBtn(it)}</div>`;
     switch (it.kind) {
-      case "order": return hd("shopping-cart", "注文") + `<div class="main">${esc(d.customer)}　${d.quantity}${unit}${badge(state === "open" ? null : state)}</div>
+      case "order": return hd("shopping-cart", "注文") + `<div class="main">${shop(d.customer)}　${d.quantity}${unit}${badge(state === "open" ? null : state)}</div>
         <div class="kv"><div>売値（社内）</div><div class="v">${yen(d.sell_price_yen)}</div></div>`;
       case "material": return hd("ship", `${esc(d.sender)}の資料`) + `<div class="kv">
         <div>今朝の水揚げ</div><div class="v">${d.quantity ?? NOREC}${d.quantity != null ? unit : ""}</div>
@@ -96,7 +99,7 @@
         return hd("package", "引当のない在庫の扱いを問われています") + `<div class="main">${esc(d.question)}</div>
           <div class="sub">引当のない在庫 ${d.quantity}${unit}　選択肢：${ch}</div>${d.reason ? `<div class="sub">理由：${esc(d.reason)}</div>` : ""}`;
       }
-      case "stock_alloc": return hd("package", "引当のない在庫を注文に充てた") + `<div class="main">${esc(d.customer)}の注文に ${d.quantity}${unit}</div>`;
+      case "stock_alloc": return hd("package", "引当のない在庫を注文に充てた") + `<div class="main">${shop(d.customer)}の注文に ${d.quantity}${unit}</div>`;
       case "approval": return hd("stamp", "網谷さんの承認を待っています") + `<div class="main">案 ${esc(d.option_code)}：${esc(d.option_label || NOREC)}</div>
         <div class="sub">${d.priority_change ? "売り先の注文を欠いてほかへ回す案です（顧客の間の優先）" : ""}${d.over_limit ? `担当者の上限 ${yen(d.limit_yen)} を超えます（${yen(d.amount_yen)}）` : ""}</div>
         <div class="foot">${state === "needs_president" ? `<button class="act main" data-approve="${esc(it.key)}" ${live ? "" : "disabled"}>網谷さん（社長）として承認する</button>` : badge(state)}
@@ -109,7 +112,7 @@
     const d = it.data;
     const opts = (d.options || []).map((o) => {
       const buy = o.purchase ? `${esc(o.purchase.seller)}から ${o.purchase.quantity}${unit} × ${yen(o.purchase.unit_price_yen)}` : "仕入れない";
-      const to = (o.lines || []).map((l) => `${esc(l.to)} ${l.quantity}${unit}`).join("・");
+      const to = (o.lines || []).map((l) => `${shop(l.to)} ${l.quantity}${unit}`).join("・");
       const can = live && state === "open" && o.executable && o.status === "offered" && !presidentWaited();
       return `<div class="opt"><div class="lb">案 ${esc(o.code)}${o.recommended ? '<span class="badge">AIの勧め</span>' : ""}　${esc(o.label)}</div>
         <div class="kv"><div>${buy}${to ? "　→ " + to : ""}</div><div class="v">${o.purchase ? yen(o.purchase.amount_yen) : ""}</div>
@@ -117,7 +120,7 @@
         ${o.executable ? "" : `<div class="err">実行できません：${(o.errors || []).map(esc).join("・")}</div>`}
         ${can ? `<button class="act" data-decide="${esc(it.key)}" data-opt="${o.option_id}">${o.purchase ? "この案で承認する" : "見送る"}</button>` : ""}</div>`;
     }).join("");
-    const ch = d.change ? `<div class="sub">答え：仕入れ ${d.change.quantity}${unit}（${(d.change.allocations || []).map((a) => `${esc(a.customer)} ${a.quantity}${unit}`).join("・")}）・${d.answered_by === "president" ? "網谷さん" : "担当者"}</div>` : "";
+    const ch = d.change ? `<div class="sub">答え：仕入れ ${d.change.quantity}${unit}（${(d.change.allocations || []).map((a) => `${shop(a.customer)} ${a.quantity}${unit}`).join("・")}）・${d.answered_by === "president" ? "網谷さん" : "担当者"}</div>` : "";
     let ctl = "";
     if (state === "open") ctl = `<button class="act" data-change="${esc(it.key)}" ${live ? "" : "disabled"}>数量・配分を変える</button>`;
     if (state === "needs_president") ctl = `<button class="act main" data-pres="${esc(it.key)}" ${live ? "" : "disabled"}>網谷さん（社長）として、この答えで確定する</button>`;
@@ -129,10 +132,10 @@
   function leftHtml(it) {
     if (it.kind === "stock_left") {
       const d = it.data;
-      return `<span class="shoal">${icon("package")}</span><span>引当のない在庫 ${d.quantity}${unit}（${d.intended_customer ? `${esc(d.intended_customer)}に回すつもり・注文なし` : "売り先なし"}）</span>${srcBtn(it)}`;
+      return `<span class="shoal">${icon("package")}</span><span>引当のない在庫 ${d.quantity}${unit}（${d.intended_customer ? `${shop(d.intended_customer)}に回すつもり・注文なし` : "売り先なし"}）</span>${srcBtn(it)}`;
     }
     const n = Math.max(1, Math.min(6, it.data.remaining));
-    return `<span class="shoal">${icon("fish").repeat(n)}</span><span>${esc(it.data.customer)}　残り ${it.data.remaining}${unit}（注文 ${it.data.quantity}${unit}）</span>${srcBtn(it)}`;
+    return `<span class="shoal">${icon("fish").repeat(n)}</span><span>${shop(it.data.customer)}　残り ${it.data.remaining}${unit}（注文 ${it.data.quantity}${unit}）</span>${srcBtn(it)}`;
   }
 
   function msgHtml(it) {
@@ -391,6 +394,7 @@
           nowState.refresh = false;
           const cur = await (await fetch(`/api/current?owner=${OWNER}&item=${encodeURIComponent(ITEM)}`)).json();
           const v = await (await fetch(`/api/work?owner=${OWNER}&item=${encodeURIComponent(ITEM)}`)).json();
+          SHOPS = Object.assign({}, v.shops || {}, cur.shops || {});
           if (first) header(v);
           // information that arrived from another organisation since the last look
           const fresh = first ? [] : v.items.filter((it) => it.kind === "message" && !it.data.outgoing && !shown.has(it.key));
@@ -485,7 +489,7 @@
       const why = [p.priority_change ? "売り先の注文を欠いてほかへ回すため（顧客の間の優先）" : "", p.over_limit ? `担当者の上限 ${yen(p.limit_yen)} を超えるため` : "",
         p.differs_from_decision ? "人の決定と違う案のため" : ""].filter(Boolean).join("・");
       const o = p.kind === "approval" ? (cur.options || []).find((x) => x.option_id === p.option_id) : null;
-      const ch = p.kind === "consultation" && p.change ? `仕入れ ${p.change.quantity}${unit}（${(p.change.allocations || []).map((a) => `${esc(a.customer)} ${a.quantity}${unit}`).join("・")}）` : "";
+      const ch = p.kind === "consultation" && p.change ? `仕入れ ${p.change.quantity}${unit}（${(p.change.allocations || []).map((a) => `${shop(a.customer)} ${a.quantity}${unit}`).join("・")}）` : "";
       box.innerHTML = `<div class="ask-q">網谷さん（社長）の判断を待っています</div><div class="ask-sub">${esc(why || NOREC)}</div>
         ${o ? `<div class="choices"><button class="choice on" disabled>${esc(o.label)}<small>担当者が選んだ案</small></button></div>${panelHtml(o, "president")}` : ""}
         ${p.kind === "consultation" ? `<div class="waitpres"><span>担当者の答え：${ch}</span><button class="act main" data-pgo="consult">網谷さん（社長）として、この答えで確定する</button></div>` : ""}${ackLine()}`;
@@ -500,7 +504,7 @@
   function panelHtml(o, actor) {
     if (!o) return "";
     const n = o.numbers;
-    const after = (o.after || []).map((a) => `<div>${esc(a.customer)}の注文 ${a.quantity}${unit}</div><div class="v">${a.short_after ? `確保 ${a.secured_after}${unit}・${a.short_after}${unit} 足りない` : `確保 ${a.secured_after}${unit}`}</div>`).join("");
+    const after = (o.after || []).map((a) => `<div>${shop(a.customer)}の注文 ${a.quantity}${unit}</div><div class="v">${a.short_after ? `確保 ${a.secured_after}${unit}・${a.short_after}${unit} 足りない` : `確保 ${a.secured_after}${unit}`}</div>`).join("");
     const buy = n.purchase ? `<div>仕入れ ${esc(n.purchase.seller)} ${n.purchase.quantity}${unit} × ${yen(n.purchase.unit_price_yen)}</div><div class="v">${yen(n.purchase_yen)}</div>` : `<div>仕入れない</div><div class="v"></div>`;
     const d = o.gross_profit_diff_yen;
     const gp = `<div>粗利（見込み）</div><div class="v">${yen(n.gross_profit_yen)}</div><div>勧める案との差</div><div class="v">${d === 0 ? "0円" : (d > 0 ? "+" : "−") + yen(Math.abs(d))}</div>`;
@@ -566,11 +570,11 @@
   // the AI's drafts to a customer: nothing is sent by Agent Dock; the person decides and tells the customer
   function drawDrafts(list) {
     const html = list.map((d) => d.status === "draft"
-      ? `<div class="draft"><div class="dk">${esc(d.customer)}への連絡の下書き（AIが作成・まだ送っていません）</div><div class="db">${esc(d.body)}</div>
+      ? `<div class="draft"><div class="dk">${shop(d.customer)}への連絡の下書き（AIが作成・まだ送っていません）</div><div class="db">${esc(d.body)}</div>
          <div class="ds">代わりの品：${esc(d.substitute || "なし（AIが読める品目に無い）")}${d.reason ? "　理由：" + esc(d.reason) : ""}</div>
          <div class="go"><button class="act main" data-draft="${d.draft_id}" data-act="approve" ${MODE === "live" ? "" : "disabled"}>この文で伝える（あなたが伝えます）</button>
          <button class="act" data-draft="${d.draft_id}" data-act="discard" ${MODE === "live" ? "" : "disabled"}>使わない</button></div></div>`
-      : `<div class="draft done"><div class="dk">${esc(d.customer)}への連絡：${d.status === "stale" ? "古くなったため使えません（" + esc(d.stale_reason || "") : (d.status === "approved" ? "伝えることにしました" : "使わないことにしました") + "（" + (d.decided_by === "president" ? "網谷さん" : "担当者")}）</div><div class="db">${esc(d.body)}</div></div>`).join("");
+      : `<div class="draft done"><div class="dk">${shop(d.customer)}への連絡：${d.status === "stale" ? "古くなったため使えません（" + esc(d.stale_reason || "") : (d.status === "approved" ? "伝えることにしました" : "使わないことにしました") + "（" + (d.decided_by === "president" ? "網谷さん" : "担当者")}）</div><div class="db">${esc(d.body)}</div></div>`).join("");
     if ($("nowdrafts")._html !== html) { $("nowdrafts").innerHTML = html; $("nowdrafts")._html = html; }
   }
   $("nowdrafts").addEventListener("click", async (e) => {
@@ -587,7 +591,7 @@
     const r = await fetch("/api/order", { method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ owner: OWNER, customer: "料亭", item: "buri_xl", quantity: 6, idempotency_key: "demo-ryotei-buri-6" }) });
     const j = await r.json().catch(() => ({}));
-    $("opbtn").textContent = r.ok ? `（実演の操作）料亭の追加注文を入れました（注文 ${j.order_id}）` : `（実演の操作）入れられませんでした：${j.error || r.status}`;
+    $("opbtn").textContent = r.ok ? `（実演の操作）${SHOPS["料亭"] || "料亭"}の追加注文を入れました（注文 ${j.order_id}）` : `（実演の操作）入れられませんでした：${j.error || r.status}`;
     nowState.refresh = true;
   });
   function setView(v) {
@@ -612,7 +616,7 @@
     const s = shown.get(k), orders = [...shown.values()].filter((x) => x.item.kind === "order").map((x) => x.item.data);
     const opt = (s.item.data.options || []).find((o) => o.recommended) || {};
     const now = {}; for (const a of opt.allocations || []) if (a.kind === "order") now[a.ref_id] = (now[a.ref_id] || 0) + a.quantity;
-    s.el.querySelector(".formslot").innerHTML = `<div class="form"><table>${orders.map((o) => `<tr><td>${esc(o.customer)}</td><td class="num">注文 ${o.quantity}${unit}</td>
+    s.el.querySelector(".formslot").innerHTML = `<div class="form"><table>${orders.map((o) => `<tr><td>${shop(o.customer)}</td><td class="num">注文 ${o.quantity}${unit}</td>
       <td class="num"><input type="number" min="0" step="1" data-order="${o.order_id}" value="${now[o.order_id] || 0}">${unit}</td></tr>`).join("")}</table>
       <div class="foot"><button class="act main" data-send="${esc(k)}">この数量・配分で交渉し直す</button><button class="act" data-cancel="${esc(k)}">やめる</button></div></div>`;
     formOpen = k;
@@ -665,9 +669,11 @@
   // ── start ──
   fetch(`/api/work?owner=${OWNER}&item=${encodeURIComponent(ITEM)}`).then((r) => r.json()).then((v) => {
     if (!v.item) { $("aitext").textContent = NOREC; return; }
+    SHOPS = Object.assign({}, v.shops || {});
     header(v);
     $("viewbtn").hidden = false;
     setView(VIEW);
+    $("opbtn").textContent = `（実演の操作）${SHOPS["料亭"] || "料亭"}から追加注文が届く：ブリ 6本`;   // 店の名前で出す（案A）
     if (MODE === "live") { $("opbtn").hidden = ITEM !== "buri_xl"; live(); return; }
     fetch(`/api/current_timeline?owner=${OWNER}&item=${encodeURIComponent(ITEM)}`).then((r) => (r.ok ? r.json() : null)).catch(() => null)
       .then((tl) => replay(v, tl));

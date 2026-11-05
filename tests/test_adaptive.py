@@ -254,7 +254,7 @@ class StageBeforeOrderTest(unittest.TestCase):
         scene.start()
         f = stage.flow()
         self.assertEqual(f["stage"], "order")
-        self.assertTrue(any(i["kind"] == "order" and "スーパー" in i["text"] for i in f["items"]))
+        self.assertTrue(any(i["kind"] == "order" and "魚廣" in i["text"] for i in f["items"]))
 
 
 if __name__ == "__main__":

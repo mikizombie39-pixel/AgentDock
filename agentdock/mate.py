@@ -856,7 +856,8 @@ def view(owner: str, item: str, on_date: str = sc.DEMO_DATE, worker_error: str |
                 decide=_with_reason(decide_question(f, tl), f, actions) if ex == "your_turn" else None,
                 why=why_card(f, st, ex, head, tl, replaced), receipt=_fresh_receipt(f), tally=tl, taken=taken(f, ex), others=others(owner, item, on_date),
                 band=band(owner, item, on_date, worker_error, f), band_others=band_others(owner, item, on_date),
-                orgs=list(orgs.values()), net=net, op=_op(f, ex), president=pres, busy=_running(f) is not None, clock=f["clock"])
+                orgs=list(orgs.values()), net=net, op=_op(f, ex), president=pres, busy=_running(f) is not None, clock=f["clock"],
+                shops={o["customer"]: o["shop"] for o in f["orders"]})   # 画面に出す店の名前（案A）
 
 
 def _op(f, ex):
@@ -1650,9 +1651,11 @@ def check_sheet(owner: str, on_date: str = sc.DEMO_DATE) -> dict:
     """「一緒に確認する」で出す今朝の注文と社長の指示（委任の時に、確かめた番号として送り返す）。"""
     con = db.connect(owner)
     try:
+        # 注文ごとの社長の指示は、指示の記録（directive）のうち、その売り先に宛てたものから引く（画面に決まった文を書かない・2026-11-05）
         orders = [dict(order_id=r["id"], shop=r["shop_name"] or r["customer"], item=_short_name(r["iname"]), quantity=r["quantity"],
-                       unit=sc.unit_label(r["unit"]), tender=False, item_code=r["code"])
-                  for r in con.execute("SELECT o.id, o.quantity, c.name AS customer, c.shop_name, i.name AS iname, i.unit, i.code FROM order_book o "
+                       unit=sc.unit_label(r["unit"]), tender=False, item_code=r["code"],
+                       directive=next((d["body"] for d in agents.directives(con, r["item_id"], on_date) if d["customer"] == r["customer"]), None))
+                  for r in con.execute("SELECT o.id, o.quantity, c.name AS customer, c.shop_name, i.id AS item_id, i.name AS iname, i.unit, i.code FROM order_book o "
                                        "JOIN customer c ON c.id = o.customer_id JOIN item i ON i.id = o.item_id "
                                        "WHERE o.order_date = ? AND o.status IN ('open', 'partly_filled') ORDER BY o.id", (on_date,))]
         dirs = agents.directives(con, None, on_date)

@@ -160,7 +160,7 @@ class CurrentTest(tb.Base):
 
     def test_before_any_decision_the_hold_is_not_assigned(self):
         cur = work.current("amiya", "buri_xl")
-        self.assertEqual([l["text"] for l in cur["lines"]], ["スーパーの 4本は、まだそろっていません", "料亭の 6本は、まだそろっていません"])
+        self.assertEqual([l["text"] for l in cur["lines"]], ["魚廣の 4本は、まだそろっていません", "順風満帆の 6本は、まだそろっていません"])
         self.assertEqual([h["text"] for h in cur["holds"]], ["岩瀬漁協が 6本を 1本 18,000円で押さえています（期限 07:00）。どの注文に回すかは未定です"])
         self.assertEqual((cur["waiting_for"], cur["question"]["text"]), ("staff", "この配分で進めますか"))   # 短い問いが無い版は ask_human
         a, e = cur["options"]
@@ -180,15 +180,15 @@ class CurrentTest(tb.Base):
         self.assertEqual((cur["pending"]["kind"], cur["pending"]["option_id"], cur["pending"]["priority_change"]), ("approval", a["option_id"], True))
         deal.decide("amiya", self.case, a["option_id"], "approve", a["fingerprint"], "p1", actor="president")
         cur = work.current("amiya", "buri_xl")
-        self.assertEqual([l["text"] for l in cur["lines"]], ["スーパーの注文 4本を確保しています（登録済み 4本）",
-                                                             "料亭の注文 6本のうち 2本を確保しています（登録済み 2本）。4本 足りません"])
+        self.assertEqual([l["text"] for l in cur["lines"]], ["魚廣の注文 4本を確保しています（登録済み 4本）",
+                                                             "順風満帆の注文 6本のうち 2本を確保しています（登録済み 2本）。4本 足りません"])
         self.assertEqual((cur["waiting_for"], cur["options"], cur["holds"]), (None, [], []))
 
     def test_a_decision_assigns_the_held_quantity_to_orders(self):
         tb.answer(self.cons, "p", dict(quantity=6, allocations=[dict(order_id=self.rest, quantity=6)]), role="president")
         cur = work.current("amiya", "buri_xl")
-        self.assertEqual(cur["decision"]["text"], "社長（網谷さん）の決定（版 1）：仕入れ 6本（料亭 6本）")
-        self.assertEqual(self.lines(), ["スーパーの 4本は、まだそろっていません", "料亭の注文 6本を確保しています（岩瀬漁協が押さえ中 6本）"])
+        self.assertEqual(cur["decision"]["text"], "社長（網谷さん）の決定（版 1）：仕入れ 6本（順風満帆 6本）")
+        self.assertEqual(self.lines(), ["魚廣の 4本は、まだそろっていません", "順風満帆の注文 6本を確保しています（岩瀬漁協が押さえ中 6本）"])
         self.assertEqual(cur["holds"], [])
         self.assertEqual(cur["waiting_for"], None)                                              # 答えた後は AI の番（交渉し直し）
         self.assertEqual([e["kind"] for e in cur["ai_queue"]], ["human_choice"])

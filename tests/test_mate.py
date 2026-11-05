@@ -386,6 +386,15 @@ class MorningTest(Base):
         self.assertFalse(t["connected"])
         self.assertEqual([j["step"] for j in m["jobs"]], ["注文の確認", "不足分の手配", "入札"])   # 工程の名前は帯と同じ
 
+    def test_each_order_shows_the_presidents_directive_from_the_record(self):
+        # 注文のカードの社長の指示は、その売り先に宛てた指示の記録から引く。追加の注文（指示の無い売り先）には付けない
+        before = {o["shop"]: o["directive"] for o in mate.check_sheet("amiya")["orders"] if not o["tender"]}
+        self.assertEqual(before, {"魚廣": mate.check_sheet("amiya")["directives"][0]["body"]})
+        self.add_ryotei()
+        after = {o["shop"]: o["directive"] for o in mate.check_sheet("amiya")["orders"] if not o["tender"]}
+        self.assertEqual(after["順風満帆"], None)
+        self.assertEqual(after["魚廣"], before["魚廣"])
+
     def test_an_item_without_sales_history_is_not_called_more(self):
         # 売れ方の記録の無い売り先がある品目は、ふだんを 0 と数えて「多い」と言わない
         c = db.connect("amiya")

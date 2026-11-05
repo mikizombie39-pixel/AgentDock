@@ -1,4 +1,4 @@
-"""Adaptive Workspace（磁石ボード）：Claude が選んだ情報と案を、決められたカードの種類で組み、金額はコードが計算する。
+"""磁石ボード：Claude が選んだ情報と案を、決められたカードの種類で組み、金額はコードが計算する。
 
 Claude が決めるもの：何が重要か・どのカードを出すか・どの案を出すか・なぜ勧めるか・経験をどう使うか
 コードが保証するもの：金額と数量（業務 DB と条件の番号から計算）・参照してよい情報か・案が実行できるか・表示した時の状態（照合番号）
@@ -637,4 +637,5 @@ def view(con, case_id: int | None = None) -> dict:
     return dict(case=dict(case), cards=cards, options=opts, summary=json.loads(summary[0])["summary"] if summary else None, decisions=decisions,
                 layout=layout, layout_turn=t["id"] if t else None, turns=turns, consultation=consultation,
                 item=dict(code=it["code"], name=it["name"], unit=sc.unit_label(it["unit"])), orders=orders, leads=leads,
-                records=records(con, case["id"]) if case["status"] == "registered" else [])
+                records=records(con, case["id"]) if case["status"] == "registered" else [],
+                shops={r[0]: r[1] or r[0] for r in con.execute("SELECT name, shop_name FROM customer")})   # 画面に出す店の名前（案A）

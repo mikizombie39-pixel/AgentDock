@@ -22,7 +22,7 @@
 <div class="note">Claude の起動と道具の呼び出し、市場の取引帳簿の API と登録の結果、帳簿の照合、費用を、DB の記録から表示します。
   市場の取引帳簿と API は会期中に新しく作った部品です（既存の業務システムへの接続は今回は行っていません）。</div>
 <div class="bar">
-  <select id="variant"><option value="normal">通常</option><option value="price_up">漁協の値上がり</option><option value="b_declines">B社の注文の取り消し</option><option value="vault_changed">料亭の休業</option></select>
+  <select id="variant"><option value="normal">通常</option><option value="price_up">漁協の値上がり</option><option value="b_declines">B社の注文の取り消し</option><option value="vault_changed">順風満帆の休業</option></select>
   <button id="start">業務を始める（漁協の資料と注文を入れる）</button>
   <button id="resume">止まった通しを再開する</button>
   <span id="msg" class="note"></span>
@@ -42,7 +42,7 @@
       <td><pre>${esc(s.input_json)}</pre></td><td><pre>${esc(s.result_text)}</pre></td></tr>`);
     const api = v.market_api.map((a) => `<tr><td>${esc(a.at)}</td><td>${esc(a.trade_id)}</td><td>${esc((a.calls || []).join(" → "))}</td><td>${esc(a.status)}</td>
       <td class="${a.seller_booked && a.buyer_booked ? "ok" : "err"}">${a.seller_booked ? "売り手○" : "売り手×"}・${a.buyer_booked ? "買い手○" : "買い手×"}</td></tr>`);
-    const trades = v.trades.map((t) => `<tr><td>${esc(t.trade_id)}</td><td>${esc(t.seller)} → ${esc(t.buyer)}</td><td class="num">${t.quantity}kg</td>
+    const trades = v.trades.map((t) => `<tr><td>${esc(t.trade_id)}</td><td>${esc(t.seller)} → ${esc(t.buyer)}</td><td class="num">${t.quantity}${esc(t.unit)}</td>
       <td class="num">${yen(t.unit_price_yen)}</td><td>${esc(t.status)}</td><td>${esc(t.created_at)}</td></tr>`);
     const rec = v.reconcile.map((r) => `<tr><td>${esc(r.trade_id)}</td><td>${esc(r.status)}</td><td class="${r.seller_booked && r.buyer_booked ? "ok" : "err"}">${r.seller_booked && r.buyer_booked ? "両方の帳簿にあります" : "片側だけ・要照合"}</td></tr>`);
     document.getElementById("out").innerHTML = `

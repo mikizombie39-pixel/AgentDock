@@ -95,8 +95,8 @@ class Policy:
             has_draft = _q("amiya", "SELECT count(*) AS n FROM customer_draft")[0]["n"]
             if short_o and not has_draft:
                 return [ [("read_thread", B), ("read_vault", B)],
-                        [("draft_to_customer", dict(customer=short_o["customer"], item_code=item, substitute_item_code="aji",
-                                                    message=f"本日のブリは {short_o['remaining']}本足りない見込みです。代わりにアジをご用意できます。",
+                        [("draft_to_customer", dict(customer=short_o["customer"], item_code=item, substitute_item_code=None,
+                                                    message=f"本日のブリは {short_o['remaining']}本足りない見込みです。代わりの魚をお探ししてよろしいでしょうか。",
                                                     reason="当たれる先の返事が断りでした"))],
                         [("do_nothing", dict(reason="下書きを担当者に見てもらう"))] ]
             return [ [("read_thread", B)], [("do_nothing", dict(reason="当たれる先の返事が断りでした。次に当たる先を担当者と相談します"))] ]

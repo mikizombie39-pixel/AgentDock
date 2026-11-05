@@ -210,7 +210,7 @@
   function drawSideOrders() {
     const c = M.check;
     $("mside").innerHTML = `<h3>今朝の注文</h3>` + c.orders.map((o) => `<div class="ocard ${o.tender && !o.connected ? "off" : ""}"><div class="t">${icon(o.tender ? "package" : "shopping-cart")}${esc(o.shop)} · ${esc(o.item)} ${o.quantity}${esc(o.unit)}</div>
-      <div class="s">${o.tender ? (o.closes_at ? "入札の締切 " + hm(o.closes_at) : '入札の受付：<b style="color:var(--stop)">未接続</b>') : "社長の指示：落とさない"}</div>
+      <div class="s">${o.tender ? (o.closes_at ? "入札の締切 " + hm(o.closes_at) : '入札の受付：<b style="color:var(--stop)">未接続</b>') : o.directive ? `社長の指示：「${esc(o.directive)}」` : "社長の指示：なし"}</div>
       <div class="s2">${o.tender ? "これから入札" : "これから買い付け"}</div></div>`).join("") +
       `<h3 style="margin-top:22px">任せる範囲</h3>
       <div class="scope">${icon("bot")}<div>AIに任せる<small>${c.scopes.map((s) => esc(s.label)).join("・")}</small></div></div>
@@ -301,7 +301,7 @@
     if (!p) return `<p>担当者と AI が、任された範囲で仕事を進めています。</p>`;
     const why = [p.priority_change ? "得意先の間の優先を変える案（社長の朝の指示と違う）" : "", p.over_limit ? "担当者の権限の額を超える案" : ""].filter(Boolean).join("・");
     return `<p>${esc(why || "社長の判断が要る案")}です。</p>` + (p.label ? `<p style="color:var(--ink)">担当者が選んだ案：${esc(p.label)}</p>` : "") +
-      (p.change ? `<p>担当者の答え：仕入れ ${p.change.quantity}（${(p.change.allocations || []).map((a) => `${esc(a.customer)} ${a.quantity}`).join("・")}）</p>` : "");
+      (p.change ? `<p>担当者の答え：仕入れ ${p.change.quantity}（${(p.change.allocations || []).map((a) => `${esc((V.shops || {})[a.customer] || a.customer)} ${a.quantity}`).join("・")}）</p>` : "");
   }
 
   let RET = false, RET_TEXT = "";   // 社長の差し戻しの理由の入力欄（開いている間は描き直しで消さない）

@@ -174,8 +174,8 @@ class SpareAfterRegistrationTest(SpareBase):
         self.assertIn("引当のない在庫（売り先の当てのない数量）：2本（人が承認した案で料亭に回すと決めた分・料亭の注文はまだ無い）", prompt)
         self.assertIn("ask_about_stock", prompt)
         cur = work.current("amiya", "buri_xl")
-        self.assertEqual([s["text"] for s in cur["stock"]], ["引当のない在庫 2本：料亭に回すつもりで仕入れました（料亭の注文はまだありません）"])
-        self.assertEqual([l["text"] for l in cur["lines"]], ["スーパーの注文 4本を確保しています（登録済み 4本）"])
+        self.assertEqual([s["text"] for s in cur["stock"]], ["引当のない在庫 2本：順風満帆に回すつもりで仕入れました（順風満帆の注文はまだありません）"])
+        self.assertEqual([l["text"] for l in cur["lines"]], ["魚廣の注文 4本を確保しています（登録済み 4本）"])
 
     def test_the_ai_asks_and_the_answer_wakes_it(self):
         r, _ = run_owner("amiya", "trade_registered", self.ask_script())
@@ -255,8 +255,8 @@ class SpareAllocationTest(SpareBase):
         cur = work.current("amiya", "buri_xl")
         self.assertEqual(cur["stock"], [])
         self.assertEqual([l["text"] for l in cur["lines"]],
-                         ["スーパーの注文 4本を確保しています（登録済み 4本）",
-                          "料亭の注文 6本のうち 2本を確保しています（在庫から 2本）。4本 足りません（B社に問い合わせ中）"])
+                         ["魚廣の注文 4本を確保しています（登録済み 4本）",
+                          "順風満帆の注文 6本のうち 2本を確保しています（在庫から 2本）。4本 足りません（B社に問い合わせ中）"])
         kinds = {i["kind"] for i in work.view("amiya", "buri_xl")["items"]}
         self.assertTrue({"stock_left", "stock_question", "stock_alloc"} <= kinds)
 
@@ -297,8 +297,8 @@ class ReplayTest(FakeClock, SpareBase):
         finally:
             c.close()
         before = work.current("amiya", "buri_xl", at="2026-11-04T10:06:00+09:00")
-        self.assertEqual([s["text"] for s in before["stock"]], ["引当のない在庫 2本：料亭に回すつもりで仕入れました（料亭の注文に、まだ充てていません）"])
-        self.assertEqual([l["text"] for l in before["lines"]][1], "料亭の 6本は、まだそろっていません")
+        self.assertEqual([s["text"] for s in before["stock"]], ["引当のない在庫 2本：順風満帆に回すつもりで仕入れました（順風満帆の注文に、まだ充てていません）"])
+        self.assertEqual([l["text"] for l in before["lines"]][1], "順風満帆の 6本は、まだそろっていません")
         after = work.current("amiya", "buri_xl", at="2026-11-04T10:11:00+09:00")
         self.assertEqual(after["stock"], [])
         self.assertIn("在庫から 2本", after["lines"][1]["text"])

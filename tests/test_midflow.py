@@ -179,6 +179,13 @@ class VaultAndDraftTest(tb.Base):
         def draft(sub):
             return tb.tools(("draft_to_customer", dict(customer="スーパー", item_code="buri_xl", substitute_item_code=sub,
                                                        message="本日のブリは 4本そろわない見込みです。代わりにアジはいかがでしょうか。", reason="欠品の連絡は早めに")))
+        c = db.connect("amiya")
+        try:
+            with c:   # 代わりの品のアジを手元の在庫に置く（在庫の裏付けのある代わりの品だけ書ける）
+                c.execute("INSERT INTO stock (item_id, quantity, status, stock_date, updated_at) SELECT id, 3, 'for_sale', ?, ? FROM item WHERE code = 'aji'",
+                          (D, db.now_iso()))
+        finally:
+            c.close()
         run_amiya_on("trade_registered", dict(case_id=self.case, item="buri_xl", trades=[]), [draft("nori"), draft("aji"), tb.tools(("wait_for_replies", dict(reason="r")))])
         self.assertEqual(tb.q("amiya", "SELECT is_error FROM agent_step WHERE tool = 'draft_to_customer' ORDER BY id"), [(1,), (0,)])
         (d,) = tb.q("amiya", "SELECT c.name, i.code, s.code, d.status FROM customer_draft d JOIN customer c ON c.id = d.customer_id JOIN item i ON i.id = d.item_id "
@@ -195,14 +202,25 @@ class VaultAndDraftTest(tb.Base):
         finally:
             c.close()
 
+    def test_a_substitute_without_stock_cannot_be_offered(self):
+        msg = "本日のブリは 4本そろわない見込みです。代わりの魚をお探ししてよろしいでしょうか。"
+        run_amiya_on("trade_registered", dict(case_id=self.case, item="buri_xl", trades=[]), [
+            tb.tools(("draft_to_customer", dict(customer="スーパー", item_code="buri_xl", substitute_item_code="aji", message="代わりにアジをご用意できます。", reason="r"))),
+            tb.tools(("draft_to_customer", dict(customer="スーパー", item_code="buri_xl", substitute_item_code=None, message=msg, reason="r"))),
+            tb.tools(("wait_for_replies", dict(reason="r")))])
+        steps = tb.q("amiya", "SELECT is_error, result_text FROM agent_step WHERE tool = 'draft_to_customer' ORDER BY id")
+        self.assertEqual([s[0] for s in steps], [1, 0])
+        self.assertIn("手元の在庫にありません", steps[0][1])
+        self.assertEqual(tb.q("amiya", "SELECT substitute_item_id, body FROM customer_draft"), [(None, msg)])
+
 
 class InquiringLineTest(tb.Base):
     def test_a_short_order_with_an_open_inquiry_says_so(self):
         approve_split(self)
         network.send("amiya", "buyer_b", "inquiry", "buri_xl", "ブリを 4本、お譲りいただけますか。", D, 4, 18300, side="buy")
         lines = [l["text"] for l in work.current("amiya", "buri_xl")["lines"]]
-        self.assertEqual(lines, ["スーパーの注文 4本を確保しています（登録済み 4本）",
-                                 "料亭の注文 6本のうち 2本を確保しています（登録済み 2本）。4本 足りません（B社に問い合わせ中）"])
+        self.assertEqual(lines, ["魚廣の注文 4本を確保しています（登録済み 4本）",
+                                 "順風満帆の注文 6本のうち 2本を確保しています（登録済み 2本）。4本 足りません（B社に問い合わせ中）"])
 
 
 class NoNameTest(unittest.TestCase):

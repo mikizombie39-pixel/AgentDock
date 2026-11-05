@@ -460,14 +460,20 @@ def post_request(ctx, inp):
     return f"掲示を出しました（番号 {rid}・期限 10:00）。ほかの組織に届きます。"
 
 
+def _on_hand(con, item_id: int, now: str) -> int:
+    """手元の在庫のうち、まだ誰にも引き当てていない数（引当のない分と売り物から、期限の内の仮押さえを引く）。"""
+    rows = stockwork.unallocated(con, item_id, now)
+    return sum(max(0, r["free"]) for r in rows) + sum(
+        r[1] - con.execute("SELECT coalesce(sum(quantity), 0) FROM stock_hold WHERE stock_id = ? AND status = 'held' AND expires_at > ?",
+                           (r[0], now)).fetchone()[0]
+        for r in con.execute("SELECT id, quantity FROM stock WHERE item_id = ? AND status = 'for_sale'", (item_id,)))
+
+
 def _check_sell_post(ctx, it, inp) -> None:
     """譲りたい掲示：手元の在庫の内（仮押さえを引く）・自社の最低の値以上。人が登録した仕入れの残りを譲るかは人が決める（扱いの問いの答え）。"""
     now = demo_now(ctx.on_date)
     rows = stockwork.unallocated(ctx.con, it["id"], now)
-    avail = sum(max(0, r["free"]) for r in rows) + sum(
-        r[1] - ctx.con.execute("SELECT coalesce(sum(quantity), 0) FROM stock_hold WHERE stock_id = ? AND status = 'held' AND expires_at > ?",
-                               (r[0], now)).fetchone()[0]
-        for r in ctx.con.execute("SELECT id, quantity FROM stock WHERE item_id = ? AND status = 'for_sale'", (it["id"],)))
+    avail = _on_hand(ctx.con, it["id"], now)
     if inp["quantity"] <= 0 or inp["quantity"] > avail:
         raise ToolError(f"手元の在庫の内で出せる数を超えています（出せるのは {avail}{_u(it)}）")
     resale = stockwork.resale_floor(ctx.con, it["id"])
@@ -577,7 +583,7 @@ MAX_DRAFT = 300
 
 def draft_to_customer(ctx, inp):
     """売り先への連絡の下書きを残す（送らない）。売り先と品目、代わりの品はコードが自社の DB で確かめる。送るかは担当者が決める。"""
-    c = ctx.con.execute("SELECT id, name FROM customer WHERE name = ?", (inp["customer"],)).fetchone()
+    c = ctx.con.execute("SELECT id, name, shop_name FROM customer WHERE name = ?", (inp["customer"],)).fetchone()
     if c is None:
         raise ToolError(f"売り先がありません：{inp['customer']}")
     it = _item(ctx.con, inp["item_code"])
@@ -588,6 +594,10 @@ def draft_to_customer(ctx, inp):
             raise ToolError(f"代わりの品 {inp['substitute_item_code']} は自社の品目にありません。読める品目から選ぶか、代わりの品が無いと書いてください")
         if sub["id"] == it["id"]:
             raise ToolError("代わりの品が、欠ける品と同じです")
+        # 代わりの品は手元の在庫で裏付ける（在庫の無い品を「ご用意できます」と書かない・2026-11-05 DB の実処理の検証）
+        if _on_hand(ctx.con, sub["id"], demo_now(ctx.on_date)) <= 0:
+            raise ToolError(f"代わりの品 {sub['name']} は手元の在庫にありません。在庫のある品を選ぶか、"
+                            "substitute_item_code を null にして、代わりの品を探してよいかを売り先に尋ねる文にしてください")
     msg = (inp.get("message") or "").strip()
     if not msg or len(msg) > MAX_DRAFT:
         raise ToolError(f"message は 1〜{MAX_DRAFT}字で書いてください")
@@ -602,7 +612,7 @@ def draft_to_customer(ctx, inp):
             ctx.con.execute(f"UPDATE customer_draft SET status = 'stale', stale_reason = ? WHERE id IN ({', '.join('?' * len(old))})",
                             (f"新しい下書き（番号 {did}）に書き直したため", *old))
     swap = f"前の下書き（番号 {'・'.join(map(str, old))}）は、この下書きに置き換えました。" if old else ""
-    return f"{c['name']}への連絡の下書きを残しました（番号 {did}）。{swap}送ってはいません。送るかは担当者が決めます。"
+    return f"{c['shop_name'] or c['name']}への連絡の下書きを残しました（番号 {did}）。{swap}送ってはいません。送るかは担当者が決めます。"
 
 
 def wait_for_replies(ctx, inp):
@@ -713,7 +723,7 @@ COMPARE = Tool(
 DRAFT = Tool(
     "draft_to_customer",
     "自社の売り先への連絡の下書きを残す（送らない。送るかは担当者が決める）。欠品の見込みを早めに伝える時など。"
-    "代わりの品を添えるなら substitute_item_code に自社の品目のコードを書く（読める品目だけ。無ければ null にして、代わりの品が無いと文に書く）。",
+    "代わりの品を添えるなら substitute_item_code に自社の品目のコードを書く（読める品目で、手元に在庫のある品だけ。無ければ null にして、代わりの品を探してよいかを尋ねる文にする）。",
     {"customer": STR, "item_code": ITEM, "message": STR, "substitute_item_code": {"type": ["string", "null"]}, "reason": REASON},
     draft_to_customer, strict=False)
 WAIT = Tool("wait_for_replies", "問い合わせの返事を待つ（この起動を終える）。", {"reason": STR}, wait_for_replies, ends="waiting")
