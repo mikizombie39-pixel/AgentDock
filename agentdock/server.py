@@ -16,7 +16,7 @@ GET  /api/work?owner=amiya&item=buri_xl              ← 作業の画面の一�
 GET  /api/source?owner=amiya&db=market&table=network_message&id=3   ← 一覧の根拠の行（自社の行と、自社が当事者の市場の行だけ）
 POST /api/decide   {"owner", "case_id", "option_id", "action", "fingerprint", "idempotency_key", "actor"}  ← 担当者（または社長）の承認・見送り・保留・社長の差し戻し（action=return）
 GET  /api/flow?owner=amiya                           ← 段階と経過（業務 DB の事実からコードが決める）
-POST /api/ask      {"owner", "case_id", "text", "idempotency_key"}  ← 担当者の質問（出来事として記録し、Claude を起こす）
+POST /api/ask      {"owner", "case_id", "text", "idempotency_key", "kind"}  ← 担当者の質問・選択肢にない指示（kind=instruction）。出来事として記録し、Claude を起こす
 GET  /api/verify?owner=amiya                         ← 技術の検証（Claude の道具の呼び出し・市場の取引帳簿の API・照合・費用）
 POST /api/start    {"variant", "item"}                ← 業務を始める（漁協の資料と品目の注文を入れる・1回だけ・item は aji か buri_xl）
 POST /api/order    {"owner", "customer", "item", "quantity", "idempotency_key"}  ← 作業の途中で売り先の注文が入る（実演の操作・売値は売り先の表から）
@@ -288,7 +288,8 @@ class Handler(BaseHTTPRequestHandler):
                 case = c.execute("SELECT id, status FROM deal_case WHERE id = ?", (int(b["case_id"]),)).fetchone()
                 if case is None or case["status"] not in workspace.DECIDING:
                     return self._send(409, dict(error="rejected", detail="この案件は今、質問を受け付けていません"))
-                eid = events.emit(c, "staff_question", dict(case_id=case["id"], text=text, key=key))
+                kind = "instruction" if b.get("kind") == "instruction" else "question"   # 選択肢にない進め方の指示（2026-11-05 デイブ）か、質問か
+                eid = events.emit(c, "staff_question", dict(case_id=case["id"], text=text, key=key, kind=kind))
             finally:
                 c.close()
             return self._send(200, dict(event_id=eid))

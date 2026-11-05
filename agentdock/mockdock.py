@@ -152,7 +152,7 @@ class Policy:
         opts.append(dict(code="E", label="見送る", short_label="見送る", buy_term_id=None, buy_term_ids=[], allocations=[], reason="条件が合わない",
                          risk="注文を落とす", differs_from_decision=False, vault_refs=[]))
         if short_after > 0 and rest:
-            sq = f"{name(rest[0])}の追加で足りなくなりました。どう分けますか"[:40]   # 数はコードが画面に出す（文に数字を書かない）
+            sq = f"{name(rest[0])}の追加で足りなくなりました。どの売り先に回しますか"[:40]   # 数はコードが画面に出す（文に数字を書かない）
             head = "注文が増え、今の当てでは足りません"
         else:
             sq = "この内容で登録しますか"

@@ -131,7 +131,7 @@ def facts(owner: str, item: str, on_date: str = sc.DEMO_DATE, worker_error: str 
     posts = [p for p in market.requests_visible_to(owner, item, _demo_now(on_date)) if p["side"] == "sell"]
     m = db.connect(db.MARKET)
     try:   # 自社が出した買いの掲示（受付中・期限の内）：ほかの仲買が応じれば AI が起きる＝まだ当たっている先がある
-        own_posts = [dict(r) for r in m.execute("SELECT id, quantity, unit_price_yen, valid_until FROM deal_request WHERE owner = ? AND item_code = ? AND side = 'buy' "
+        own_posts = [dict(r) for r in m.execute("SELECT id, quantity, unit_price_yen, valid_until, created_at FROM deal_request WHERE owner = ? AND item_code = ? AND side = 'buy' "
                                                 "AND status = 'open' AND trade_date = ? AND valid_until > ? ORDER BY id", (owner, item, on_date, _demo_now(on_date)))]
     finally:
         m.close()
@@ -173,12 +173,45 @@ def _dead(f, tl, ex) -> bool:
     return ex == "idle" and tl["left"] > 0 and not f.get("own_posts") and bool(f["runs"])   # AI が一度も動いていない時（委任の直後）は行き止まりではない
 
 
+def _new_post(f):
+    """自社の受付中の買いの掲示のうち、最後に届いた相手の返事より後に出したもの（無ければ None）。"""
+    if not f.get("own_posts"):
+        return None
+    last_in = max([_t(x["created_at"]) for x in f["messages"] if x["to_owner"] == f["owner"]] or [0])
+    p = max(f["own_posts"], key=lambda x: _t(x["created_at"]))
+    return p if _t(p["created_at"]) >= last_in else None
+
+
+def _split_lead(f, tl) -> str:
+    """配分を決める時の理由の書き出し。何を何本に分けるのかを、注文・確保の見込み・不足の数で言う（2026-11-05 デイブ「どう分けるか」は分かりにくい）。"""
+    u = f["item"]["unit"]
+    orders = "・".join(f"{o['shop']} {o['quantity']}{u}" for o in f["orders"])
+    have = tl["registered"] + tl["held_total"]
+    src = "・".join(x for x in ((f"登録済み {tl['registered']}{u}" if tl["registered"] else ""),
+                                ("・".join(f"{h['name']}の仮押さえ {h['quantity']}{u}" for h in tl["held"]))) if x)
+    got = f"確保の見込みは {have}{u}（{src}）です" if have else "まだ確保の見込みはありません"
+    return f"注文は {tl['total']}{u}（{orders}）で、{got}。{tl['left']}{u}足りないので、どの売り先に何本回すかを、あなたが決めます。"
+
+
 def dead_end(owner: str, item: str, on_date: str = sc.DEMO_DATE) -> int | None:
     """行き止まりなら足りない数、そうでなければ None（「もう一度当たってもらう」の受け付けの前に、サーバーが確かめる）。"""
     f = facts(owner, item, on_date)
     ex, _ = exec_state(f)
     tl = tally(f)
     return tl["left"] if _dead(f, tl, ex) else None
+
+
+def _last_question(f):
+    """この品目の案件への、最後の担当者の質問・指示（出来事の中身）。"""
+    con = db.connect(f["owner"])
+    try:
+        for r in con.execute("SELECT payload_json FROM biz_event WHERE kind = 'staff_question' ORDER BY id DESC"):
+            p = json.loads(r[0])
+            if agents._case_item(f["owner"], p["case_id"]) == f["item"]["code"]:
+                return p
+    finally:
+        con.close()
+    return None
 
 
 def _first_run_at(f):
@@ -208,7 +241,8 @@ def _last_decline(f):
     d = incoming[-1]
     later = [x for x in f["messages"] if x["from_owner"] == f["owner"] and x["kind"] == "inquiry" and x["id"] > d["id"]]
     presented = [p for p in f["presents"] if _t(p["at"]) > _t(d["created_at"])]
-    drafted = [x for x in f["cur"].get("drafts") or [] if _t(x["created_at"]) > _t(d["created_at"])]   # 売り先への連絡の下書きも、次の手
+    # 売り先への連絡の下書きも次の手。ただし担当者の答えを待つ下書きの間は、断りを受けた残念の態度のまま（2026-11-05：秒の比べ方で揺れていた）
+    drafted = [x for x in f["cur"].get("drafts") or [] if x["status"] != "draft" and _t(x["created_at"]) > _t(d["created_at"])]
     return None if later or presented or drafted else d
 
 
@@ -226,14 +260,16 @@ def _round_story(f, tl) -> tuple[str, str | None]:
     u = f["item"]["unit"]
     extra = "追加分を" if tl["registered"] else ""
     parts = [f"{sc.OWNERS[x['from_owner']]['name']}では{extra}確保できませんでした。" for x in _round_declines(f)]
-    if tl["held"]:
+    q = decide_question(f, tl)
+    if tl["held"] and not (q and len(tl["held"]) == 1):   # 仮押さえが1件で問いがある時は、下の行（手に入るのは…）が言う
         parts.append("・".join(f"{h['name']}からは {h['quantity']}{u}" for h in tl["held"]) + "を仮押さえできています。")
-    rec = next((o for o in tl["options"] if o["option_id"] == next((x["option_id"] for x in f["cur"].get("options") or [] if x["recommended"]), None)), None)
+    # 見出しの終わりは人への問い（判断のブロックの見出しと同じ問い）。おすすめは判断のブロックが言う（2026-11-05 デイブ「結論が唐突」）
     nxt = None
-    if rec:
-        title, _, _ = _choice_words(f, rec, "approve" if rec["buys"] else "reject", False)
-        left = sum(x["quantity"] for x in rec["short_after"])
-        nxt = f"おすすめは「{title}」です。この案でも、あと {left}{u}足りません。" if left else f"おすすめは「{title}」です。この案で、全部の注文がそろいます。"
+    if len(tl["held"]) == 1:
+        h = tl["held"][0]
+        nxt = f"手に入るのは、{h['name']}が仮押さえしている {h['quantity']}{u}（1{u} {_yen(h['unit_price_yen'])}）だけです。"
+    if q:
+        parts.append(q["ask"])
     return "".join(parts), nxt
 
 
@@ -353,6 +389,8 @@ def exec_state(f) -> tuple[str, str | None]:
                            "refusal": "AI が処理を断りました"}[last["outcome"]] + (f"：{last['summary']}" if last["summary"] else "")
     if cur.get("waiting_for") == "president":
         return "president", None
+    if (_running(f) or {}).get("kind") == "staff_question":   # 担当者の質問・ほかの指示を AI が読んでいる間は、同じ案を二度選ばせない（2026-11-05）
+        return "running", None
     if cur.get("waiting_for") == "staff" or cur.get("stock_question") or any(d["status"] == "draft" for d in cur.get("drafts") or []):
         return "your_turn", None
     if _running(f):
@@ -664,6 +702,12 @@ def view(owner: str, item: str, on_date: str = sc.DEMO_DATE, worker_error: str |
         head = _said(f"{PRESIDENT}に確認しています。")
         sub = [_said("・".join(why) + "。" if why else "社長の判断が要る案です。"), _said("答えが来たら続けます。待つ間、ほかの仕事を進めてかまいません。")]
         ask = _said("今は、あなたが答える仕事ではありません。")
+    elif ex == "running" and (_running(f) or {}).get("kind") == "staff_question":   # 担当者の質問・選択肢にない指示を受けて AI が動いている
+        q = _last_question(f)
+        ins = bool(q and q.get("kind") == "instruction")
+        head = _said("あなたの指示を受けて、進め方を組み直しています。" if ins else "あなたの質問に答えるため、記録を確かめています。")
+        sub = [_said(f"{'指示' if ins else '質問'}：「{q['text']}」", "record")] if q else []
+        sub.append(_said("組み直した案か、できない理由を、このあとお伝えします。" if ins else "答えと、必要なら組み直した案を、このあとお伝えします。"))
     elif ex in ("running", "idle", "your_turn") and _return_ctx(f):   # 社長の差し戻し：理由を伝え、AI が案を組み直す（取引の取り消しとは別）
         rc = _return_ctx(f)
         ref = dict(db="owner", table="case_decision", id=rc["id"])
@@ -696,6 +740,11 @@ def view(owner: str, item: str, on_date: str = sc.DEMO_DATE, worker_error: str |
         if cd["status"] == "approved":
             sub.append(_said("連絡はあなたから送ってください。Agent Dock は売り先に送りません。"))
         sub.append(_said("新しい返事や注文が届いたら、声をかけます。"))
+    elif ex == "idle" and tl["left"] and _new_post(f):   # 断りの後に AI が買いの掲示を出して見張りに戻った：古い断りでなく、いま出した掲示を言う（2026-11-05 本物の Claude の当たり直し）
+        p = _new_post(f)
+        head = _said(f"ほかの仲買に、買いの掲示を出しました（{p['quantity']}{u}・1{u} {_yen(p['unit_price_yen'])}）。", "record",
+                     dict(db="market", table="deal_request", id=p["id"]))
+        sub = [_said(tl["line"], "calc"), _said(f"掲示は {p['valid_until'][11:16]} まで受け付けます。応じる仲買の返事が届いたら、声をかけます。", "record")]
     elif ex in ("running", "idle") and part:   # 一部登録の後（AI が次の相談を出すまで）：何が済んで何が残ったか（態度の文より先）
         head = _said(part["done"])
         sub = [_said(part["rest"])] if part["rest"] else []
@@ -706,7 +755,9 @@ def view(owner: str, item: str, on_date: str = sc.DEMO_DATE, worker_error: str |
         sub = ([_said(nxt, "calc")] if nxt else []) + [_said(tl["line"], "calc")]   # 問いは判断のブロックが出す（AI の問いの文は重ねない）
     elif st == "careful":
         if ex == "your_turn":   # 相談の見出しはコードの文。数字を含まない AI の文だけを使う
-            head = aiq or _said(f"{'・'.join(o['shop'] for o in mid)}の追加注文で、魚が足りません。どう分けますか。" if mid else "条件が変わりました。どう進めますか。")
+            head = aiq or _said(f"{'・'.join(o['shop'] for o in mid)}の追加注文で、{tl['left']}{u}足りなくなりました。どの売り先に何本回すか、決めてください。"
+                                if mid and tl["left"] else f"{'・'.join(o['shop'] for o in mid)}の追加注文が入りました。どの売り先に何本回すか、決めてください。"
+                                if mid else "条件が変わりました。どう進めるか、決めてください。", "calc" if mid and tl["left"] else "code")
         else:
             head = _said("待ってください。確認し直します。")
         if mid:
@@ -802,6 +853,7 @@ def view(owner: str, item: str, on_date: str = sc.DEMO_DATE, worker_error: str |
     sub = [_ended(x) for x in sub]
     return dict(owner=owner, item=f["item"], subject=subject(f), stance=st, stance_label=STANCE_LABEL.get(st), rule=rule, refs=refs,
                 exec=ex, exec_label=DEAD_LABEL if dead else EXEC_LABEL[ex], stop=stop, who=who, headline=head, sub=sub, ask=ask, actions=actions,
+                decide=_with_reason(decide_question(f, tl), f, actions) if ex == "your_turn" else None,
                 why=why_card(f, st, ex, head, tl, replaced), receipt=_fresh_receipt(f), tally=tl, taken=taken(f, ex), others=others(owner, item, on_date),
                 band=band(owner, item, on_date, worker_error, f), band_others=band_others(owner, item, on_date),
                 orgs=list(orgs.values()), net=net, op=_op(f, ex), president=pres, busy=_running(f) is not None, clock=f["clock"])
@@ -821,6 +873,65 @@ def _directive_shop(f):
     return (d["shop_name"] or d["customer"]) if d else None
 
 
+def decide_question(f, tl) -> dict | None:
+    """配分を決める時の問い（見出しの終わり・判断のブロックの見出しに同じ問いを使う）。案の中身（買う相手と数）から書く。"""
+    if f["cur"].get("waiting_for") != "staff":
+        return None
+    buys = [o for o in tl["options"] if o["buys"]]
+    u = f["item"]["unit"]
+    if len(buys) == 1 and len(buys[0]["buys"]) == 1:   # 仕入れるか、見送るか
+        b = buys[0]["buys"][0]
+        return dict(ask=f"{b['seller']}の {b['quantity']}{u}を仕入れますか。", block=f"{b['seller']}の {b['quantity']}{u}を仕入れるか、決めてください")
+    return dict(ask="どの案で進めますか。", block="どの案で進めるか、決めてください")
+
+
+def rec_reason(f, acts) -> str | None:
+    """おすすめの理由の一文（2026-11-05 デイブ）。数は案の結果（alloc：店ごとの注文・確保・不足）から書く。
+    社長の朝の指示の売り先がそろう時はそれを先に、次に不足の数（見送る時と比べて減る数・買う案の中で最も少ないこと）。"""
+    u = f["item"]["unit"]
+    rec = next((a for a in acts if a.get("recommended") and not a.get("disabled")), None)
+    if not rec or rec.get("choice") == "reject":
+        return None
+    left = lambda a: sum(x["short"] for x in a.get("alloc") or [])   # noqa: E731
+    ds = _directive_shop(f)
+    parts = []
+    mine = next((x for x in rec.get("alloc") or [] if x["shop"] == ds), None)
+    if mine and mine["short"] == 0 and mine["ordered"]:
+        parts.append(f"社長の朝の指示どおり、{ds}の {mine['ordered']}{u}がそろい")
+    if left(rec) == 0:
+        parts.append("全部の注文がそろう")
+    else:
+        rej = next((a for a in acts if a.get("choice") == "reject"), None)
+        buys = [a for a in acts if str(a.get("id", "")).startswith("opt") and a.get("choice") != "reject" and not a.get("disabled")]
+        drop = [(x["shop"], y["short"], x["short"]) for x in rec["alloc"] for y in (rej or {}).get("alloc") or []
+                if x["shop"] == y["shop"] and y["short"] > x["short"]]
+        if len(buys) >= 2 and left(rec) == min(left(a) for a in buys):
+            parts.append(f"案の中で不足が最も少ない（あと {left(rec)}{u}）")
+        elif drop:
+            parts.append("・".join(f"{s_}の不足が {b}{u}から {a}{u}に減る" for s_, b, a in drop))
+    if not parts:
+        return None
+    return "、".join(parts) + "ためです。"
+
+
+def _with_reason(q, f, acts):
+    return dict(q, reason=rec_reason(f, acts)) if q else q
+
+
+LETTERS = "ABCDEFGH"
+
+
+def _importance(a) -> tuple[str, str]:
+    """案の重さの印（選んだ結果で決める）：社長の確認が要る＞注文を欠いたまま見送る＞不足が残る＞全部そろう。"""
+    if a.get("president"):
+        return "high", "user-round"
+    if a.get("choice") == "reject":
+        return "high" if any(x["short"] for x in a.get("alloc") or []) else "mid", "x"
+    if any(x["short"] for x in a.get("alloc") or []):
+        return "mid", "circle-alert"
+    return "low", "circle-check"
+
+
 def _option_title(f, c) -> str:
     """買う案の名前。この案で新しく回す数（added）で書き、登録済みを含む合計は括弧で添える。
     例：「魚廣 4本を確保し、順風満帆へ 2本を回す」／登録済みがある時「B社の 2本を順風満帆に回す（順風満帆は合わせて 4本）」"""
@@ -828,6 +939,10 @@ def _option_title(f, c) -> str:
     ds = _directive_shop(f)
     rows = [(a["shop"], a.get("added", a["secured"]), a["secured"]) for a in c["alloc"]]
     dests = [(s_, g, sec) for s_, g, sec in rows if g > 0]
+    src = "・".join(f"{b['seller']}の {b['quantity']}{u}" for b in c["buys"])
+    if src and len(dests) == 1:   # 回す先が1つ：問い（〇〇の N本を仕入れますか）と同じ言い方。合わせての数と不足は案の下の行が言う
+        zero = ds and ds != dests[0][0] and any(s_ == ds for s_, _, sec in rows if sec == 0)   # 社長の指示の売り先が 0本の時は名前を出す
+        return f"{src}を仕入れ、{dests[0][0]}に回す" + (f"（{ds}は 0{u}）" if zero else "")
     if not any(sec > g for _, g, sec in rows):   # まだ何も登録していない：社長の指示の売り先を先に言う
         mine = next((g for s_, g, _ in rows if s_ == ds), None)
         rest = "・".join(f"{s_}へ {g}{u}" for s_, g, _ in dests if s_ != ds)
@@ -836,14 +951,10 @@ def _option_title(f, c) -> str:
         if ds and mine == 0 and rest:
             return f"{rest}を回す（{ds}は 0{u}）"
         return f"{rest}を回す" if len(dests) == 1 else f"{rest}に分ける"
-    src = "・".join(f"{b['seller']}の {b['quantity']}{u}" for b in c["buys"])
     if len(dests) == 1:
         s_, g, _ = dests[0]
-        title = f"{src}を{s_}に回す" if src else f"{s_}へ {g}{u}を回す"
-    else:
-        title = (f"{src}を、" if src else "") + "・".join(f"{s_}へ {g}{u}" for s_, g, _ in dests) + "と分ける"
-    tot = [f"{s_}は合わせて {sec}{u}" for s_, g, sec in dests if sec > g]
-    return title + (f"（{'・'.join(tot)}）" if tot else "")
+        return f"{s_}へ {g}{u}を回す"
+    return (f"{src}を仕入れ、" if src else "") + "・".join(f"{s_}へ {g}{u}" for s_, g, _ in dests) + "と分ける"
 
 
 def _choice_words(f, c, action, needs_president) -> tuple[str, str, str]:
@@ -886,6 +997,15 @@ def _choices(f, tl):
                                                                     action=o["action"], fingerprint=o["fingerprint"] if o["action"] == "approve" else None,
                                                                     actor="staff")),
                              president=pv["needs"]))
+        u = f["item"]["unit"]
+        for i, a in enumerate(acts):
+            a["letter"] = LETTERS[i]
+            a["importance"], a["icon"] = _importance(a)
+            a["result"] = "・".join(f"{x['shop']} {x['secured']} / {x['ordered']}{u}" + (f"（あと {x['short']}{u}不足）" if x["short"] else "（そろう）")
+                                    for x in a.get("alloc") or [])
+        acts.append(dict(id="other", letter=LETTERS[len(acts)], label="ほかの指示を出す", title="ほかの指示を出す", kind="secondary", choice="other",
+                         importance="other", icon="message-circle", result="選択肢にない進め方を、文で AI に頼みます（例：B社に値下げを頼む・魚廣に 2本回す）",
+                         api=dict(path="/api/ask", body=dict(case_id=cur["case"]["id"], kind="instruction"))))
         return acts, _said("どれで進めるか、選んでください。" + ("社長の確認が要る案は、私が社長に確かめます。" if any(a.get("president") for a in acts) else ""))
     if cur.get("stock_question"):
         q = cur["stock_question"]
@@ -984,6 +1104,12 @@ def why_card(f, st, ex, head, tl=None, replaced=None) -> dict:
         lead = f"足りない {tl['left']}{u}を当たる先が、いまはありません。もう一度当たってもらうかどうかは、あなたが決めます。"
         sections = [("足りない数と注文", orders), ("相手の回答と値", replies), ("まだ確認していない候補", cands)]
         more = [("社長の指示と権限", dir_rows), ("これまでのやり取り", asked), ("Vault の記録", vault)]
+    elif ex == "idle" and tl["left"] and _new_post(f):   # 見出し「ほかの仲買に、買いの掲示を出しました」と同じ事実を理由の先頭に
+        p = _new_post(f)
+        lead = (f"当たった相手から確保できなかったため、ほかの仲買に {p['quantity']}{u}の買いの掲示を出しました。"
+                "応じる仲買がいれば、その返事で続けます。")
+        sections = [("足りない数と注文", orders), ("相手の回答と値", replies), ("値と上限（コードの計算）", calc)]
+        more = [("社長の指示と権限", dir_rows), ("これまでのやり取り", asked), ("Vault の記録", vault)]
     elif ex == "before_start":
         can = ai_can_proceed(f["owner"], f["on_date"])
         lead = "今朝の注文と社長の指示を確かめてから、" + ("・".join(can) + "を私が進めます。" if can else "配分と購入の判断を相談します。")
@@ -1014,7 +1140,7 @@ def why_card(f, st, ex, head, tl=None, replaced=None) -> dict:
         elif st == "careful":
             lead = ("追加の注文が入ったので" if _mid_orders(f) else "あなたの答えで条件が変わったので") + "、足りない数と相手の回答を確かめ直しています。"
         else:
-            lead = f"注文の合計 {tl['total']}{u}に対して、あと {tl['left']}{u}足りません。どう分けるか、あなたの判断が要ります。"
+            lead = _split_lead(f, tl)
         sections = [("足りない数と注文", orders), ("社長の指示と権限", dir_rows), ("相手の回答と値", replies), ("在庫", stock), ("案（コードの計算）", opts)]
         if tl["unused_text"]:   # 案に入っていない仮押さえは、なぜ入っていないかを案の前に一文で
             sections.insert(4, ("どの案にも入っていない仮押さえ", [_row(tl["unused_text"], "calc")]))

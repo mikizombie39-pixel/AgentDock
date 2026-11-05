@@ -167,7 +167,8 @@ class RegisterTest(MultiBase):
         self.assertNotIn("は登録しました。", v["headline"]["text"])
         # 案の名前は、この案で新しく回す数で書き、登録済みを含む合計は括弧で添える（2026-11-05 デイブ「順風満帆へ 4本に分ける」は意味が通らない）
         buy = next(a for a in v["actions"] if a.get("choice") == "approve")
-        self.assertEqual(buy["title"], f"B社の 2本を{RYOTEI}に回す（{RYOTEI}は合わせて 4本）")
+        self.assertEqual(buy["title"], f"B社の 2本を仕入れ、{RYOTEI}に回す")
+        self.assertEqual(buy["result"], f"{RYOTEI} 4 / 6本（あと 2本不足）")                    # 合わせての数と不足は、案の下の行が言う
         self.assertNotIn("に分ける", json.dumps(v, ensure_ascii=False))
 
     def test_a_row_the_seller_cannot_fill_is_left(self):

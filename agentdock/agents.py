@@ -19,7 +19,7 @@ HOLD_MINUTES = 30
 NULL_INT = {"type": ["integer", "null"]}
 STR = {"type": "string"}
 INT = {"type": "integer"}
-ITEM = {"type": "string", "description": "品目のコード（状況の報告にある品目のコード）"}
+ITEM = {"type": "string", "description": "品目のコード（状況の報告にある「道具に渡す品目のコード」をそのまま書く。例：buri_xl。略したり、大きさを変えたりしない）"}
 MAX_REASON = 120
 REASON = {"type": ["string", "null"], "description": "相手に伝えてよい短い理由（60字ほど・無ければ null）。自社の上限・最低の値・原価・売り先の名前は書かない"}
 
@@ -36,7 +36,8 @@ def _j(v) -> str:
 def _item(con, code: str):
     r = con.execute("SELECT id, code, name, unit FROM item WHERE code = ?", (code,)).fetchone()
     if r is None:
-        raise ToolError(f"品目がありません：{code}")
+        codes = "・".join(x[0] for x in con.execute("SELECT code FROM item ORDER BY id"))   # 本物の Claude が buri_xl を buri_l と書いた（2026-11-04・05 の通しで3回）
+        raise ToolError(f"品目がありません：{code}。自社の品目のコードは {codes} です。状況の報告にある品目のコードをそのまま使ってください")
     return r
 
 
@@ -844,11 +845,15 @@ def _question_situation(owner: str, p: dict) -> tuple[str, str]:
                      f"売れる確かさが未確定の数量 {n['uncertain_quantity']}・売り先なし {n['unsold_quantity']}")
     lay = v.get("layout") or {}
     prev = [f"- 質問「{t['question']}」→ 答え「{t['answer']}」" for t in v.get("turns") or []]
-    head = (f"出来事：担当者から質問が届きました（案件 {p['case_id']}・版 {v['case']['version'] if v.get('case') else '?'}）：「{p['text']}」\n"
+    what = "選択肢にない進め方の指示" if p.get("kind") == "instruction" else "質問"   # 「ほかの指示を出す」（2026-11-05 デイブ）
+    head = (f"出来事：担当者から{what}が届きました（案件 {p['case_id']}・版 {v['case']['version'] if v.get('case') else '?'}）：「{p['text']}」\n"
             f"今の磁石ボード：勧める案 {lay.get('primary')}・比べる案 {lay.get('alternative')}・中心 {lay.get('focus')}\n"
             "ボードの案（数字はコードの計算）：\n" + "\n".join(lines) +
             ("\nこれまでの質問と答え：\n" + "\n".join(prev) if prev else "") +
-            "\n業務の状態を道具で確かめ直してから、answer_staff で答えて画面を組み直してください。")
+            ("\n担当者は、ボードのどの案でもない進め方を求めています。任された範囲（照会・条件内の入札・再交渉）でできることなら、"
+             "道具（send_inquiry・present_options など）で指示に沿って進めてください。範囲の外のこと・できないことは、その理由と代わりの案を answer_staff で答えてください。"
+             if p.get("kind") == "instruction" else
+             "\n業務の状態を道具で確かめ直してから、answer_staff で答えて画面を組み直してください。"))
     return item, head
 
 

@@ -334,11 +334,11 @@
   // ═════ 判断のブロック（SAL 2026-11-04 §2・§3／デイブ「関連性・重要度・操作の方法を分かりやすく、矢印を動かす」）═════
   // ① 案を選ぶ（画面の下見だけ・サーバーには書かない）→ ② 配分を確かめる（右に店ごとの確保と不足）→ ③ 承認のボタンで初めて登録（既存の処理）。
   // AI のおすすめは★の札で示し、選択中（丸の印と枠）とは別の形にする。社長の確認が要る案は、承認のボタンが「社長に確かめる」になる
-  let SEL = null, RFOLD = false;
+  let SEL = null, RFOLD = false, OTHER_TEXT = "";   // OTHER_TEXT：「ほかの指示を出す」の入力（描き直しで消さない）
   const yen = (v) => (v == null ? "" : `${Number(v).toLocaleString("ja-JP")}円`);
   function decideHTML(acts) {
     const u = esc((V.item && V.item.unit) || "");
-    const opts = acts.filter((a) => String(a.id).startsWith("opt"));
+    const opts = acts.filter((a) => String(a.id).startsWith("opt") || a.id === "other");
     if (SEL && !opts.some((a) => a.id === SEL && !a.disabled)) SEL = null;
     const sel = opts.find((a) => a.id === SEL);
     const rec = opts.find((a) => a.recommended && !a.disabled);
@@ -352,21 +352,30 @@
       return `<div class="optrow">${!sel && rec && a.id === rec.id ? `<span class="pointer" aria-hidden="true">${icon("arrow-right")}</span>` : `<span class="pointer"></span>`}
         <button class="${cls}" data-pick="${esc(a.id)}" aria-pressed="${a.id === SEL}" ${a.disabled ? "disabled" : ""}>
         <span class="radio" aria-hidden="true"></span>
-        <span class="ot"><b>${esc(a.title || a.label)}</b>
+        <span class="letter imp-${esc(a.importance || "low")}" aria-label="案 ${esc(a.letter || "")}">${esc(a.letter || "")}</span>
+        <span class="ot"><b><span class="impic imp-${esc(a.importance || "low")}">${icon(a.icon || "circle-check")}</span>${esc(a.title || a.label)}</b>
           <span class="badges">${a.recommended && !a.disabled ? `<em class="recb">★ AI のおすすめ</em>` : ""}${a.president ? `<em class="presb">${icon("user-round")}社長の確認が要る</em>` : ""}</span>
-          <span class="os ${a.disabled ? "bad" : short.length ? "short" : "ok"}">${a.disabled ? esc(a.note) : a.choice === "reject" ? "足りない：" + short.map((x) => `${esc(x.shop)} ${x.short}${u}`).join("・")
-            : short.length ? "足りない：" + short.map((x) => `${esc(x.shop)} ${x.short}${u}`).join("・") : "全部の注文がそろう"}</span></span></button>
+          <span class="os ${a.disabled ? "bad" : a.choice === "other" ? "" : short.length ? "short" : "ok"}">${a.disabled ? esc(a.note) : a.choice === "other" ? esc(a.result)
+            : `選ぶと：${esc(a.result || "")}`}</span></span></button>
         ${a.id === SEL ? `<span class="tab" aria-hidden="true">${chev}</span>` : ""}</div>`;
     };
     let pv;
-    if (!sel) {
-      pv = `<div class="pv0"><span class="back">${icon("arrow-right")}</span><div><b>左の案を選ぶと、ここに配分を下見します。</b><small>${reg ? "案を選ぶだけでは、追加の買い付けは登録しません。" : "選んでも、まだ何も登録しません。"}</small></div></div>`;
+    if (sel && sel.choice === "other") {   // 選択肢にない進め方：文で AI に頼む（AI は任された範囲で進めるか、できない理由を答える）
+      pv = `<div class="pvh"><small>${esc(sel.letter)}：ほかの指示を出す（まだ何も登録しません）</small><b>どう進めたいかを、文で書いてください</b></div>
+        <div class="retbox"><label for="othertext">AI への指示</label>
+          <textarea id="othertext" rows="3" maxlength="200" placeholder="例：B社に 1本 18,000円まで下げられないか聞いて／魚廣に 2本、順風満帆に 0本で">${esc(OTHER_TEXT)}</textarea></div>
+        <div class="eff">${icon("message-circle")}送ると：AI が、任された範囲（照会・条件内の入札・再交渉）で指示に沿って進めるか、できない理由と代わりの案を答えます。登録はしません。</div>
+        <div class="go"><span class="down" aria-hidden="true">${icon("arrow-right")}</span>
+          <button class="dbtn" data-other-send="1">${icon("send")}<span>この指示を AI に送る</span></button>
+          <button class="linkbtn" data-unpick="1">選び直す</button></div>`;
+    } else if (!sel) {
+      pv = `<div class="pv0"><span class="back">${icon("arrow-right")}</span><div><b>左の案を選ぶと、進めた時の配分と金額をここに出します。</b><small>${reg ? "案を選ぶだけでは、追加の買い付けは登録しません。" : "選んでも、まだ何も登録しません。"}</small></div></div>`;
     } else {
       const most = Math.max(1, ...(sel.alloc || []).map((x) => x.ordered));
       const bars = (sel.alloc || []).map((x) => `<div class="bar"><span class="nm">${esc(x.shop)}</span>
         <span class="lane"><span class="track" style="width:${(x.ordered / most) * 100}%"><i style="width:${x.ordered ? (x.secured / x.ordered) * 100 : 0}%"></i></span></span>
         <span class="q">${x.secured} / ${x.ordered}${u}</span><span class="st ${x.short ? "short" : "ok"}">${x.short ? `${x.short}${u} 足りない` : "確保"}</span></div>`).join("");
-      pv = `<div class="pvh"><small>② 下見（${reg ? "追加の買い付けはまだ登録していません" : "まだ登録していません"}）</small><b>${esc(sel.title)}</b></div>
+      pv = `<div class="pvh"><small>② ${esc(sel.letter)} を選んで進めると（${reg ? "追加の買い付けはまだ登録していません" : "まだ登録していません"}）</small><b>${esc(sel.title)}</b></div>
         ${(sel.buys || []).length ? `<table class="buyt"><thead><tr><th>仕入先</th><th>数量</th><th>単価</th><th>金額</th></tr></thead><tbody>` +
           sel.buys.map((b) => `<tr><td><span class="sn">${icon("ship")}${esc(b.seller)}</span></td><td>${b.quantity}${u}</td><td>${yen(b.unit_price_yen)}</td><td>${yen(b.amount_yen)}</td></tr>`).join("") +
           `</tbody><tfoot><tr><td colspan="3">合計</td><td>${yen(sel.purchase_yen)}</td></tr></tfoot></table>` : ""}
@@ -377,12 +386,15 @@
           <button class="linkbtn" data-unpick="1">選び直す</button></div>`;
     }
     return `<div class="decide" data-at="${at}">
-      <div class="dk">${icon("hand")}配分について、あなたの判断を待っています</div>
-      <div class="dq">${!sel ? `${rec ? `私のおすすめは「${esc(rec.title || rec.label)}」です。` : ""}どの分け方にするか、選んでください。`
-        : sel.choice === "president" ? `「${esc(sel.title)}」の案です。社長の確認が要る案なので、よければ私が社長に確かめます。`
-        : sel.choice === "reject" ? "今回は仕入れを見送る案です。よければ見送ります。仮押さえは手放します。"
-        : `「${esc(sel.title)}」の案です。内容を確認して、よければ購入を承認してください。`}</div>
-      <ol class="dsteps">${step(1, "案を選ぶ", reg ? "追加の買い付けは登録しません" : "まだ何も登録しません")}${chev}${step(2, "配分を確かめる", "右に下見が出ます")}${chev}${step(3, "承認する", reg ? "ここで追加分を登録します" : "ここで初めて登録します")}</ol>
+      <div class="dk">${icon("hand")}${esc((V.decide && V.decide.block) || "どの案で進めるか、決めてください")}</div>
+      <div class="dq">${!sel ? `${rec ? `私のおすすめは ${esc(rec.letter)}「${esc(rec.title || rec.label)}」です。${esc((V.decide && V.decide.reason) || "")}` : ""}<span class="nw">A〜${esc(opts[opts.length - 1].letter)}</span> から選んでください。選択肢にない進め方は、${esc(opts[opts.length - 1].letter)} から文で頼めます。`
+        : sel.choice === "other" ? "どう進めたいかを書いて送ってください。AI が、できるかどうかを確かめて答えます。"
+        : sel.choice === "president" ? `${esc(sel.letter)}「${esc(sel.title)}」を選びました。社長の確認が要る案なので、よければ私が社長に確かめます。`
+        : sel.choice === "reject" ? `${esc(sel.letter)}「今回は仕入れを見送る」を選びました。よければ見送ります。仮押さえは手放します。`
+        : `${esc(sel.letter)}「${esc(sel.title)}」を選びました。右の内容を確認して、よければ購入を承認してください。`}</div>
+      <ol class="dsteps">${sel && sel.choice === "other"
+        ? `${step(1, "案を選ぶ", "C：ほかの指示")}${chev}${step(2, "指示を書く", "右の欄に書きます")}${chev}${step(3, "AI に送る", "登録はしません")}`
+        : `${step(1, "案を選ぶ", reg ? "追加の買い付けは登録しません" : "まだ何も登録しません")}${chev}${step(2, "配分を確かめる", "右に下見が出ます")}${chev}${step(3, "承認する", reg ? "ここで追加分を登録します" : "ここで初めて登録します")}`}</ol>
       <div class="dgrid"><div class="opts">${opts.map(card).join("")}</div><div class="pv ${sel ? "on" : ""}">${pv}</div></div></div>`;
   }
 
@@ -519,6 +531,16 @@
       return;
     }
     if (b.dataset.why) return openPop($("figure"), V.why);
+    if (b.dataset.otherSend) {   // ほかの指示：担当者の質問の入口（/api/ask・kind=instruction）へ。受け取りは AI が動き出したことで画面に出る
+      const a = (V.actions || []).find((x) => x.id === "other");
+      OTHER_TEXT = ($("othertext").value || "").trim();
+      if (!OTHER_TEXT || !a) { $("othertext").focus(); $("othertext").classList.add("need"); return; }
+      b.disabled = true;
+      const r = await post("/api/ask", Object.assign({}, a.api.body, { text: OTHER_TEXT }));
+      if (r.ok) { SEL = null; OTHER_TEXT = ""; setHTML("receipt", `<div class="receipt pending">${icon("loader")}AI に指示を送りました。指示に沿って進め方を組み直しています…</div>`); }
+      else { b.disabled = false; setHTML("receipt", `<div class="receipt bad">${icon("circle-alert")}送れませんでした：${esc(r.j.detail || r.j.error || r.status)}</div>`); }
+      return;
+    }
     let path, body;
     if (b.dataset.pres) {
       const p = V.president;
@@ -551,6 +573,7 @@
       document.querySelectorAll("#acts .dbtn").forEach((x) => (x.disabled = false));
     }
   });
+  $("acts").addEventListener("input", (e) => { if (e.target.id === "othertext") OTHER_TEXT = e.target.value; });
   $("receipt").addEventListener("click", (e) => { if (e.target.closest("[data-rfold]")) { RFOLD = !RFOLD; drawReceipt(); } });
   $("bandothers").addEventListener("click", (e) => {
     const b = e.target.closest("button[data-item]");

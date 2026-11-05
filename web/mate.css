@@ -551,3 +551,17 @@ hr.rule { border: 0; border-top: 1px solid var(--line); margin: 0 0 18px; }
 .retbox textarea:focus { outline: 2px solid var(--teal); outline-offset: 1px; }
 .retbox textarea.need { border-color: var(--stop); }
 .retacts { display: flex; gap: 10px; align-items: center; }
+
+/* 案の記号（A・B…）と重さの印（2026-11-05 デイブ）：社長の確認・注文を欠く見送り＝重い／不足が残る＝中／全部そろう＝軽い／ほかの指示 */
+.opt .letter { flex: none; width: 26px; height: 26px; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center;
+  font-weight: bold; font-size: 14px; color: #fff; background: var(--teal); margin-right: 10px; }
+.opt .letter.imp-high { background: var(--stop); }
+.opt .letter.imp-mid { background: var(--warm); }
+.opt .letter.imp-other { background: var(--mute); }
+.opt .impic { display: inline-flex; vertical-align: -3px; margin-right: 6px; }
+.opt .impic .ic { width: 17px; height: 17px; }
+.opt .impic.imp-high { color: var(--stop); }
+.opt .impic.imp-mid { color: var(--warm); }
+.opt .impic.imp-low { color: var(--teal); }
+.opt .impic.imp-other { color: var(--mute); }
+.dq .nw { white-space: nowrap; }

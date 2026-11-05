@@ -185,7 +185,7 @@ def work_state(owner: str, item: str, on_date: str = sc.DEMO_DATE) -> dict:
     for s in cur.get("stock") or []:
         add("stock", "record", s["text"])
     acts = [dict(id=a["id"], label=a["label"], note=a.get("note"), president=bool(a.get("president")), recommended=bool(a.get("recommended")))
-            for a in v.get("actions") or [] if a.get("api")]
+            for a in v.get("actions") or [] if a.get("api") and a["id"] != "other"]   # 「ほかの指示を出す」は画面の文の入力から（チャットの依頼では選ばない）
     ends = sorted({(_hm(t["valid_until"]), h["name"]) for h in tl["held"] for x in f["messages"] for t in x["terms"] if t["id"] == h["term_id"] and t["valid_until"]})
     deadline = ("仮押さえの期限：" + "・".join(f"{n} {hm}" for hm, n in ends)) if ends else None
     return dict(item=f["item"], facts=out, actions=acts, exec=v["exec"], stance=v["stance"], subject=v["subject"], compare=compare, deadline=deadline)

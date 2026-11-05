@@ -267,7 +267,7 @@ class NumbersTest(Base):
         finally:
             mockdock.Policy._present = orig
         v = self.v()
-        self.assertEqual(len(v["actions"]), 3)                                                # コードは案を足さない
+        self.assertEqual(len([a for a in v["actions"] if a["id"] != "other"]), 3)              # コードは案を足さない（「ほかの指示を出す」は案ではない）
         unused = "B社の 2本（仮押さえ）は、どの案にも入っていません。仮押さえを全部使う案が無いことを、AI に伝えました。"
         self.assertEqual(v["tally"]["unused_text"], unused)
         self.assertIn(unused, [s["text"] for s in v["sub"]])
@@ -281,7 +281,7 @@ class NumbersTest(Base):
     def test_an_ai_text_with_numbers_that_do_not_match_is_replaced_by_the_code(self):
         v = self.consult(lie=True)
         self.check_one_calculation(v)
-        self.assertEqual(v["headline"], dict(text=f"{RYOTEI}の追加注文で、魚が足りません。どう分けますか。", origin="code", ref=None))
+        self.assertEqual(v["headline"], dict(text=f"{RYOTEI}の追加注文で、2本足りなくなりました。どの売り先に何本回すか、決めてください。", origin="calc", ref=None))
         r = v["why"]["speech_origin"]["replaced"]                                            # 使わなかった AI の文と、その記録の番号を残す
         self.assertEqual((r["text"], r["ref"]["table"]), (f"{RYOTEI}の追加で 3本足りません。どう分けますか", "workspace_turn"))
         self.assertNotIn("3本", " ".join([v["headline"]["text"]] + [s["text"] for s in v["sub"]]))
@@ -534,7 +534,10 @@ class DecideBlockTest(Base):
         self.run_all()
         acts = {a["title"]: a for a in self.v()["actions"]}
         self.assertEqual(list(acts), [f"{SUPER} 4本を確保し、{RYOTEI}へ 4本を回す", f"{SUPER} 4本を確保し、{RYOTEI}へ 2本を回す",
-                                      f"{RYOTEI}へ 6本を回す（{SUPER}は 0本）", "今回は仕入れを見送る"])
+                                      f"岩瀬漁協の 6本を仕入れ、{RYOTEI}に回す（{SUPER}は 0本）", "今回は仕入れを見送る", "ほかの指示を出す"])
+        self.assertEqual([a["letter"] for a in acts.values()], ["A", "B", "C", "D", "E"])            # 案の記号（2026-11-05 デイブ）
+        self.assertEqual([a["importance"] for a in acts.values()], ["mid", "mid", "high", "high", "other"])   # 不足が残る・社長の確認・注文を欠く見送り
+        self.assertEqual(self.v()["decide"]["reason"], f"社長の朝の指示どおり、{SUPER}の 4本がそろい、案の中で不足が最も少ない（あと 2本）ためです。")
         rec = acts[f"{SUPER} 4本を確保し、{RYOTEI}へ 4本を回す"]
         self.assertTrue(rec["recommended"])
         self.assertEqual((rec["choice"], rec["confirm"]), ("approve", "この配分で購入を承認する"))
@@ -543,7 +546,7 @@ class DecideBlockTest(Base):
         self.assertEqual(rec["purchase_yen"], 141800)                                        # 相手ごとの金額の合計と同じ（理由の1枚の「仕入れ 141,800円」）
         self.assertEqual(rec["alloc"], [dict(shop=SUPER, ordered=4, secured=4, short=0, added=4), dict(shop=RYOTEI, ordered=6, secured=4, short=2, added=4)])
         self.assertEqual(rec["effect"], "岩瀬漁協 6本・B社 2本（合計 141,800円）の買い付けを登録します（購入の確定）。")
-        pres = acts[f"{RYOTEI}へ 6本を回す（{SUPER}は 0本）"]
+        pres = acts[f"岩瀬漁協の 6本を仕入れ、{RYOTEI}に回す（{SUPER}は 0本）"]
         self.assertEqual((pres["choice"], pres["confirm"], pres["president"]), ("president", "この案を社長に確かめる", True))
         self.assertIn("社長が承認するまで、何も登録しません", pres["effect"])
         rej = acts["今回は仕入れを見送る"]
@@ -577,9 +580,15 @@ class RoundStoryTest(Base):
         self.run_all()                                                      # 漁協は残りなしで断り・B社は 2本 → 次の相談
         v = self.v()
         self.assertEqual((v["exec"], v["stance"], v["rule"]), ("your_turn", "careful", "追加分が不足している"))   # 笑顔の基本の姿にしない・説明はいまの理由
-        self.assertEqual(v["headline"], dict(text="岩瀬漁協では追加分を確保できませんでした。B社からは 2本を仮押さえできています。", origin="calc", ref=None))
+        # 見出しは起きたことと人への問い。判断のブロックの見出しも同じ問い（2026-11-05 デイブ「結論が唐突」）
+        self.assertEqual(v["headline"], dict(text="岩瀬漁協では追加分を確保できませんでした。B社の 2本を仕入れますか。", origin="calc", ref=None))
+        self.assertEqual(v["decide"]["block"], "B社の 2本を仕入れるか、決めてください")
+        self.assertEqual(v["decide"]["reason"], f"{SUPER}の不足が 4本から 2本に減るためです。")      # おすすめの理由の一文（2026-11-05 デイブ）
         subs = [s["text"] for s in v["sub"]]
-        self.assertEqual(subs[0], f"おすすめは「{SUPER} 2本を確保する」です。この案でも、あと 2本足りません。")
+        self.assertEqual(subs[0], "手に入るのは、B社が仮押さえしている 2本（1本 18,400円）だけです。")
+        a = next(x for x in v["actions"] if x.get("recommended"))
+        self.assertEqual((a["letter"], a["title"], a["result"]), ("A", f"B社の 2本を仕入れ、{SUPER}に回す", f"{SUPER} 2 / 4本（あと 2本不足）"))
+        self.assertEqual(v["actions"][-1]["id"], "other")                                     # 選択肢にない進め方を文で頼める
         self.assertEqual(subs[1], f"10本の注文に対し、6本を登録済み（{RYOTEI} 6本）・2本を仮押さえ（B社 2本）。あと 2本不足。")   # 買う案が1つなので「どの案でも」は言わない
         self.assertEqual(v["why"]["lead"], "岩瀬漁協から断りの返事が届き、追加分があと 2本不足しているためです。足りない分をどう手配するか、あなたと相談しています。")
         st = next(x for x in v["band"]["steps"] if x["name"] == "不足分の手配")   # 不足が残る間は「済み」にしない（SAL 2026-11-04）
