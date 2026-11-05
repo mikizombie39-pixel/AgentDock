@@ -90,6 +90,13 @@ def _fill_owner(con, code: str, public_rows, scene_c: bool, with_aji_s: bool = F
 
 def _fill_autonomy(con, code: str, item: dict, cust: dict, now: str) -> None:
     """本編（自律の場面）の種：数量ごとの最低の値・在庫・案内してよい売り先・売れ方（Vault は _fill_vault でファイルから）。"""
+    if sc.OWNERS[code]["role"] == "seller":   # 漁協の集計案の実証用ルールと荷主（2026-11-05）
+        r = sc.SETTLE_RULE
+        con.execute("INSERT INTO settle_rule (fee_permille, fee_tax_permille, sale_tax_permille, rounding, note, valid_from) VALUES (?, ?, ?, ?, ?, ?)",
+                    (r["fee_permille"], r["fee_tax_permille"], r["sale_tax_permille"], r["rounding"], r["note"], sc.HISTORY_FROM))
+        con.executemany("INSERT INTO consignor (name) VALUES (?)", [(n,) for n in sc.CONSIGNORS])
+        cons = _ids(con, "consignor", "name")
+        con.executemany("INSERT INTO lot_consignor (lot_no, consignor_id) VALUES (?, ?)", [(lot, cons[n]) for lot, n in sc.LOT_CONSIGNOR.items()])
     con.executemany("INSERT INTO quote_rule (item_id, min_qty, floor_yen, valid_from) VALUES (?, ?, ?, ?)",
                     [(item[i], q, f, sc.HISTORY_FROM) for i, q, f in sc.QUOTE_RULES.get(code, [])])
     con.executemany("INSERT INTO stock (item_id, quantity, status, lot_no, stock_date, updated_at, unit_cost_yen, unallocated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",

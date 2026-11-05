@@ -1,0 +1,100 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Agent Dock — 全体の流れ</title>
+<link rel="icon" href="favicon.ico">
+<style>
+  /* 全体の流れ（3者）：網谷水産・社長・岩瀬漁協の、いま誰が作業しているかと、いま注目する連絡1本（GET /api/overview）。
+     線は累積させない。社長に確認を送った段階は「社長の判断待ち」。区別は単色の地と枠線だけ */
+  :root { --page: #F6F5F1; --ink: #1F2622; --mute: #6E716A; --line: #D8D3C8; --paper: #FDFBF6;
+          --amiya: #3B6E77; --amiyab: #E4ECEA; --pres: #8A6A2E; --presb: #F5ECDB; --iwase: #1F3A5F; --iwaseb: #DDE5F0; --ok: #2F6B4F; }
+  html, body { margin: 0; background: var(--page); color: var(--ink); font-family: "BIZ UDPGothic", "Yu Gothic UI", sans-serif; }
+  .ov { max-width: 1400px; margin: 18px auto; padding: 0 24px; }
+  .bar { display: flex; align-items: center; gap: 16px; } .bar img { height: 44px; } .bar h1 { font-size: 22px; margin: 0; }
+  .bar .pill { font-size: 12px; color: var(--mute); border: 1px dashed var(--line); background: #fff; border-radius: 14px; padding: 4px 10px; }
+  .bar nav { margin-left: auto; display: flex; gap: 8px; } .bar nav a { font-size: 12px; color: var(--mute); text-decoration: none; border: 1px solid var(--line); background: #fff; border-radius: 14px; padding: 5px 11px; }
+  .stage { position: relative; margin-top: 22px; }
+  .lanes { display: grid; grid-template-columns: 1.15fr .85fr 1.15fr; gap: 70px; position: relative; z-index: 1; }
+  .lane { background: var(--paper); border: 2px solid var(--line); border-radius: 22px; padding: 16px 18px 18px; transition: border-color .4s, box-shadow .4s; min-height: 250px; }
+  .lane h2 { font-size: 20px; margin: 0 0 12px; display: flex; align-items: center; gap: 10px; } .lane h2 .sw { width: 14px; height: 14px; border-radius: 4px; }
+  .lane.amiya .sw { background: var(--amiya); } .lane.president .sw { background: var(--pres); } .lane.iwase .sw { background: var(--iwase); }
+  .lane.on.amiya { border-color: var(--amiya); box-shadow: 0 0 0 4px rgba(59, 110, 119, .15); }
+  .lane.on.president { border-color: var(--pres); box-shadow: 0 0 0 4px rgba(138, 106, 46, .15); }
+  .lane.on.iwase { border-color: var(--iwase); box-shadow: 0 0 0 4px rgba(31, 58, 95, .15); }
+  .mem { display: grid; grid-template-columns: 44px 1fr auto; gap: 2px 10px; align-items: center; padding: 10px 10px; border-radius: 14px; margin-bottom: 8px; background: #fff; border: 1px solid var(--line); }
+  .mem .ic { width: 40px; height: 40px; border-radius: 12px; display: grid; place-items: center; font-size: 13px; font-weight: bold; color: #fff; grid-row: span 2; }
+  .mem.person .ic { background: #6E716A; } .mem.ai .ic { background: var(--amiya); } .lane.iwase .mem.ai .ic { background: var(--iwase); } .mem.code .ic { background: #8E97A5; }
+  .mem .w { font-size: 15px; } .mem .d { font-size: 12px; color: var(--mute); grid-column: 2; }
+  .mem .s { font-size: 12px; border-radius: 10px; padding: 2px 9px; border: 1px solid #C9C3B6; color: var(--mute); grid-row: span 2; white-space: nowrap; }
+  .mem.s-working { border-color: var(--ok); } .mem.s-working .s { border-color: var(--ok); color: #fff; background: var(--ok); }
+  .mem.s-working .ic { animation: breathe 1.4s ease-in-out infinite; }
+  .mem.s-your_turn .s { border-color: var(--amiya); color: #fff; background: var(--amiya); }
+  .mem.s-waiting_decision .s { border-color: var(--pres); color: var(--pres); background: var(--presb); }
+  .mem.s-decided .s { border-color: var(--pres); color: var(--pres); }
+  @keyframes breathe { 0%, 100% { transform: scale(1); } 50% { transform: scale(1.08); } }
+  svg.link { position: absolute; inset: 0; width: 100%; height: 100%; z-index: 2; pointer-events: none; overflow: visible; }
+  svg.link path { fill: none; stroke-width: 4; stroke-linecap: round; stroke-dasharray: 10 9; animation: flow 1.1s linear infinite; }
+  @keyframes flow { to { stroke-dashoffset: -38; } }
+  .focus { margin: 22px auto 0; max-width: 980px; text-align: center; font-size: 22px; background: #fff; border: 2px solid var(--line); border-radius: 18px; padding: 14px 18px; min-height: 30px; transition: border-color .4s; }
+  .focus small { display: block; font-size: 12px; color: var(--mute); margin-top: 4px; }
+  .focus .who { font-weight: bold; }
+  .head { text-align: center; color: var(--mute); font-size: 14px; margin-top: 10px; }
+  @media (prefers-reduced-motion: reduce) { svg.link path, .mem.s-working .ic { animation: none; } }
+</style>
+</head>
+<body>
+<div class="ov">
+  <div class="bar"><img src="agentdock-logo.png" alt="Agent Dock　水産業に、新しい仲間を。" width="282" height="44"><h1>全体の流れ</h1>
+    <span class="pill" id="clock">模擬の時計</span><nav><a href="mate.html">網谷水産の仲間</a><a href="coop.html">岩瀬漁協の AI</a><a href="verify.html">技術の検証</a></nav></div>
+  <div class="stage" id="stage">
+    <div class="lanes" id="lanes"></div>
+    <svg class="link" id="link"><defs>
+      <marker id="arrA" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="5" markerHeight="5" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#3B6E77" stroke="none"/></marker>
+      <marker id="arrP" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="5" markerHeight="5" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#8A6A2E" stroke="none"/></marker>
+      <marker id="arrI" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="5" markerHeight="5" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#1F3A5F" stroke="none"/></marker>
+    </defs><path id="path"/></svg>
+  </div>
+  <div class="focus" id="focus">まだ連絡はありません</div>
+  <div class="head" id="head"></div>
+</div>
+<script>
+(function () {
+  const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+  const NAME = { amiya: "網谷水産", president: "社長", iwase: "岩瀬漁協" };
+  const COLOR = { amiya: ["#3B6E77", "arrA"], president: ["#8A6A2E", "arrP"], iwase: ["#1F3A5F", "arrI"] };
+  const IC = { person: "人", ai: "AI", code: "コード" };
+  let last = "";
+  function draw(f) {
+    const path = document.getElementById("path"), stage = document.getElementById("stage").getBoundingClientRect();
+    if (!f) { path.setAttribute("d", ""); return; }
+    const a = document.querySelector(`.lane.${f.frm}`).getBoundingClientRect(), b = document.querySelector(`.lane.${f.to}`).getBoundingClientRect();
+    const right = b.left > a.left;
+    const x1 = (right ? a.right : a.left) - stage.left, x2 = (right ? b.left : b.right) - stage.left;
+    const y = a.top - stage.top + 70, lift = Math.abs(x2 - x1) > 600 ? 120 : 40;
+    path.setAttribute("d", `M${x1} ${y} C ${x1 + (x2 - x1) * 0.3} ${y - lift}, ${x1 + (x2 - x1) * 0.7} ${y - lift}, ${x2} ${y}`);
+    path.setAttribute("stroke", COLOR[f.frm][0]);
+    path.setAttribute("marker-end", `url(#${COLOR[f.frm][1]})`);
+  }
+  async function load() {
+    let v;
+    try { v = await (await fetch("/api/overview")).json(); } catch (e) { return; }
+    const key = JSON.stringify(v);
+    if (key === last) return;
+    last = key;
+    document.getElementById("clock").textContent = `模擬の時計 ${v.clock ? v.clock.now_shown : ""}`;
+    const on = v.focus ? [v.focus.frm, v.focus.to] : [];
+    document.getElementById("lanes").innerHTML = v.lanes.map((l) => `<div class="lane ${l.key} ${on.includes(l.key) ? "on" : ""}"><h2><span class="sw"></span>${esc(l.title)}</h2>
+      ${l.members.map((m) => `<div class="mem ${m.kind} s-${m.state}"><div class="ic">${IC[m.kind]}</div><div class="w">${esc(m.who)}</div><span class="s">${esc(m.state_label)}</span><div class="d">${esc(m.doing)}</div></div>`).join("")}</div>`).join("");
+    const f = v.focus;
+    document.getElementById("focus").innerHTML = f ? `<span class="who" style="color:${COLOR[f.frm][0]}">${esc(NAME[f.frm])}</span> → <span class="who" style="color:${COLOR[f.to][0]}">${esc(NAME[f.to])}</span>：${esc(f.text)}<small>いま注目する連絡（${esc(f.at_shown || "")}・記録から）</small>` : "まだ連絡はありません";
+    document.getElementById("head").textContent = v.headline ? `網谷水産の仲間の見出し：${v.headline}` : "";
+    requestAnimationFrame(() => draw(f));
+  }
+  addEventListener("resize", () => { last = ""; load(); });
+  load(); setInterval(load, 1000);
+})();
+</script>
+</body>
+</html>

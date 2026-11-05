@@ -10,8 +10,16 @@ from tests.test_mate import RYOTEI, SUPER, Base
 
 
 class TraceTest(Base):
+    def started(self):
+        c = db.connect("iwase")
+        try:
+            return c.execute("SELECT count(*) FROM broadcast").fetchone()[0] > 0
+        finally:
+            c.close()
+
     def register_after_return(self):
-        self.start()
+        if not self.started():
+            self.start()
         self.worker.step()
         self.add_ryotei()
         self.run_all()

@@ -5,71 +5,104 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Agent Dock — 岩瀬漁協の AI の仕事</title>
 <link rel="icon" href="favicon.ico">
+<link rel="stylesheet" href="mate.css">
 <style>
-  /* 岩瀬漁協の AI の画面（読むだけ）。行はすべて漁協の DB と市場の記録から作る（GET /api/coop）。区別は単色の地と枠線だけ（縞は使わない） */
-  :root { --page: #FBFAF7; --card: #F2EEE6; --paper: #FDFBF6; --ink: #1F2622; --mute: #6E716A; --line: #DCD6CB;
-          --slate: #2F4E6B; --slateb: #E7EDF3; --teal: #3B6E77; --tealb: #E4ECEA; --warm: #8A6A2E; --warmb: #F5ECDB;
-          --plum: #5B3F73; --ok: #2F6B4F; --okb: #DDEBE2; --stop: #B23A2E; }
-  html, body { margin: 0; background: var(--page); color: var(--ink); font-family: "BIZ UDPGothic", "Yu Gothic UI", sans-serif; }
-  .wrap { max-width: 1240px; margin: 18px auto; padding: 0 22px; }
-  .card { background: var(--card); border-radius: 26px; padding: 22px 30px 28px; }
-  .brand { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; }
-  .brand .logo { height: 48px; width: auto; }
-  .brand .org { font-size: 22px; font-weight: bold; } .brand .org small { display: block; font-size: 12px; font-weight: normal; color: var(--mute); }
-  .brand .pill { font-size: 12px; color: var(--mute); border: 1px solid var(--line); background: var(--paper); border-radius: 14px; padding: 4px 10px; }
-  .brand .pill.clock { border-style: dashed; }
-  .brand nav { margin-left: auto; display: flex; gap: 8px; } .brand nav a { font-size: 12px; color: var(--mute); text-decoration: none; border: 1px solid var(--line);
+  /* 岩瀬漁協の AI の画面（読むだけ・仲間の型）。配色は紺を軸にし、仲買の画面（生成りと青緑）と分ける。
+     行・件数・状態はすべて漁協の DB と市場の記録から（GET /api/coop）。区別は単色の地と枠線だけ（縞は使わない） */
+  :root { --page: #EEF2F7; --card: #E3E9F1; --paper: #FAFBFD; --ink: #16213A; --mute: #5C6779; --line: #C9D2DF;
+          --slate: #1F3A5F; --face: #F4F7FB; --deep: #16213A; --teal: #1F3A5F; --tealb: #DDE5F0; --warm: #8A6A2E;
+          --navy: #1F3A5F; --navyb: #DDE5F0; --ok: #2F6B4F; --okb: #DDEBE2; --stop: #B23A2E; --amber: #9A6B12; --amberb: #F6ECD6; }
+  .mate-svg .halo { fill: #DCE4F0; }
+  html, body { background: var(--page); }
+  .cp-wrap { max-width: 1280px; margin: 16px auto; padding: 0 22px; font-family: "BIZ UDPGothic", "Yu Gothic UI", sans-serif; color: var(--ink); }
+  .cp-card { background: var(--card); border-radius: 26px; padding: 20px 30px 26px; border-top: 6px solid var(--navy); }
+  .cp-brand { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; }
+  .cp-brand .logo { height: 46px; width: auto; }
+  .cp-org { font-size: 22px; font-weight: bold; color: var(--navy); } .cp-org small { display: block; font-size: 12px; font-weight: normal; color: var(--mute); }
+  .cp-pill { font-size: 12px; color: var(--mute); border: 1px solid var(--line); background: var(--paper); border-radius: 14px; padding: 4px 10px; }
+  .cp-pill.clock { border-style: dashed; }
+  .cp-brand nav { margin-left: auto; display: flex; gap: 8px; } .cp-brand nav a { font-size: 12px; color: var(--mute); text-decoration: none; border: 1px solid var(--line);
     background: var(--paper); border-radius: 14px; padding: 5px 11px; }
-  .lead { font-size: 15px; margin: 16px 0 14px; line-height: 1.7; }
-  .tops { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin-bottom: 18px; }
-  .box { background: var(--paper); border: 1px solid var(--line); border-radius: 14px; padding: 12px 16px; }
-  .box h3 { font-size: 13px; color: var(--mute); font-weight: normal; margin: 0 0 6px; }
-  .box .v { font-size: 17px; } .box .v span { margin-right: 18px; white-space: nowrap; } .box .v small { color: var(--mute); font-size: 12px; margin-left: 4px; }
-  .rows { position: relative; }
-  .row { display: grid; grid-template-columns: 64px 128px 1fr; gap: 4px 14px; background: var(--paper); border: 1px solid var(--line); border-radius: 14px;
-    padding: 11px 16px; margin: 8px 0; }
-  .row .t { font-size: 15px; color: var(--mute); font-variant-numeric: tabular-nums; padding-top: 1px; }
-  .row .w { font-size: 12px; align-self: start; border-radius: 10px; padding: 3px 9px; text-align: center; border: 1px solid; }
-  .w-results { color: var(--slate); border-color: var(--slate); background: var(--slateb); } .w-bc { color: var(--teal); border-color: var(--teal); background: var(--tealb); }
-  .w-tender { color: var(--stop); border-color: var(--stop); background: #FFFFFF; } .w-quote { color: var(--warm); border-color: var(--warm); background: var(--warmb); }
-  .w-trade { color: var(--ok); border-color: var(--ok); background: var(--okb); }
-  .row .h { font-size: 16px; } .row .l { grid-column: 3; font-size: 13px; color: #3D362F; line-height: 1.6; }
-  .row.check .h::before { content: "✓ "; color: var(--ok); font-weight: bold; } .row.check.bad .h::before { content: "× "; color: var(--stop); }
-  .tag { display: inline-block; font-size: 11px; padding: 1px 7px; border-radius: 9px; margin-left: 8px; border: 1px solid; vertical-align: 2px; }
-  .k-fact { color: var(--slate); border-color: var(--slate); } .k-calc, .k-check { color: var(--teal); border-color: var(--teal); }
-  .k-ai { color: var(--warm); border-color: var(--warm); background: var(--warmb); }
+  .cp-top { display: grid; grid-template-columns: 220px 1fr; gap: 20px; align-items: center; margin: 14px 0 6px; }
+  .cp-fig { display: flex; flex-direction: column; align-items: center; }
+  .cp-fig .mate-svg { width: 190px; height: 190px; }
+  .cp-fig .who { font-size: 12px; color: var(--mute); margin-top: 2px; }
+  .cp-head { font-size: 28px; font-weight: bold; line-height: 1.4; margin: 0 0 10px; color: var(--ink); }
+  .cp-sub { font-size: 14px; color: var(--mute); line-height: 1.7; }
+  .cp-sub b { color: var(--ink); font-weight: normal; }
+  .cp-note { font-size: 12px; color: var(--navy); background: var(--navyb); border-radius: 10px; padding: 5px 11px; display: inline-block; margin-top: 8px; }
+  .cp-jobs { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 12px; margin: 16px 0 18px; }
+  .cp-job { background: var(--paper); border: 1.5px solid var(--line); border-radius: 16px; padding: 12px 13px 12px; display: flex; flex-direction: column; gap: 6px; min-height: 168px; }
+  .cp-job .t { font-size: 15px; font-weight: bold; color: var(--ink); }
+  .cp-job .who { font-size: 11px; border-radius: 9px; padding: 1px 8px; border: 1px solid; align-self: flex-start; }
+  .cp-job .who.code { color: var(--navy); border-color: var(--navy); background: #FFFFFF; }
+  .cp-job .who.ai { color: #FFFFFF; border-color: var(--navy); background: var(--navy); }
+  .cp-job .st { font-size: 13px; display: flex; align-items: center; gap: 6px; }
+  .cp-job .st .dot { width: 9px; height: 9px; border-radius: 50%; background: #AAB4C3; flex: none; }
+  .cp-job .cp-bar { height: 7px; border-radius: 4px; background: #E6EBF2; overflow: hidden; }
+  .cp-job .cp-bar i { display: block; height: 100%; background: var(--navy); }   /* 描き直しのたびに伸び直さないよう、幅の動きは付けない */
+  .cp-job .n { font-size: 12px; color: var(--mute); font-variant-numeric: tabular-nums; }
+  .cp-job .l { font-size: 12px; color: #34405A; line-height: 1.55; }
+  .cp-job .l div { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .cp-job.s-running, .cp-job.s-answering { border-color: var(--navy); box-shadow: 0 0 0 3px rgba(31, 58, 95, .12); }
+  .cp-job.s-running .dot, .cp-job.s-answering .dot { background: var(--navy); animation: pulse 1.2s ease-in-out infinite; }
+  .cp-job.s-done .dot, .cp-job.s-answered .dot, .cp-job.s-reflected .dot { background: var(--ok); }
+  .cp-job.s-done .cp-bar i, .cp-job.s-reflected .cp-bar i { background: var(--ok); }
+  .cp-job.s-pending { border-color: var(--amber); } .cp-job.s-pending .dot { background: var(--amber); }
+  .cp-job.s-mismatch { border-color: var(--stop); } .cp-job.s-mismatch .dot { background: var(--stop); } .cp-job.s-mismatch .cp-bar i { background: var(--stop); }
+  .cp-job.s-answering { background: #F2F6FB; }
+  .cp-job.flash { animation: flash 900ms cubic-bezier(.2, .8, .2, 1); }
+  @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: .35; } }
+  @keyframes flash { from { box-shadow: 0 0 0 6px rgba(31, 58, 95, .35); } to { box-shadow: 0 0 0 3px rgba(31, 58, 95, .12); } }
+  .cp-tops { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 14px; }
+  .cp-box { background: var(--paper); border: 1px solid var(--line); border-radius: 14px; padding: 10px 14px; }
+  .cp-box h3 { font-size: 12px; color: var(--mute); font-weight: normal; margin: 0 0 4px; }
+  .cp-box .v { font-size: 15px; } .cp-box .v span { margin-right: 16px; white-space: nowrap; } .cp-box .v small { color: var(--mute); font-size: 11px; margin-left: 3px; }
+  .cp-log h3 { font-size: 13px; color: var(--mute); font-weight: normal; margin: 10px 0 4px; }
+  .cp-row { display: grid; grid-template-columns: 56px 118px 1fr; gap: 3px 12px; background: var(--paper); border: 1px solid var(--line); border-radius: 12px; padding: 8px 14px; margin: 6px 0; }
+  .cp-row .t { font-size: 13px; color: var(--mute); font-variant-numeric: tabular-nums; }
+  .cp-row .w { font-size: 11px; border-radius: 9px; padding: 2px 8px; text-align: center; border: 1px solid var(--navy); color: var(--navy); align-self: start; }
+  .cp-row .h { font-size: 14px; } .cp-row .l { grid-column: 3; font-size: 12px; color: #34405A; }
+  .cp-row details { grid-column: 3; font-size: 12px; } .cp-row summary { cursor: pointer; color: var(--navy); }
+  .tag { display: inline-block; font-size: 10px; padding: 1px 6px; border-radius: 8px; margin-left: 6px; border: 1px solid; vertical-align: 2px; }
+  .k-fact { color: var(--navy); border-color: var(--navy); } .k-calc, .k-check { color: var(--navy); border-color: var(--navy); background: var(--navyb); }
+  .k-ai { color: var(--warm); border-color: var(--warm); background: var(--amberb); }
   .o-real { color: #FFFFFF; border-color: var(--ok); background: var(--ok); } .o-mock { color: var(--warm); border-color: var(--warm); background: #FFFFFF; }
-  .o-code, .o-record { color: var(--mute); border-color: #B8AD9C; background: #FFFFFF; }
-  .row details { grid-column: 3; font-size: 12px; } .row summary { cursor: pointer; color: var(--teal); }
-  table { border-collapse: collapse; width: 100%; background: #FFFFFF; margin-top: 6px; table-layout: fixed; }
-  td, th { border: 1px solid var(--line); padding: 4px 7px; vertical-align: top; text-align: left; } th { background: #EFE8DA; font-weight: normal; color: var(--mute); }
-  td:nth-child(1) { width: 34px; } td:nth-child(2) { width: 110px; } .err { color: var(--stop); }
-  pre { margin: 0; white-space: pre-wrap; word-break: break-all; font-size: 11px; max-height: 120px; overflow: auto; }
-  .empty { color: var(--mute); padding: 20px 4px; }
-  .note { color: var(--mute); font-size: 12px; margin-top: 14px; }
-  /* 新しく現れた行を一度だけ光らせる（動きを減らす設定では光らせない） */
-  @keyframes arrive { from { box-shadow: 0 0 0 3px rgba(59, 110, 119, .45); transform: translateY(6px); opacity: .2; } to { box-shadow: 0 0 0 0 rgba(59, 110, 119, 0); transform: none; opacity: 1; } }
-  .row.new { animation: arrive 900ms cubic-bezier(.2, .8, .2, 1) both; }
-  @media (prefers-reduced-motion: reduce) { .row.new { animation: none; } }
+  .o-code, .o-record { color: var(--mute); border-color: #B8C1CF; background: #FFFFFF; }
+  .cp-row table { border-collapse: collapse; width: 100%; background: #FFFFFF; margin-top: 6px; table-layout: fixed; }
+  .cp-row td, .cp-row th { border: 1px solid var(--line); padding: 3px 6px; vertical-align: top; text-align: left; } .cp-row th { background: #E8EDF4; font-weight: normal; color: var(--mute); }
+  .cp-row pre { margin: 0; white-space: pre-wrap; word-break: break-all; font-size: 11px; max-height: 110px; overflow: auto; }
+  .cp-row.new { animation: arrive 900ms cubic-bezier(.2, .8, .2, 1) both; }
+  @keyframes arrive { from { box-shadow: 0 0 0 3px rgba(31, 58, 95, .4); transform: translateY(6px); opacity: .2; } to { box-shadow: none; transform: none; opacity: 1; } }
+  .cp-empty { color: var(--mute); padding: 14px 4px; }
+  @media (prefers-reduced-motion: reduce) { .cp-row.new, .cp-job.flash { animation: none; } .cp-job .st .dot { animation: none !important; } }
 </style>
 </head>
 <body>
-<div class="wrap"><div class="card">
-  <div class="brand"><img class="logo" src="agentdock-logo.png" alt="Agent Dock　水産業に、新しい仲間を。" width="307" height="48">
-    <div class="org">岩瀬漁協<small>漁協の AI の仕事（読むだけ）</small></div>
-    <span class="pill">模擬のデータ</span><span class="pill clock" id="clock" title="実際に記録した時刻とは違います">模擬の時計</span>
-    <nav><a href="verify.html">技術の検証</a></nav></div>
-  <div class="lead" id="lead">漁協の AI は、せりの後の仕事を進めながら、仲買からの照会に在庫と販売の条件を見て答えます。ここに並ぶ行は、すべて漁協の DB と市場の記録から作っています。</div>
-  <div class="tops"><div class="box"><h3>今日の水揚げ</h3><div class="v" id="landing">—</div></div>
-    <div class="box"><h3>売りに出している在庫（相対）</h3><div class="v" id="forsale">—</div></div></div>
-  <div class="rows" id="rows"><div class="empty">読み込み中…</div></div>
-  <div class="note" id="note"></div>
+<div class="cp-wrap"><div class="cp-card">
+  <div class="cp-brand"><img class="logo" src="agentdock-logo.png" alt="Agent Dock　水産業に、新しい仲間を。" width="294" height="46">
+    <div class="cp-org">岩瀬漁協<small>漁協の AI の仕事（読むだけ）</small></div>
+    <span class="cp-pill">模擬のデータ</span><span class="cp-pill clock" id="clock" title="実際に記録した時刻とは違います">模擬の時計</span>
+    <nav><a href="overview.html">全体の流れ</a><a href="verify.html">技術の検証</a></nav></div>
+  <div class="cp-top">
+    <div class="cp-fig"><div id="figure"></div><div class="who">岩瀬漁協の AI</div></div>
+    <div><div class="cp-head" id="head">読み込み中…</div>
+      <div class="cp-sub" id="sub"></div>
+      <div class="cp-note" id="note"></div></div>
+  </div>
+  <div class="cp-jobs" id="jobs"></div>
+  <div class="cp-tops"><div class="cp-box"><h3>今日の水揚げ</h3><div class="v" id="landing">—</div></div>
+    <div class="cp-box"><h3>売りに出している在庫（相対）</h3><div class="v" id="forsale">—</div></div></div>
+  <div class="cp-log"><h3>これまでの記録（漁協の DB と市場の記録から）</h3><div id="rows"><div class="cp-empty">読み込み中…</div></div></div>
+  <div class="cp-sub" id="foot" style="margin-top:10px;font-size:12px"></div>
 </div></div>
+<script src="mate-figure.js"></script>
 <script>
 (function () {
   const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
-  const W = { "せりの結果の公開": "w-results", "資料の配信": "w-bc", "入札": "w-tender", "照会への回答": "w-quote", "取引と在庫": "w-trade" };
-  const seen = new Set(), OPEN = new Set();
+  const W = { "せりの結果の公開": "結果の公開", "資料の配信": "資料の配信", "入札": "入札", "照会への回答": "照会への回答", "取引と在庫": "取引と在庫" };
+  const fig = window.MateFigure.create(document.getElementById("figure"));
+  const seen = new Set(), OPEN = new Set(), lastJob = {};
   let first = true, last = "";
   document.getElementById("rows").addEventListener("toggle", (e) => {
     const k = e.target.dataset && e.target.dataset.k;
@@ -80,26 +113,41 @@
     const k = keyOf(r), isNew = !first && !seen.has(k);
     seen.add(k);
     const steps = (r.steps || []).length ? `<details data-k="${esc(k)}" ${OPEN.has(k) ? "open" : ""}><summary>道具の入力と結果を見る（${r.steps.length}件・${r.origin === "real" ? esc(r.model || "") : "模擬の AI（Claude は呼んでいません）"}）</summary>
-      <table><tr><th>順</th><th>道具</th><th>入力</th><th>結果（先頭 400字）</th></tr>${r.steps.map((s) => `<tr><td>${s.seq}</td><td class="${s.is_error ? "err" : ""}">${esc(s.tool)}</td><td><pre>${esc(s.input)}</pre></td><td><pre>${esc(s.result)}</pre></td></tr>`).join("")}</table></details>` : "";
-    const cls = ["row", r.kind === "check" ? "check" : "", r.kind === "check" && r.ok === false ? "bad" : "", isNew ? "new" : ""].filter(Boolean).join(" ");
-    return `<div class="${cls}"><div class="t">${esc(r.at_shown || "—")}</div><div class="w ${W[r.work] || ""}">${esc(r.work)}</div>
+      <table><tr><th style="width:30px">順</th><th style="width:110px">道具</th><th>入力</th><th>結果（先頭 400字）</th></tr>${r.steps.map((s) => `<tr><td>${s.seq}</td><td>${esc(s.tool)}</td><td><pre>${esc(s.input)}</pre></td><td><pre>${esc(s.result)}</pre></td></tr>`).join("")}</table></details>` : "";
+    return `<div class="cp-row ${isNew ? "new" : ""}"><div class="t">${esc(r.at_shown || "—")}</div><div class="w">${esc(W[r.work] || r.work)}</div>
       <div class="h">${esc(r.title)}<span class="tag k-${esc(r.kind)}">${esc(r.kind_label)}</span><span class="tag o-${esc(r.origin)}">${esc(r.origin_label)}</span></div>
       ${r.lines.map((l) => `<div class="l">${esc(l)}</div>`).join("")}${steps}</div>`;
+  }
+  function jobHTML(j) {
+    const pct = j.total ? Math.round((100 * j.done) / j.total) : (j.status === "done" || j.status === "reflected" ? 100 : 0);
+    const changed = lastJob[j.key] !== undefined && lastJob[j.key] !== `${j.status}|${j.done}`;
+    lastJob[j.key] = `${j.status}|${j.done}`;
+    return `<div class="cp-job s-${esc(j.status)} ${changed ? "flash" : ""}" data-job="${esc(j.key)}"><div class="t">${esc(j.title)}</div>
+      <span class="who ${j.who === "ai" ? "ai" : "code"}">${esc(j.who_label)}</span>
+      <div class="st"><span class="dot"></span>${esc(j.status_label)}</div>
+      <div class="cp-bar"><i style="width:${pct}%"></i></div><div class="n">${j.done} / ${j.total}件</div>
+      <div class="l">${j.lines.map((l) => `<div title="${esc(l)}">${esc(l)}</div>`).join("")}</div></div>`;
   }
   async function load() {
     let v;
     try { v = await (await fetch("/api/coop")).json(); } catch (e) { return; }
-    const key = JSON.stringify([v.rows, v.landing, v.for_sale, v.clock && v.clock.now_shown]);
+    const key = JSON.stringify([v.rows, v.jobs, v.landing, v.for_sale, v.headline, v.clock && v.clock.now_shown]);
     if (key === last) return;
     last = key;
-    document.getElementById("clock").textContent = `模擬の時計 ${v.clock ? esc(v.clock.now_shown) : ""}`;
+    fig.set(v.stance);
+    document.getElementById("clock").textContent = `模擬の時計 ${v.clock ? v.clock.now_shown : ""}`;
+    document.getElementById("head").textContent = v.headline;
+    const busy = v.jobs.filter((j) => ["running", "answering"].includes(j.status)).map((j) => j.title);
+    document.getElementById("sub").innerHTML = busy.length ? `いま並行して進めている仕事：<b>${busy.map(esc).join("・")}</b>` : "いま進めている仕事はありません。";
+    document.getElementById("note").textContent = v.settle_note;
+    document.getElementById("jobs").innerHTML = v.jobs.map(jobHTML).join("");
     document.getElementById("landing").innerHTML = v.landing.map((x) => `<span>${esc(x.item)} ${x.quantity}${esc(x.unit)}<small>${esc(x.size || "")}</small></span>`).join("") || "—";
     document.getElementById("forsale").innerHTML = v.for_sale.map((x) => `<span>${esc(x.item)} ${x.quantity}${esc(x.unit)}</span>`).join("") || "なし";
-    document.getElementById("rows").innerHTML = v.rows.length ? v.rows.map(rowHTML).join("") : `<div class="empty">まだ記録がありません。業務が始まると、漁協の仕事がここに並びます。</div>`;
-    document.getElementById("note").textContent = `この画面の AI：${v.ai_origins.length ? v.ai_origins.join("・") : "まだ動いていません"}。漁協の最低の値は、漁協の画面にだけ出ます（仲買の画面には出しません）。`;
+    document.getElementById("rows").innerHTML = v.rows.length ? v.rows.slice().reverse().map(rowHTML).join("") : `<div class="cp-empty">まだ記録がありません。業務が始まると、漁協の仕事がここに並びます。</div>`;
+    document.getElementById("foot").textContent = `この画面の AI：${v.ai_origins.length ? v.ai_origins.join("・") : "まだ動いていません"}。金額はコードが実証用ルール（手数料 5%・手数料の消費税 10%・請求の消費税 8%・円未満は切り捨て）で計算した集計案です（請求書の発行・支払の確定はしません）。漁協の最低の値は、漁協の画面にだけ出ます。`;
     first = false;
   }
-  load(); setInterval(load, 2000);
+  load(); setInterval(load, 1000);
 })();
 </script>
 </body>

@@ -8,7 +8,7 @@
 """
 import json
 
-from agentdock import broadcast, db, mate, results
+from agentdock import broadcast, db, mate, results, settle
 from agentdock.seed import scenario as sc
 
 OWNER = "iwase"
@@ -142,5 +142,72 @@ def view(on_date: str = sc.DEMO_DATE) -> dict:
     ck = mate.clock("amiya", on_date)   # 仲間の画面と同じ模擬の時計（網谷水産の委任を朝に合わせる）で時刻を出す
     for r in rows:
         r["at_shown"] = mate.shown_time(r["at"], ck)
+    jobs, head, stance = _jobs(on_date, ck)
     return dict(owner=OWNER, owner_name=_name(OWNER), date=on_date, landing=landing, for_sale=left, rows=rows, clock=ck,
+                jobs=jobs, headline=head, stance=stance, settle_note=settle.NOTE,
                 ai_origins=[ORIGIN_LABEL[k] for k in kinds], kind_labels=KIND_LABEL, origin_labels=ORIGIN_LABEL)
+
+
+STATE = {"waiting": "待ち", "running": "処理中", "done": "完了", "mismatch": "不一致", "idle": "待機", "answering": "対応中", "answered": "返事済み",
+         "pending": "追加集計待ち", "reflected": "反映済み"}
+PARTY = {"other": "ほかの仲買（Agent Dock なし）"}
+
+
+def _jobs(on_date: str, ck: dict):
+    """仕事のカード（並行して動く仕事ごと）・見出し・表情。件数と状態は集計の表と起動の記録から数える（画面のための数は作らない）。"""
+    st = settle.status(on_date)
+    con = db.connect(OWNER)
+    m = db.connect(db.MARKET)
+    try:
+        cons = {str(r[0]): r[1] for r in con.execute("SELECT id, name FROM consignor")}
+        totals = {k: [(r[0], r[1], r[2]) for r in con.execute("SELECT party, sum(amount_yen), count(*) FROM settle_line WHERE kind = ? GROUP BY party ORDER BY party", (k,))]
+                  for k in ("invoice", "payout")}
+        checks = [dict(r) for r in con.execute("SELECT who, min(ok) AS ok, count(*) AS n FROM settle_check GROUP BY who ORDER BY min(id)")]
+        run = con.execute("SELECT r.id, r.started_at, r.run_kind, b.payload_json FROM agent_run r JOIN biz_event b ON b.id = r.event_id "
+                          "WHERE b.kind = 'quote_request' AND r.ended_at IS NULL ORDER BY r.id DESC LIMIT 1").fetchone()
+        tools = [s["tool"] for s in con.execute("SELECT tool FROM agent_step WHERE run_id = ? ORDER BY seq", (run["id"],))] if run else []
+        ask = m.execute("SELECT * FROM network_message WHERE id = ?", (json.loads(run["payload_json"]).get("message_id"),)).fetchone() if run else None
+        got = m.execute("SELECT count(*) FROM network_message WHERE to_owner = ? AND kind = 'inquiry'", (OWNER,)).fetchone()[0]
+        sent = m.execute("SELECT count(*) FROM network_message WHERE from_owner = ? AND kind IN ('offer', 'decline')", (OWNER,)).fetchone()[0]
+        kinds = {r[0] for r in con.execute("SELECT run_kind FROM agent_run")}
+    finally:
+        con.close()
+        m.close()
+    j = st["jobs"]
+    def card(key, title, who, status, done, total_, lines, ref):
+        return dict(key=key, title=title, who=who, who_label={"code": "コードが処理", "ai": "AI（Claude）が対応"}[who], status=status,
+                    status_label=STATE[status], done=done, total=total_, lines=lines, ref=ref)
+    cards = []
+    if st["started"]:
+        r = j["reconcile"]
+        cards.append(card("reconcile", "せりの結果の照合", "code", r["status"], r["done"], r["total"],
+                          [("✓ " if c["ok"] else "× ") + f"{_name(c['who'])}（{c['n']}件）" for c in checks], dict(table="settle_check")))
+        for k, title, name in (("invoice", "仲買への請求の集計", lambda p: PARTY.get(p, _name(p))), ("payout", "荷主への支払の集計", lambda p: cons.get(p, p))):
+            x = j[k]
+            cards.append(card(k, title, "code", x["status"], x["done"], x["total"],
+                              [f"{name(p)}：{amt:,}円（{n}件）" for p, amt, n in totals[k]], dict(table="settle_line", kind=k)))
+    cards.append(card("inquiry", "照会への回答", "ai", "answering" if run else ("answered" if sent else "idle"), sent, got,
+                      ([f"{_name(ask['from_owner'])}から {ask['quantity']}本の問い合わせ"] if ask else [])
+                      + ([" → ".join(tools) + " …"] if run else []), dict(table="agent_run")))
+    waiting = st.get("waiting") or []
+    reflected = [s for s in settle.sources(on_date) if s["source_kind"] == "trade" and s not in waiting] if st["started"] else []
+    cards.append(card("additional", "取引と追加集計", "code", "pending" if waiting else ("reflected" if reflected else "idle"), len(reflected),
+                      len(reflected) + len(waiting),
+                      [f"{s['source_id']}：{_name(s['buyer'])}へ {s['quantity']}本 × {s['unit_price_yen']:,}円・" + ("追加集計待ち" if s in waiting else "反映済み")
+                       for s in [*reflected, *waiting]], dict(table="settle_run", additional=1)))
+    # 見出しと表情（記録から決める）
+    if any(c["status"] == "mismatch" for c in cards):
+        head, stance = "照合で食い違いが見つかりました。請求と支払は止めています。", "struggle"
+    elif run and ask:
+        busy = "・".join(c["title"] for c in cards if c["status"] == "running")
+        head = f"{_name(ask['from_owner'])}から {ask['quantity']}本の問い合わせです。在庫と販売の条件を確かめています。" + (f"（{busy}も続けています）" if busy else "")
+        stance = "careful"
+    elif waiting:
+        head, stance = "取引が新しく成立しました。追加の集計に入れます。", "careful"
+    elif any(c["status"] == "running" for c in cards):
+        head, stance = "せりの後の照合と集計を進めています。", "calm"
+    elif st.get("complete"):
+        head, stance = "今日の請求と支払の集計案がそろいました。", "relief"
+    else:
+        head, stance = "業務の開始を待っています。", "calm"
+    return cards, head, stance

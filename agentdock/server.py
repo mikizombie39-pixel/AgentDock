@@ -44,7 +44,7 @@ import sys
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
-from agentdock import agents, chat, consult, coop, db, deal, events, feed, live, mate, scene, stage, stockwork, trace, work, workspace
+from agentdock import agents, chat, consult, coop, db, deal, events, feed, live, mate, overview, scene, stage, stockwork, trace, work, workspace
 from agentdock.db import REPO
 from agentdock.seed import scenario as sc
 
@@ -158,6 +158,9 @@ class Handler(BaseHTTPRequestHandler):
                 out["worker"] = WORKER.status() if WORKER else None
                 out["worker_log"] = WORKER.log[-40:] if WORKER else []
                 return self._send(200, out)
+            if u.path == "/api/overview":   # 全体の流れ（3者）
+                deal.expire(f"{sc.DEMO_DATE}T06:30:00+09:00")
+                return self._send(200, overview.view(q.get("date", sc.DEMO_DATE)))
             if u.path == "/api/coop":   # 岩瀬漁協の AI の画面（読むだけ）
                 return self._send(200, coop.view(q.get("date", sc.DEMO_DATE)))
             if u.path == "/api/trace":   # 一つの取引の証拠のたどり（技術の検証の画面の1節）
@@ -481,6 +484,22 @@ class _Exclusive(ThreadingHTTPServer):
         super().server_bind()
 
 
+SETTLE_INTERVAL = 2.0   # 漁協の集計案を1件ずつ処理する間隔（秒・実演用。画面に settle.NOTE を出す）
+SETTLE_ERROR: str | None = None
+
+
+def _settle_loop(stop) -> None:
+    """漁協の集計案を、2秒ごとに1件ずつ実処理する（照合 → 請求・支払・追加の集計）。例外は記録して続ける。"""
+    global SETTLE_ERROR
+    from agentdock import settle
+    while not stop.wait(SETTLE_INTERVAL):
+        try:
+            settle.step()
+            SETTLE_ERROR = None
+        except Exception as e:   # 集計の誤りで、サーバーを止めない（画面に出す）
+            SETTLE_ERROR = f"{type(e).__name__}: {e}"
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--port", type=int, default=DEFAULT_PORT)
@@ -511,12 +530,16 @@ def main(argv=None) -> int:
     else:
         from agentdock import chatmock
         CHAT, CHAT_KIND = chatmock.ChatPolicy(), "mock"
+    import threading
+    stop = threading.Event()
+    threading.Thread(target=_settle_loop, args=(stop,), name="settle", daemon=True).start()
     print(f"agentdock feed on http://127.0.0.1:{srv.server_address[1]}  data={db.data_dir()}  real={a.real}")
     try:
         srv.serve_forever()
     except KeyboardInterrupt:
         pass
     finally:
+        stop.set()
         if WORKER:
             WORKER.stop()
         srv.server_close()

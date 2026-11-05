@@ -3,7 +3,7 @@
   起きる順は出来事の時刻（マイクロ秒）で決まる。どの組織が何の出来事で起きるかは agents.WAKE。
   安全装置：起動の数の上限（max_runs）と、場面全体の呼び出しの上限（max_total_calls）。
 """
-from agentdock import agents, broadcast, db, events, network, results
+from agentdock import agents, broadcast, db, events, network, results, settle
 from agentdock.seed import scenario as sc
 
 MAX_RUNS = 16
@@ -59,6 +59,7 @@ def start(on_date: str = sc.DEMO_DATE, variant: str = "normal", item: str = "aji
         iw.close()
     network.announce_material(bid)
     out = dict(broadcast_id=bid, results_fingerprint=out_results)
+    out["settle_run"] = settle.begin(on_date)   # 漁協の集計案（照合 → 請求・支払）を、この時点を対象時点として始める（進めるのは settle.step）
     orders = sc.SCENE_ORDERS[item]
     if variant == "b_declines":   # B社の掲示は朝から出ている。料亭の注文はその後に取り消された
         out["b_post"] = network.post("buyer_b", "buy", "aji", 5, 5, 1650, "アジを 5kg 買いたいです。今朝のうちに受け渡しできれば助かります。",

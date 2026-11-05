@@ -47,3 +47,38 @@ class CoopViewTest(test_trace.TraceTest):
         for data in (mate.view("amiya", "buri_xl"), work.view("amiya", "buri_xl"), work.current("amiya", "buri_xl")):
             self.assertNotIn("17,000円", json.dumps(data, ensure_ascii=False))           # 漁協の最低の値は、仲買の画面に出さない
             self.assertNotIn('"floor_yen": 17000', json.dumps(data, ensure_ascii=False))
+
+    def test_job_cards_follow_the_settlement_records(self):
+        from agentdock import settle
+        self.start()
+        v = coop.view()
+        cards = {c["key"]: c for c in v["jobs"]}
+        self.assertEqual(list(cards), ["reconcile", "invoice", "payout", "inquiry", "additional"])
+        self.assertEqual((cards["reconcile"]["status"], cards["reconcile"]["who"], cards["reconcile"]["done"], cards["reconcile"]["total"]), ("running", "code", 0, 8))
+        self.assertEqual((cards["invoice"]["status"], cards["payout"]["status"]), ("waiting", "waiting"))
+        self.assertEqual(cards["inquiry"]["who"], "ai")
+        self.assertEqual(v["settle_note"], "実証用データを実処理しています。進行を見せるため、処理間隔を2秒に調整しています。")
+        while settle.step():
+            pass
+        cards = {c["key"]: c for c in coop.view()["jobs"]}
+        self.assertEqual({k: (c["status"], c["done"], c["total"]) for k, c in cards.items() if k in ("reconcile", "invoice", "payout")},
+                         {"reconcile": ("done", 8, 8), "invoice": ("done", 2, 2), "payout": ("done", 2, 2)})
+        self.assertIn("B社：78,624円（1件）", cards["invoice"]["lines"])
+        self.assertIn("第一岩瀬丸：102,627円（2件）", cards["payout"]["lines"])     # 68,796円 ＋ 33,831円
+        self.assertEqual(coop.view()["headline"], "今日の請求と支払の集計案がそろいました。")
+
+    def test_a_new_trade_waits_for_the_additional_settlement(self):
+        from agentdock import settle
+        self.start()
+        while settle.step():
+            pass
+        self.register_after_return()
+        cards = {c["key"]: c for c in coop.view()["jobs"]}
+        self.assertEqual(cards["additional"]["status"], "pending")
+        self.assertTrue(any("追加集計待ち" in l for l in cards["additional"]["lines"]))
+        self.assertEqual(coop.view()["headline"], "取引が新しく成立しました。追加の集計に入れます。")
+        while settle.step():
+            pass
+        cards = {c["key"]: c for c in coop.view()["jobs"]}
+        self.assertEqual(cards["additional"]["status"], "reflected")
+        self.assertTrue(any("反映済み" in l for l in cards["additional"]["lines"]))
