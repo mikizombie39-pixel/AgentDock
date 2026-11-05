@@ -686,6 +686,7 @@ _CODE_OR_NULL = {"anyOf": [{"type": "string", "enum": ["A", "B", "C", "D", "E"]}
 PRESENT = Tool(
     "present_options",
     "調べた結果と取引の案を、担当者の磁石ボードに出す。確定は担当者がする。見送る・保留する案も含める。"
+    "仕入れの無い案（buy_term_id が無い案）は1つだけ（人が選ぶと「見送る」になる）。返事を待つなら wait_for_replies、売り先への連絡は draft_to_customer を使う。"
     "案は、仕入れる条件の番号（buy_term_id）と、仕入れた数量の配分（allocations）で示す。金額・粗利はコードが計算して表示するので、"
     "label・reason・risk・summary・headline には金額の計算の結果を書かない。cards には、担当者の判断に要る情報だけを選ぶ（注文・条件・合意・Vault・売り先・掲示・相場）。"
     "cards の先頭の4枚までを、勧める案の根拠として画面に出す（大事な順に並べる）。"

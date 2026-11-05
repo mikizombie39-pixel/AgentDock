@@ -163,6 +163,19 @@ class VaultAndDraftTest(tb.Base):
         (row,) = tb.q("amiya", "SELECT v.item_id, c.name, v.author, v.source FROM vault_note v LEFT JOIN customer c ON c.id = v.customer_id WHERE v.title = ?", (self.NOTE,))
         self.assertEqual(row, (None, "スーパー", "仲買の慣行（聞き取り・模擬）", "Vault AM-E-006"))   # 出所は Vault の記録の source・識別子は索引の source
 
+    def test_only_one_option_without_a_purchase(self):
+        # 仕入れの無い案は選ぶと「見送る」になる：2つ出すと同じ「見送る」が並ぶので、コードが止めて理由を返す（2026-11-05 本物の通し）
+        def present(codes):
+            return tb.tools(("present_options", dict(item_code="buri_xl", summary="s", headline="h", short_question="どうしますか", ask_human="a", cards=[],
+                                                     recommended=codes[0], options=[dict(code=c, label=f"案{c}", short_label=f"案{c}", reason="r", risk="r",
+                                                                                         buy_term_id=None, differs_from_decision=False, vault_refs=[], allocations=[])
+                                                                                    for c in codes])))
+        run_amiya_on("trade_registered", dict(case_id=self.case, item="buri_xl", trades=[]), [present(["A", "B"]), present(["A"])])
+        steps = tb.q("amiya", "SELECT is_error, result_text FROM agent_step WHERE tool = 'present_options' ORDER BY id")
+        self.assertEqual([s[0] for s in steps], [1, 0])
+        self.assertIn("仕入れの無い案が 2つあります（A・B）", steps[0][1])
+        self.assertIn("wait_for_replies", steps[0][1])
+
     def test_options_cite_vault_notes_by_checked_id(self):
         def present(refs):
             return tb.tools(("present_options", dict(item_code="buri_xl", summary="s", headline="h", short_question="スーパーに早めに伝えますか", ask_human="a", cards=[],

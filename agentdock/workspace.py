@@ -378,6 +378,12 @@ def build(con, owner: str, item_code: str, on_date: str, payload: dict, run_id: 
     known = {r[0] for r in con.execute("SELECT id FROM vault_note")}
     errs += [f"案 {o['code']} の vault_refs {v} は Vault にありません（read_vault の id を使ってください）"
              for o in payload["options"] for v in o.get("vault_refs") or [] if v not in known]
+    # 仕入れの無い案は、人が選ぶと「見送る（相談を閉じる）」になる。だから1つだけ（2026-11-05 本物の通し：
+    # 「返事を待つ」「欠品を早めに伝える」の2案が、どちらも同じ「見送る」になった）。待つ・伝えるは専用の道具でする
+    nobuy = [o["code"] for o in payload["options"] if not term_ids(o)]
+    if len(nobuy) > 1:
+        errs.append(f"仕入れの無い案が {len(nobuy)}つあります（{'・'.join(nobuy)}）。人が仕入れの無い案を選ぶと、どれも「今回は見送る（相談を閉じる）」になります。"
+                    "仕入れの無い案は1つ（見送る）だけにしてください。返事を待つ時は wait_for_replies、売り先への連絡は draft_to_customer を使います")
     # 人の決定と照合する：決定と違う案は、違うと明示した時だけ出せる（その案は決定した人か網谷さんだけが承認できる）
     decision = consult.latest_decision(con, case[0]) if case else None
     unit = sc.unit_label(con.execute("SELECT unit FROM item WHERE id = ?", (item_id,)).fetchone()[0])
