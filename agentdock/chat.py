@@ -679,15 +679,37 @@ def finish(t: Turn, ask_text: str, run_enabled: bool = False) -> tuple[dict, dic
 
 # ── 1回の質問 ──────────────────────────────────────────────────────
 
+SINCE_LABEL = {"order_new": "追加の注文", "order_changed": "注文の変更", "quote_received": "相手の返事", "quote_request": "問い合わせ",
+               "trade_registered": "取引の登録", "human_choice": "人の判断", "staff_question": "担当者の質問", "info_received": "届いた資料"}
+
+
+def changed_since(con, owner: str, item: str, at: str) -> list[str]:
+    """聞いた時刻より後に、この品目の業務の状態を変えた記録（出来事・案の決定）。起きた順・重複なし。
+    チャットの答えは聞いた時の記録で書くので、この後に何かあれば、その答えは今の状態ではない（2026-11-04 通し：最初の答えが最後まで残った）。"""
+    from agentdock import agents, events
+    t0, out = int(mate._t(at)), []   # 聞いた時刻は秒まで。出来事の時刻も秒で比べる（同じ秒の出来事は、聞く前の記録として扱う）
+    rows = [(mate._t(r["at"]), SINCE_LABEL.get(r["kind"], "業務の出来事")) for r in con.execute("SELECT * FROM biz_event")
+            if int(mate._t(r["at"])) > t0 and agents.event_item(owner, events._row(r)) == item]
+    rows += [(mate._t(r[0]), "案の決定") for r in con.execute("SELECT d.at FROM case_decision d JOIN deal_case c ON c.id = d.case_id "
+                                                           "JOIN item i ON i.id = c.item_id WHERE i.code = ?", (item,)) if int(mate._t(r[0])) > t0]
+    for _, label in sorted(rows):
+        if label not in out:
+            out.append(label)
+    return out
+
+
 def history(owner: str, item: str, limit: int = 20) -> list[dict]:
+    ck = mate.clock(owner)
     con = db.connect(owner)
     try:
         rows = [dict(r) for r in con.execute("SELECT id, question, status, asked_at, answered_at, answer_json, error FROM chat_turn "
                                              "WHERE item_code = ? ORDER BY id DESC LIMIT ?", (item, limit))]
+        for r in rows:
+            r["answer"] = json.loads(r.pop("answer_json")) if r.get("answer_json") else None
+            r["since"] = changed_since(con, owner, item, r["asked_at"]) if r["status"] == "answered" else []   # 聞いた後に変わったこと（無ければ今の答え）
+            r["asked_shown"] = mate.shown_time(r["asked_at"], ck)
     finally:
         con.close()
-    for r in rows:
-        r["answer"] = json.loads(r.pop("answer_json")) if r.get("answer_json") else None
     return rows
 
 

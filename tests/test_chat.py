@@ -172,6 +172,52 @@ class ContextChangesTest(ChatBase):
         self.assertIn("直前の対話（古い順）：\n- 担当者：なぜ魚廣を優先するの？", p)
 
 
+class OutdatedAnswerTest(ChatBase):
+    """聞いた後に業務の状態が変われば、その答えは「その時の答え」と分かる（2026-11-04 通し：最初の答えが最後まで今の答えのように残った）。"""
+
+    def latest(self):
+        return next(t for t in chat.history("amiya", "buri_xl") if t["status"] == "answered")
+
+    def test_an_answer_is_current_until_the_business_changes(self):
+        self.start()
+        self.worker.step()
+        self.run_all()
+        self.ask("この配分だと、どこが何本足りない？")
+        self.assertEqual(self.latest()["since"], [])                                  # 何も変わっていない：今の答え
+        time.sleep(1.1)                                                                # 聞いた時刻は秒まで（同じ秒の出来事は聞く前の扱い）
+        self.add_ryotei()
+        self.run_all()
+        t = self.latest()
+        self.assertIn("追加の注文", t["since"])                                         # 記録にある変わったこと（起きた順・重複なし）
+        self.assertEqual(len(t["since"]), len(set(t["since"])))
+        self.assertRegex(t["asked_shown"], r"^\d\d:\d\d$")                           # 模擬の時計の時刻
+        self.ask("この配分だと、どこが何本足りない？")
+        self.assertEqual(self.latest()["since"], [])                                  # 聞き直せば今の答え
+
+    def test_a_case_decision_marks_the_answer(self):
+        self.start()
+        self.worker.step()
+        self.run_all()
+        self.ask("この配分だと、どこが何本足りない？")
+        time.sleep(1.1)
+        rej = next(a for a in self.v()["actions"] if a.get("choice") == "reject")
+        self.decide(rej, f"r{time.time_ns()}")                                         # 担当者の見送り（出来事は起きない・案の決定だけ）
+        self.assertEqual(self.latest()["since"], ["案の決定"])
+
+    def test_other_items_do_not_mark_the_answer(self):
+        self.start()
+        self.worker.step()
+        self.run_all()
+        self.ask("この配分だと、どこが何本足りない？")
+        time.sleep(1.1)
+        c = db.connect("amiya")
+        try:
+            events.emit(c, "order_new", dict(item="shiroebi", customer="料亭", quantity=1, order_id=999))
+        finally:
+            c.close()
+        self.assertEqual(self.latest()["since"], [])
+
+
 class NoSideEffectTest(ChatBase):
     def test_questions_and_previews_do_not_change_the_business(self):
         v0 = self.consult()

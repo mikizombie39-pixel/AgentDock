@@ -42,6 +42,8 @@
       if (V.clock) $("clocktext").textContent = `模擬の時計 ${V.clock.now_shown}`;
       if (V.band) drawBand(V.band, V.band_others || []);
       if (V.exec === "before_start" && ROLE === "staff") await drawMorning(); else drawTalk();
+      const sig = JSON.stringify([V.exec, (V.net || []).length, V.tally, (V.receipt || {}).at]);   // 業務の状態が変わったら、チャットの答えが古くなったかを読み直す
+      if (ROLE !== "president" && chatTurns.length && !chatBusy && sig !== chatSig) { chatSig = sig; loadChat(); }
     } catch (e) { /* keep the last view */ }
     setTimeout(tick, 1000);
   }
@@ -583,7 +585,7 @@
   const EV_ICON = { directive: "user-round", rule: "shield-check", knowledge: "notebook-text", experience: "notebook-text", not_current: "notebook-text",
     reply: "mail", record: "clipboard-list", calc: "receipt-japanese-yen" };
   const ORG = { "岩瀬漁協": "漁協の回答", "B社": "B社の回答", "C社": "C社の回答" };
-  let chatTurns = [], chatPending = null, chatBusy = false, chatKind = "mock", chatRun = false, histOpen = false;
+  let chatTurns = [], chatPending = null, chatBusy = false, chatKind = "mock", chatRun = false, histOpen = false, chatSig = null;
   const runKeys = {};
 
   function evLabel(e) {
@@ -625,6 +627,11 @@
   function bubbleHTML(t, latest) {
     const a = t.answer;
     if (!a) return "";
+    if (t.since && t.since.length) {   // 聞いた後に業務の状態が変わった：その時の答えとして見せ、古い次の手と依頼は出さない
+      return `<div class="q">${icon("user-round")}${esc(t.question)}</div><div class="bubble past" data-turn="${t.turn_id ?? t.id}">
+        <div class="pastnote">${icon("clock")}${t.asked_shown ? esc(t.asked_shown) + " の" : "前の"}答えです。その後、${esc(t.since.join("・"))}がありました。いまの状態は、上の画面のとおりです。もう一度聞くと、いまの記録で答えます。</div>
+        <div class="con">${esc(a.conclusion)}</div></div>`;
+    }
     let h = `<div class="q">${icon("user-round")}${esc(t.question)}</div><div class="bubble" data-turn="${t.turn_id ?? t.id}">
       <span class="kind ${esc(a.kind)}">${esc(a.kind_label)}</span>${chatKind === "mock" ? `<span class="mock">模擬の AI の答え</span>` : ""}
       <div class="con">${esc(a.conclusion)}</div><div class="nx">${icon("arrow-right")}${esc(a.next_action)}</div>` +

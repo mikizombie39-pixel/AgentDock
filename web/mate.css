@@ -196,6 +196,9 @@ hr.rule { border: 0; border-top: 1px solid var(--line); margin: 0 0 18px; }
 .bubble .kind.unsupported { color: var(--stop); border-color: var(--stop); }
 .bubble .kind.request { color: var(--warm); border-color: var(--warm); }
 .bubble .mock { font-size: 11px; color: var(--mute); }
+.bubble.past .con { font-size: 15px; font-weight: normal; color: var(--mute); }
+.bubble .pastnote { font-size: 13px; color: var(--ink); display: flex; gap: 6px; align-items: flex-start; line-height: 1.5; }
+.bubble .pastnote .ic { color: var(--warm); width: 16px; height: 16px; flex: none; margin-top: 2px; }
 .bubble .con { font-size: 18px; font-weight: bold; margin: 8px 0 4px; line-height: 1.5; text-wrap: balance; word-break: auto-phrase; }
 .bubble .nx { font-size: 14px; color: var(--ink); display: flex; gap: 6px; align-items: center; }
 .bubble .nx .ic { color: var(--teal); width: 16px; height: 16px; }
