@@ -1,0 +1,106 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Agent Dock — 岩瀬漁協の AI の仕事</title>
+<link rel="icon" href="favicon.ico">
+<style>
+  /* 岩瀬漁協の AI の画面（読むだけ）。行はすべて漁協の DB と市場の記録から作る（GET /api/coop）。区別は単色の地と枠線だけ（縞は使わない） */
+  :root { --page: #FBFAF7; --card: #F2EEE6; --paper: #FDFBF6; --ink: #1F2622; --mute: #6E716A; --line: #DCD6CB;
+          --slate: #2F4E6B; --slateb: #E7EDF3; --teal: #3B6E77; --tealb: #E4ECEA; --warm: #8A6A2E; --warmb: #F5ECDB;
+          --plum: #5B3F73; --ok: #2F6B4F; --okb: #DDEBE2; --stop: #B23A2E; }
+  html, body { margin: 0; background: var(--page); color: var(--ink); font-family: "BIZ UDPGothic", "Yu Gothic UI", sans-serif; }
+  .wrap { max-width: 1240px; margin: 18px auto; padding: 0 22px; }
+  .card { background: var(--card); border-radius: 26px; padding: 22px 30px 28px; }
+  .brand { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; }
+  .brand .logo { height: 48px; width: auto; }
+  .brand .org { font-size: 22px; font-weight: bold; } .brand .org small { display: block; font-size: 12px; font-weight: normal; color: var(--mute); }
+  .brand .pill { font-size: 12px; color: var(--mute); border: 1px solid var(--line); background: var(--paper); border-radius: 14px; padding: 4px 10px; }
+  .brand .pill.clock { border-style: dashed; }
+  .brand nav { margin-left: auto; display: flex; gap: 8px; } .brand nav a { font-size: 12px; color: var(--mute); text-decoration: none; border: 1px solid var(--line);
+    background: var(--paper); border-radius: 14px; padding: 5px 11px; }
+  .lead { font-size: 15px; margin: 16px 0 14px; line-height: 1.7; }
+  .tops { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin-bottom: 18px; }
+  .box { background: var(--paper); border: 1px solid var(--line); border-radius: 14px; padding: 12px 16px; }
+  .box h3 { font-size: 13px; color: var(--mute); font-weight: normal; margin: 0 0 6px; }
+  .box .v { font-size: 17px; } .box .v span { margin-right: 18px; white-space: nowrap; } .box .v small { color: var(--mute); font-size: 12px; margin-left: 4px; }
+  .rows { position: relative; }
+  .row { display: grid; grid-template-columns: 64px 128px 1fr; gap: 4px 14px; background: var(--paper); border: 1px solid var(--line); border-radius: 14px;
+    padding: 11px 16px; margin: 8px 0; }
+  .row .t { font-size: 15px; color: var(--mute); font-variant-numeric: tabular-nums; padding-top: 1px; }
+  .row .w { font-size: 12px; align-self: start; border-radius: 10px; padding: 3px 9px; text-align: center; border: 1px solid; }
+  .w-results { color: var(--slate); border-color: var(--slate); background: var(--slateb); } .w-bc { color: var(--teal); border-color: var(--teal); background: var(--tealb); }
+  .w-tender { color: var(--stop); border-color: var(--stop); background: #FFFFFF; } .w-quote { color: var(--warm); border-color: var(--warm); background: var(--warmb); }
+  .w-trade { color: var(--ok); border-color: var(--ok); background: var(--okb); }
+  .row .h { font-size: 16px; } .row .l { grid-column: 3; font-size: 13px; color: #3D362F; line-height: 1.6; }
+  .row.check .h::before { content: "✓ "; color: var(--ok); font-weight: bold; } .row.check.bad .h::before { content: "× "; color: var(--stop); }
+  .tag { display: inline-block; font-size: 11px; padding: 1px 7px; border-radius: 9px; margin-left: 8px; border: 1px solid; vertical-align: 2px; }
+  .k-fact { color: var(--slate); border-color: var(--slate); } .k-calc, .k-check { color: var(--teal); border-color: var(--teal); }
+  .k-ai { color: var(--warm); border-color: var(--warm); background: var(--warmb); }
+  .o-real { color: #FFFFFF; border-color: var(--ok); background: var(--ok); } .o-mock { color: var(--warm); border-color: var(--warm); background: #FFFFFF; }
+  .o-code, .o-record { color: var(--mute); border-color: #B8AD9C; background: #FFFFFF; }
+  .row details { grid-column: 3; font-size: 12px; } .row summary { cursor: pointer; color: var(--teal); }
+  table { border-collapse: collapse; width: 100%; background: #FFFFFF; margin-top: 6px; table-layout: fixed; }
+  td, th { border: 1px solid var(--line); padding: 4px 7px; vertical-align: top; text-align: left; } th { background: #EFE8DA; font-weight: normal; color: var(--mute); }
+  td:nth-child(1) { width: 34px; } td:nth-child(2) { width: 110px; } .err { color: var(--stop); }
+  pre { margin: 0; white-space: pre-wrap; word-break: break-all; font-size: 11px; max-height: 120px; overflow: auto; }
+  .empty { color: var(--mute); padding: 20px 4px; }
+  .note { color: var(--mute); font-size: 12px; margin-top: 14px; }
+  /* 新しく現れた行を一度だけ光らせる（動きを減らす設定では光らせない） */
+  @keyframes arrive { from { box-shadow: 0 0 0 3px rgba(59, 110, 119, .45); transform: translateY(6px); opacity: .2; } to { box-shadow: 0 0 0 0 rgba(59, 110, 119, 0); transform: none; opacity: 1; } }
+  .row.new { animation: arrive 900ms cubic-bezier(.2, .8, .2, 1) both; }
+  @media (prefers-reduced-motion: reduce) { .row.new { animation: none; } }
+</style>
+</head>
+<body>
+<div class="wrap"><div class="card">
+  <div class="brand"><img class="logo" src="agentdock-logo.png" alt="Agent Dock　水産業に、新しい仲間を。" width="307" height="48">
+    <div class="org">岩瀬漁協<small>漁協の AI の仕事（読むだけ）</small></div>
+    <span class="pill">模擬のデータ</span><span class="pill clock" id="clock" title="実際に記録した時刻とは違います">模擬の時計</span>
+    <nav><a href="verify.html">技術の検証</a></nav></div>
+  <div class="lead" id="lead">漁協の AI は、せりの後の仕事を進めながら、仲買からの照会に在庫と販売の条件を見て答えます。ここに並ぶ行は、すべて漁協の DB と市場の記録から作っています。</div>
+  <div class="tops"><div class="box"><h3>今日の水揚げ</h3><div class="v" id="landing">—</div></div>
+    <div class="box"><h3>売りに出している在庫（相対）</h3><div class="v" id="forsale">—</div></div></div>
+  <div class="rows" id="rows"><div class="empty">読み込み中…</div></div>
+  <div class="note" id="note"></div>
+</div></div>
+<script>
+(function () {
+  const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+  const W = { "せりの結果の公開": "w-results", "資料の配信": "w-bc", "入札": "w-tender", "照会への回答": "w-quote", "取引と在庫": "w-trade" };
+  const seen = new Set(), OPEN = new Set();
+  let first = true, last = "";
+  document.getElementById("rows").addEventListener("toggle", (e) => {
+    const k = e.target.dataset && e.target.dataset.k;
+    if (k) { if (e.target.open) OPEN.add(k); else OPEN.delete(k); }
+  }, true);
+  const keyOf = (r) => `${r.work}|${r.ref ? r.ref.db + "." + r.ref.table + "." + r.ref.id : ""}|${r.title}`;
+  function rowHTML(r) {
+    const k = keyOf(r), isNew = !first && !seen.has(k);
+    seen.add(k);
+    const steps = (r.steps || []).length ? `<details data-k="${esc(k)}" ${OPEN.has(k) ? "open" : ""}><summary>道具の入力と結果を見る（${r.steps.length}件・${r.origin === "real" ? esc(r.model || "") : "模擬の AI（Claude は呼んでいません）"}）</summary>
+      <table><tr><th>順</th><th>道具</th><th>入力</th><th>結果（先頭 400字）</th></tr>${r.steps.map((s) => `<tr><td>${s.seq}</td><td class="${s.is_error ? "err" : ""}">${esc(s.tool)}</td><td><pre>${esc(s.input)}</pre></td><td><pre>${esc(s.result)}</pre></td></tr>`).join("")}</table></details>` : "";
+    const cls = ["row", r.kind === "check" ? "check" : "", r.kind === "check" && r.ok === false ? "bad" : "", isNew ? "new" : ""].filter(Boolean).join(" ");
+    return `<div class="${cls}"><div class="t">${esc(r.at_shown || "—")}</div><div class="w ${W[r.work] || ""}">${esc(r.work)}</div>
+      <div class="h">${esc(r.title)}<span class="tag k-${esc(r.kind)}">${esc(r.kind_label)}</span><span class="tag o-${esc(r.origin)}">${esc(r.origin_label)}</span></div>
+      ${r.lines.map((l) => `<div class="l">${esc(l)}</div>`).join("")}${steps}</div>`;
+  }
+  async function load() {
+    let v;
+    try { v = await (await fetch("/api/coop")).json(); } catch (e) { return; }
+    const key = JSON.stringify([v.rows, v.landing, v.for_sale, v.clock && v.clock.now_shown]);
+    if (key === last) return;
+    last = key;
+    document.getElementById("clock").textContent = `模擬の時計 ${v.clock ? esc(v.clock.now_shown) : ""}`;
+    document.getElementById("landing").innerHTML = v.landing.map((x) => `<span>${esc(x.item)} ${x.quantity}${esc(x.unit)}<small>${esc(x.size || "")}</small></span>`).join("") || "—";
+    document.getElementById("forsale").innerHTML = v.for_sale.map((x) => `<span>${esc(x.item)} ${x.quantity}${esc(x.unit)}</span>`).join("") || "なし";
+    document.getElementById("rows").innerHTML = v.rows.length ? v.rows.map(rowHTML).join("") : `<div class="empty">まだ記録がありません。業務が始まると、漁協の仕事がここに並びます。</div>`;
+    document.getElementById("note").textContent = `この画面の AI：${v.ai_origins.length ? v.ai_origins.join("・") : "まだ動いていません"}。漁協の最低の値は、漁協の画面にだけ出ます（仲買の画面には出しません）。`;
+    first = false;
+  }
+  load(); setInterval(load, 2000);
+})();
+</script>
+</body>
+</html>

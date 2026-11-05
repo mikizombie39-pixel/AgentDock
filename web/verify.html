@@ -15,10 +15,22 @@
   .err { color: #C62828; } .ok { color: #2E6B4F; } pre { margin: 0; white-space: pre-wrap; word-break: break-all; font-size: 12px; max-height: 120px; overflow: auto; }
   button { font: inherit; padding: 6px 14px; border-radius: 8px; border: 1px solid #1D6670; background: #FBF8F1; color: #1D6670; cursor: pointer; }
   .bar { display: flex; gap: 10px; align-items: center; margin: 10px 0; }
+  /* 一つの取引の証拠のたどり：段ごとの見出しと、行ごとの2つの印（出所・本物か模擬か）。区別は単色の地と枠線だけ */
+  .tr-step { margin: 14px 0 4px; font-weight: bold; color: #1D6670; } .tr-step small { font-weight: normal; color: #6B6156; margin-left: 8px; }
+  .tr-row { display: grid; grid-template-columns: 150px 1fr; gap: 4px 12px; background: #FBF8F1; border: 1px solid #D8CFBF; border-radius: 8px; padding: 7px 10px; margin: 4px 0; }
+  .tr-row .t { color: #6B6156; font-variant-numeric: tabular-nums; } .tr-row .h { font-size: 14px; }
+  .tr-row .l { grid-column: 2; color: #3D362F; } .tr-row details { grid-column: 2; } .tr-row summary { cursor: pointer; color: #1D6670; }
+  .tag { display: inline-block; font-size: 11px; padding: 1px 7px; border-radius: 9px; margin-left: 6px; border: 1px solid; vertical-align: 1px; }
+  .k-fact { color: #2F4E6B; border-color: #2F4E6B; background: #EAF0F5; } .k-calc { color: #1D6670; border-color: #1D6670; background: #E4F0EF; }
+  .k-ai { color: #7A4B12; border-color: #A86A1E; background: #F7EBD9; } .k-experience { color: #5B3F73; border-color: #5B3F73; background: #EFE8F4; }
+  .k-human { color: #27221D; border-color: #27221D; background: #FFFFFF; }
+  .o-real { color: #FFFFFF; border-color: #2E6B4F; background: #2E6B4F; } .o-mock { color: #7A4B12; border-color: #A86A1E; background: #FFFFFF; }
+  .o-person, .o-code, .o-record { color: #6B6156; border-color: #B8AD9C; background: #FFFFFF; }
+  .tr-step-box { max-width: 1100px; }
 </style>
 </head>
 <body>
-<h1 style="display:flex;align-items:center;gap:16px"><img class="adlogo" src="agentdock-logo.png" alt="Agent Dock　水産業に、新しい仲間を。" width="256" height="40">技術の検証</h1>
+<h1 style="display:flex;align-items:center;gap:16px"><img class="adlogo" src="agentdock-logo.png" alt="Agent Dock　水産業に、新しい仲間を。" width="256" height="40">技術の検証<a href="coop.html" style="font-size:12px;font-weight:normal;margin-left:auto;color:#1D6670">岩瀬漁協の AI の仕事</a></h1>
 <div class="note">Claude の起動と道具の呼び出し、市場の取引帳簿の API と登録の結果、帳簿の照合、費用を、DB の記録から表示します。
   市場の取引帳簿と API は会期中に新しく作った部品です（既存の業務システムへの接続は今回は行っていません）。</div>
 <div class="bar">
@@ -27,13 +39,46 @@
   <button id="resume">止まった通しを再開する</button>
   <span id="msg" class="note"></span>
 </div>
+<div id="trace"></div>
 <div id="out">読み込み中…</div>
 <script>
 (function () {
   const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
   const yen = (v) => (v === null || v === undefined) ? "—" : `${Number(v).toLocaleString("ja-JP")}円`;
   const table = (head, rows, cls = "") => `<table class="${cls}"><tr>${head.map((h) => `<th>${h}</th>`).join("")}</tr>${rows.join("")}</table>`;
+  // 一つの取引の証拠のたどり（GET /api/trace）。開いた起動の詳細は、読み直しても開いたままにする
+  const OPEN = new Set();
+  let lastTrace = "";
+  document.getElementById("trace").addEventListener("toggle", (e) => {
+    const k = e.target.dataset && e.target.dataset.k;
+    if (k) { if (e.target.open) OPEN.add(k); else OPEN.delete(k); }
+  }, true);
+  async function loadTrace() {
+    const t = await (await fetch("/api/trace?owner=amiya")).json().catch(() => null);
+    const key = JSON.stringify(t);
+    if (!t || key === lastTrace) return;
+    lastTrace = key;
+    const box = document.getElementById("trace");
+    if (!t.case_id) { box.innerHTML = `<h2>一つの取引の証拠のたどり</h2><div class="note">${esc(t.note || "登録した取引はまだありません")}</div>`; return; }
+    let html = `<h2>一つの取引の証拠のたどり（案件 ${t.case_id}・${esc(t.item.name)}）</h2>
+      <div class="note">登録した取引から、決定・案・根拠・Claude の起動・相手とのやり取り・市場の帳簿・在庫までを、業務 DB と市場の記録の行で並べます。
+        印：出所（${Object.values(t.kind_labels).map(esc).join("・")}）と、誰が作ったか（${Object.values(t.origin_labels).map(esc).join("・")}）。
+        この取引の AI：${t.ai_origins.length ? t.ai_origins.map(esc).join("・") : "なし"}</div><div class="tr-step-box">`;
+    let step = 0;
+    for (const r of t.rows) {
+      if (r.step !== step) { step = r.step; html += `<div class="tr-step">${step}. ${esc(r.step_label)}</div>`; }
+      const ref = r.ref ? `<small class="note">（${esc(r.ref.db)}.${esc(r.ref.table)} ${esc(r.ref.id)}）</small>` : "";
+      const k = r.ref ? `${r.ref.db}.${r.ref.table}.${r.ref.id}` : "";
+      const steps = (r.steps || []).length ? `<details data-k="${esc(k)}" ${OPEN.has(k) ? "open" : ""}><summary>道具の入力と結果を見る（${r.steps.length}件・${r.origin === "real" ? esc(r.model || "") : "模擬の AI（Claude は呼んでいません）"}）</summary>
+        ${table(["順", "道具", "入力", "結果（先頭 400字）"], r.steps.map((s) => `<tr><td class="num">${s.seq}</td><td class="${s.is_error ? "err" : ""}">${esc(s.tool)}</td><td><pre>${esc(s.input)}</pre></td><td><pre>${esc(s.result)}</pre></td></tr>`), "steps")}</details>` : "";
+      html += `<div class="tr-row"><div class="t">${esc((r.at || "").slice(11, 19)) || "—"}</div>
+        <div class="h">${esc(r.title)}<span class="tag k-${esc(r.kind)}">${esc(r.kind_label)}</span><span class="tag o-${esc(r.origin)}">${esc(r.origin_label)}</span>${ref}</div>
+        ${r.lines.map((l) => `<div class="l">${esc(l)}</div>`).join("")}${steps}</div>`;
+    }
+    document.getElementById("trace").innerHTML = html + "</div>";
+  }
   async function load() {
+    loadTrace();
     const v = await (await fetch("/api/verify?owner=amiya")).json();
     const w = v.worker;
     const runs = v.runs.map((r) => `<tr><td class="num">${r.id}</td><td>${esc(r.event_kind)}</td><td>${esc(r.started_at)}</td><td>${esc(r.ended_at)}</td>

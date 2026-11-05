@@ -44,7 +44,7 @@ import sys
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
-from agentdock import agents, chat, consult, db, deal, events, feed, live, mate, scene, stage, stockwork, work, workspace
+from agentdock import agents, chat, consult, coop, db, deal, events, feed, live, mate, scene, stage, stockwork, trace, work, workspace
 from agentdock.db import REPO
 from agentdock.seed import scenario as sc
 
@@ -158,6 +158,15 @@ class Handler(BaseHTTPRequestHandler):
                 out["worker"] = WORKER.status() if WORKER else None
                 out["worker_log"] = WORKER.log[-40:] if WORKER else []
                 return self._send(200, out)
+            if u.path == "/api/coop":   # 岩瀬漁協の AI の画面（読むだけ）
+                return self._send(200, coop.view(q.get("date", sc.DEMO_DATE)))
+            if u.path == "/api/trace":   # 一つの取引の証拠のたどり（技術の検証の画面の1節）
+                try:
+                    return self._send(200, trace.trace(q.get("owner", "amiya"), int(q["case"]) if q.get("case") else None))
+                except KeyError as e:
+                    if str(e).strip("'") == "case":
+                        raise
+                    return self._send(404, dict(error="not found"))
             if u.path == "/api/thread":
                 if q["owner"] not in db.OWNER_CODES:
                     raise ValueError(q["owner"])

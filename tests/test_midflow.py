@@ -154,7 +154,7 @@ class SurplusTest(tb.Base):
 
 
 class VaultAndDraftTest(tb.Base):
-    NOTE = "欠品になりそうな時は、早めにスーパーに伝え、代わりの品を提案する"
+    NOTE = "欠品になりそうな時は、早めに魚廣に伝え、代わりの品を提案する"
 
     def note_id(self):
         return tb.q("amiya", "SELECT id FROM vault_note WHERE title = ?", (self.NOTE,))[0][0]
