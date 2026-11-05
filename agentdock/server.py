@@ -158,7 +158,7 @@ class Handler(BaseHTTPRequestHandler):
                 out["worker"] = WORKER.status() if WORKER else None
                 out["worker_log"] = WORKER.log[-40:] if WORKER else []
                 return self._send(200, out)
-            if u.path == "/api/overview":   # 全体の流れ（3者）
+            if u.path == "/api/overview":   # データフローの概要（3者）
                 deal.expire(f"{sc.DEMO_DATE}T06:30:00+09:00")
                 return self._send(200, overview.view(q.get("date", sc.DEMO_DATE)))
             if u.path == "/api/coop":   # 岩瀬漁協の AI の画面（読むだけ）

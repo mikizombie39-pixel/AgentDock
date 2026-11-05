@@ -25,7 +25,7 @@
   const seenNet = new Set(); let netReady = false;
   let waitReceipt = null, ownAt = null;   // {prev, t}: the person acted; the ✓ waits for the server's record
 
-  if (ROLE === "president") { $("rolebar").hidden = false; $("rolebar").textContent = "社長（網谷さん）の画面・別の浜から。担当者と AI から届いた確認に答えます"; }
+  if (ROLE === "president") { document.documentElement.classList.add("role-president"); $("rolebar").hidden = false; $("rolebar").textContent = "社長（網谷さん）の画面・別の浜から。担当者と AI から届いた確認に答えます"; }
   $("evlink").href = `dock.html?view=evidence&item=${encodeURIComponent(ITEM)}`;
 
   // 行き止まり（見張り中でも、当たり直すかは人が決める）の札は手の印（2026-11-05 デイブ：見出しと札を食い違わせない）

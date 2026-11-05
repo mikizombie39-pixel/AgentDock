@@ -3,10 +3,10 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Agent Dock — 全体の流れ</title>
+<title>Agent Dock — データフローの概要</title>
 <link rel="icon" href="favicon.ico">
 <style>
-  /* 全体の流れ（3者）：網谷水産・社長・岩瀬漁協の、いま誰が作業しているかと、いま注目する連絡1本（GET /api/overview）。
+  /* データフローの概要（3者）：網谷水産・社長・岩瀬漁協の、いま誰が作業しているかと、いま注目する連絡1本（GET /api/overview）。
      線は累積させない。社長に確認を送った段階は「社長の判断待ち」。区別は単色の地と枠線だけ */
   :root { --page: #F6F5F1; --ink: #1F2622; --mute: #6E716A; --line: #D8D3C8; --paper: #FDFBF6;
           --amiya: #3B6E77; --amiyab: #E4ECEA; --pres: #8A6A2E; --presb: #F5ECDB; --iwase: #1F3A5F; --iwaseb: #DDE5F0; --ok: #2F6B4F; }
@@ -46,7 +46,7 @@
 </head>
 <body>
 <div class="ov">
-  <div class="bar"><img src="agentdock-logo.png" alt="Agent Dock　水産業に、新しい仲間を。" width="282" height="44"><h1>全体の流れ</h1>
+  <div class="bar"><img src="agentdock-logo.png" alt="Agent Dock　水産業に、新しい仲間を。" width="282" height="44"><h1>データフローの概要</h1>
     <span class="pill" id="clock">模擬の時計</span><nav><a href="mate.html">網谷水産の仲間</a><a href="coop.html">岩瀬漁協の AI</a><a href="verify.html">技術の検証</a></nav></div>
   <div class="stage" id="stage">
     <div class="lanes" id="lanes"></div>

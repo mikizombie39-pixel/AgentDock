@@ -4,6 +4,14 @@
   --slate: #4A5E70; --face: #F5F8F1; --deep: #2E3A33; --teal: #3B6E77; --tealb: #E4ECEA; --warm: #8A6A2E;
   --stop: #B23A2E; --ok: #2F6B4F; --okb: #DDEBE2;
 }
+/* 社長の画面（?role=president）：担当者の画面と色の系統を分ける（茶と金・データフローの概要の社長の列と同じ系統・2026-11-05 デイブ） */
+:root.role-president {
+  --page: #FBF7EF; --card: #F3EADA; --paper: #FFFCF6; --line: #E2D3B8;
+  --slate: #6B4F1F; --face: #FBF6EC; --deep: #3A2C14; --teal: #8A6A2E; --tealb: #F2E6CF;
+}
+:root.role-president .card { border-top: 6px solid #8A6A2E; }
+:root.role-president .mate-svg .halo { fill: #F0E3C8; }
+:root.role-president .rolebar { font-size: 14px; font-weight: bold; color: #6B4F1F; background: #F2E6CF; border-radius: 10px; padding: 5px 12px; display: inline-block; }
 * { box-sizing: border-box; }
 html, body { margin: 0; background: var(--page); color: var(--ink); }
 body { font-family: "BIZ UDPGothic", "Yu Gothic UI", "Hiragino Sans", sans-serif; }
