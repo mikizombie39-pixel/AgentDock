@@ -682,8 +682,22 @@ def _ask(con, case, orders, unit, at=None):
     rec = next((r for r in rows if r["recommended"]), rows[0] if rows else None)
     base = gp(nums[rec["id"]]) if rec else 0
     options = []
+    # 今の状態では、案の元の条件がまだ有効かを確かめ直す（相手の新しい返事で前の仮押さえが置き換わると、古い版の案は登録できない・2026-11-05 本物の通し）
+    term_state = {}
+    if at is None:
+        ids = {t for r in rows for t in _plan_terms(json.loads(r["plan_json"]))}
+        if ids:
+            m = db.connect(db.MARKET)
+            try:
+                term_state = {x[0]: x[1] for x in m.execute(f"SELECT id, status FROM offer_term WHERE id IN ({','.join('?' * len(ids))})", tuple(ids))}
+            finally:
+                m.close()
     for r in rows:
         n, plan = nums[r["id"]], json.loads(r["plan_json"])
+        gone = [t for t in _plan_terms(plan) if term_state.get(t, "offered") != "offered"]
+        if gone:
+            n = dict(n, errors=list(n["errors"]) + [f"条件 {t} は相手の新しい返事に置き換わりました（{'期限切れ' if term_state[t] == 'expired' else '使えません'}）。AI が出し直します"
+                                                    for t in gone])
         to = {}
         for l in n["lines"]:
             if l["kind"] == "order":
@@ -692,7 +706,7 @@ def _ask(con, case, orders, unit, at=None):
                       short_after=max(0, o["quantity"] - o["registered"] - to.get(o["id"], 0))) for o in orders if o["status"] in ("open", "partly_filled")]
         options.append(dict(
             option_id=r["id"], code=r["code"], label=short.get(r["code"]) or r["label"], long_label=r["label"], recommended=bool(r["recommended"]),
-            executable=bool(r["executable"]), fingerprint=r["fingerprint"], version=r["version"], differs_from_decision=plan.get("differs_from_decision") is not None,
+            executable=bool(r["executable"]) and not gone, fingerprint=r["fingerprint"], version=r["version"], differs_from_decision=plan.get("differs_from_decision") is not None,
             action="approve" if n["purchase"] else "reject", after=after,
             numbers=dict(purchase=n["purchase"] and dict(seller=n["purchase"]["seller_name"], quantity=n["purchase"]["quantity"],
                                                          unit_price_yen=n["purchase"]["unit_price_yen"]),
@@ -709,6 +723,12 @@ def _ask(con, case, orders, unit, at=None):
                 options=options, case=dict(id=case["id"], version=case["version"], status=case["status"]),
                 consultation=dict(id=cons["id"], status=cons["status"], version=cons["task_version"],
                                   change=json.loads(cons["change_json"]) if cons["change_json"] else None) if cons else None)
+
+def _plan_terms(plan: dict) -> list[int]:
+    """案の仕入れの条件の番号（1つの相手なら1件・まとめる案なら全部）。"""
+    ids = [t for t in plan.get("buy_term_ids") or [] if t is not None]
+    return list(dict.fromkeys(ids)) if ids else ([plan["buy_term_id"]] if plan.get("buy_term_id") is not None else [])
+
 
 # ── 記録の再生：今の状態が変わった時刻ごとの、今の状態（記録から組み直す）──────────────
 

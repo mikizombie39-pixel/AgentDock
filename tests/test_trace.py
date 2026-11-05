@@ -129,3 +129,36 @@ class StaleRunTest(TraceTest):
         self.assertIn("この起動が始まった後に", msg)
         self.assertIn("社長の差し戻し", msg)
         self.assertIn("do_nothing", msg)
+
+
+class SupersededTermTest(TraceTest):
+    """相手の新しい返事で前の仮押さえが置き換わったら、古い版の案は選べない（2026-11-05 本物の通しの3回目：担当者が古い条件の案を承認し、stale になった）。"""
+    test_no_registered_trade_yet = None
+    test_one_line_from_the_trade_to_the_stock = None
+    test_vault_refs_show_the_file_and_its_fingerprint = None
+
+    def test_an_option_on_a_replaced_term_is_not_executable(self):
+        from agentdock import work
+        self.start()
+        self.worker.step()
+        self.add_ryotei()
+        self.run_all()
+        opts = work.current("amiya", "buri_xl")["options"]
+        a = next(o for o in opts if o["action"] == "approve" and o["executable"])
+        c = db.connect("amiya")
+        try:
+            plan = json.loads(c.execute("SELECT plan_json FROM board_option WHERE id = ?", (a["option_id"],)).fetchone()[0])
+        finally:
+            c.close()
+        tid = (plan.get("buy_term_ids") or [plan["buy_term_id"]])[0]
+        m = db.connect(db.MARKET)
+        try:
+            with m:   # 相手の新しい返事が、前の条件に代わった
+                m.execute("UPDATE offer_term SET status = 'released' WHERE id = ?", (tid,))
+        finally:
+            m.close()
+        b = next(o for o in work.current("amiya", "buri_xl")["options"] if o["option_id"] == a["option_id"])
+        self.assertFalse(b["executable"])
+        self.assertTrue(any(f"条件 {tid} は相手の新しい返事に置き換わりました" in e for e in b["numbers"]["errors"]))
+        act = next(x for x in self.v()["actions"] if x.get("id") == f"opt{a['option_id']}")
+        self.assertTrue(act.get("disabled"))                                       # 仲間の画面でも押せない
