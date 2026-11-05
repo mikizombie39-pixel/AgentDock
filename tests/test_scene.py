@@ -52,10 +52,9 @@ AMIYA = [
     tools(("send_inquiry", dict(to_owner="buyer_b", side="sell", item_code="aji", quantity=5, unit_price_yen=1650,
                                 message="掲示を拝見しました。アジ 5kg を 1kg 1,650円で、8:00 に受け渡しできます。", request_id=2)),
           ("wait_for_replies", dict(reason="B社の返事を待つ"))),
-    # 起動3・4（漁協と C社の返事）：待つ
+    # 起動3（漁協と C社の返事・同じ時に届いたので1回でまとめて読む）：待つ
     tools(("read_thread", A), ("wait_for_replies", dict(reason="B社の返事を待つ"))),
-    tools(("wait_for_replies", dict(reason="B社の返事を待つ"))),
-    # 起動5（B社の返事）：磁石ボードに出す
+    # 起動4（B社の返事）：磁石ボードに出す
     tools(("present_options", dict(item_code="aji", summary="漁協は 15kg なら 1,500円。C社は 8kg まとめてのみ。B社は 5kg を 1,650円で受ける。",
                                    cards=CARDS, options=OPTS, recommended="A"))),
 ]
@@ -107,8 +106,7 @@ class SceneTest(unittest.TestCase):
             ("iwase", "quote_request", "done"),
             ("buyer_c", "quote_request", "done"),
             ("amiya", "info_received", "waiting"),
-            ("amiya", "quote_received", "waiting"),
-            ("amiya", "quote_received", "waiting"),
+            ("amiya", "quote_received", "waiting"),           # 漁協と C社の返事を1回で（返事ごとに起こし直さない）
             ("buyer_b", "quote_request", "done"),
             ("amiya", "quote_received", "presented"),
         ])
@@ -123,7 +121,7 @@ class SceneTest(unittest.TestCase):
         self.assertEqual(self.q("buyer_c", "SELECT tool, is_error FROM agent_step ORDER BY id"), [("reply", 1), ("reply", 0)])
         # 組織ごとに別の DB に別の起動の記録（独立の証拠）
         runs = {o: self.q(o, "SELECT count(*) FROM agent_run")[0][0] for o in db.OWNER_CODES}
-        self.assertEqual(runs, {"amiya": 5, "iwase": 1, "buyer_b": 2, "buyer_c": 1})
+        self.assertEqual(runs, {"amiya": 4, "iwase": 1, "buyer_b": 2, "buyer_c": 1})
         # 最後の起動は候補を出した
         last = log[-1]
         self.assertEqual([o["code"] for o in last["data"]["presented"]["options"]], ["A", "B", "E"])

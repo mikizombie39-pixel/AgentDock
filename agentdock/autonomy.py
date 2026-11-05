@@ -75,8 +75,9 @@ def _record_step(con, run_id: int, seq: int, tool: str, inp, text: str, is_error
 
 
 def run(client, owner: str, event_id: int, role: str, tools: list[Tool], system: str, prompt: str,
-        on_date: str, run_kind: str = "mock", max_calls: int = MAX_CALLS) -> dict:
-    """1回の起動。{run_id, outcome, summary, steps, calls} を返す。出来事が引き受け済みなら outcome は None。"""
+        on_date: str, run_kind: str = "mock", max_calls: int = MAX_CALLS, also=()) -> dict:
+    """1回の起動。{run_id, outcome, summary, steps, calls} を返す。出来事が引き受け済みなら outcome は None。
+    also は一緒に引き受ける出来事（同じ品目の、同じ時に届いた返事）。引き受けられた分だけ、起きた出来事と一緒に済み・待ちに戻す。"""
     con = db.connect(owner)
     try:
         with con:
@@ -85,6 +86,7 @@ def run(client, owner: str, event_id: int, role: str, tools: list[Tool], system:
         if not events.claim(con, event_id, run_id):
             _finish(con, run_id, "nothing", "この出来事は別の起動が引き受け済み")
             return dict(run_id=run_id, outcome=None, summary=None, steps=0, calls=0)
+        taken = [event_id] + [i for i in also if events.claim(con, i, run_id)]
         ctx = Ctx(owner=owner, con=con, run_id=run_id, event=events.get(con, event_id), on_date=on_date)
         by_name = {t.name: t for t in tools}
         schemas = [t.schema() for t in tools]
@@ -143,10 +145,12 @@ def run(client, owner: str, event_id: int, role: str, tools: list[Tool], system:
             seq += 1
             _record_step(con, run_id, seq, "(error)", {}, f"{type(e).__name__}: {e}", True)
             _finish(con, run_id, "error", str(e))
-            events.release(con, event_id, run_id)
+            for i in taken:
+                events.release(con, i, run_id)
             return dict(run_id=run_id, outcome="error", summary=str(e), steps=seq, calls=calls)
         _finish(con, run_id, ctx.outcome, ctx.summary or last_text)
-        events.done(con, event_id, run_id)
+        for i in taken:
+            events.done(con, i, run_id)
         return dict(run_id=run_id, outcome=ctx.outcome, summary=ctx.summary or last_text, steps=seq, calls=calls, data=ctx.data)
     finally:
         con.close()

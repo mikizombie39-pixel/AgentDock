@@ -10,7 +10,7 @@
 import datetime
 import json
 
-from agentdock import authority, autonomy, criteria, db, market, network, stockwork
+from agentdock import authority, autonomy, criteria, db, events, market, network, stockwork
 from agentdock.autonomy import Tool, ToolError
 from agentdock.seed import scenario as sc
 
@@ -594,7 +594,14 @@ def draft_to_customer(ctx, inp):
         did = ctx.con.execute("INSERT INTO customer_draft (customer_id, item_id, substitute_item_id, body, reason, status, run_id, created_at) "
                               "VALUES (?, ?, ?, ?, ?, 'draft', ?, ?)", (c["id"], it["id"], sub["id"] if sub else None, msg, _reason(inp), ctx.run_id,
                                                                        db.now_iso())).lastrowid
-    return f"{c['name']}への連絡の下書きを残しました（番号 {did}）。送ってはいません。送るかは担当者が決めます。"
+        # 同じ売り先・同じ品目の、まだ決めていない下書きは新しい下書きに置き換える（担当者に同じ連絡を2通見せない・2026-11-04 通し）
+        old = [r[0] for r in ctx.con.execute("SELECT id FROM customer_draft WHERE customer_id = ? AND item_id = ? AND status = 'draft' AND id <> ?",
+                                             (c["id"], it["id"], did))]
+        if old:
+            ctx.con.execute(f"UPDATE customer_draft SET status = 'stale', stale_reason = ? WHERE id IN ({', '.join('?' * len(old))})",
+                            (f"新しい下書き（番号 {did}）に書き直したため", *old))
+    swap = f"前の下書き（番号 {'・'.join(map(str, old))}）は、この下書きに置き換えました。" if old else ""
+    return f"{c['name']}への連絡の下書きを残しました（番号 {did}）。{swap}送ってはいません。送るかは担当者が決めます。"
 
 
 def wait_for_replies(ctx, inp):
@@ -1013,8 +1020,35 @@ def _item_line(owner: str, item: str | None) -> str:
     return f"品目：{it['name']}（道具に渡す品目のコード {item}・単位 {sc.unit_label(it['unit'])}）\n" if it else f"品目のコード：{item}\n"
 
 
+def same_replies(owner: str, event: dict) -> list[dict]:
+    """起きた返事と同じ品目の、まだ誰も引き受けていない返事。1回の起動でまとめて読む
+    （2026-11-04 通し：B社と C社の断りで2回起き、2回目は新しい事実が無いのに案と下書きを出し直した）。"""
+    if event["kind"] != "quote_received":
+        return []
+    item = event_item(owner, event)
+    c = db.connect(owner)
+    try:
+        pend = events.pending(c, ["quote_received"])
+    finally:
+        c.close()
+    return [e for e in pend if e["id"] != event["id"] and item is not None and event_item(owner, e) == item]
+
+
+def _more_lines(owner: str, more: list[dict], on_date: str) -> str:
+    out = []
+    for e in more:
+        m = network.message_for(owner, e["payload"]["message_id"])
+        tm = next((x for x in thread(owner, m["item_code"], on_date) if x["message_id"] == m["id"]), None)
+        out.append(f"出来事：{OWNER_NAMES[m['from_owner']]}からも返事が届いています（番号 {m['id']}・{m['kind']}）：「{m['body']}」{_terms_text(tm) if tm else ''}")
+    return "\n".join(out) + "\nこれらの返事は、この1回でまとめて扱ってください（返事ごとに起こし直しません）。\n"
+
+
 def run_event(client, owner: str, event: dict, on_date: str, run_kind: str = "mock", max_calls: int = autonomy.MAX_CALLS) -> dict:
+    more = same_replies(owner, event)
     prompt, _ = situation(owner, event, on_date)
+    if more:
+        head, _, rest = prompt.partition("\n")
+        prompt = f"{head}\n{_more_lines(owner, more, on_date)}{rest}"
     role = "seller" if owner == "iwase" else "buyer"
     return autonomy.run(client, owner, event["id"], role, TOOLSETS[owner], SYSTEMS[owner], prompt, on_date,
-                        run_kind=run_kind, max_calls=max_calls)
+                        run_kind=run_kind, max_calls=max_calls, also=[e["id"] for e in more])
