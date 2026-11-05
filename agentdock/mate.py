@@ -33,6 +33,7 @@ STANCE_RULE = {"bold": "別の仕入先がある", "struggle": "選択肢が少�
                "sorry": "交渉が成立しなかった", "relief": "必要な数量と条件がそろった"}
 EXEC_LABEL = {"before_start": "始める前", "running": "実行中", "your_turn": "あなたの判断待ち", "president": "社長確認中",
               "stopped": "停止", "registered": "登録済み", "idle": "見張り中"}
+DEAD_LABEL = "あなたの判断待ち"   # 行き止まり（不足が残り、どこにも当たっていない）：当たり直すかを人が決める
 # 工程の帯（SAL 2026-11-04・デイブ 18:50）：品目ごとに、実際の処理に合わせた工程。処理につながっていない段は「未接続」と出す
 BAND_STEPS = {"relative": ("注文の確認", "落札結果の照合", "不足分の手配", "振分け・承認", "結果の引継ぎ"),
               "tender": ("注文の確認", "入札", "落札結果の照合", "振分け", "結果の引継ぎ")}
@@ -169,7 +170,7 @@ def _running(f):
 def _dead(f, tl, ex) -> bool:
     """行き止まり：AI は止まっていて（見張り中）、足りない数が残り、返事を待つ照会も、受付中の自社の買いの掲示も無い。
     この時の「任せてかまいません」は事実と違う（新しい出来事が来ない限り、AI はもう動かない）。"""
-    return ex == "idle" and tl["left"] > 0 and not f.get("own_posts")
+    return ex == "idle" and tl["left"] > 0 and not f.get("own_posts") and bool(f["runs"])   # AI が一度も動いていない時（委任の直後）は行き止まりではない
 
 
 def dead_end(owner: str, item: str, on_date: str = sc.DEMO_DATE) -> int | None:
@@ -232,7 +233,7 @@ def _round_story(f, tl) -> tuple[str, str | None]:
     if rec:
         title, _, _ = _choice_words(f, rec, "approve" if rec["buys"] else "reject", False)
         left = sum(x["quantity"] for x in rec["short_after"])
-        nxt = f"{title}案ですが、残り {left}{u}は不足します。" if left else f"{title}案で、全部の注文がそろいます。"
+        nxt = f"おすすめは「{title}」です。この案でも、あと {left}{u}足りません。" if left else f"おすすめは「{title}」です。この案で、全部の注文がそろいます。"
     return "".join(parts), nxt
 
 
@@ -368,6 +369,19 @@ def exec_state(f) -> tuple[str, str | None]:
 
 def _said(text, origin="code", ref=None):
     return dict(text=text, origin=origin, ref=ref)
+
+
+SENTENCE_END = ("。", "？", "！", "?", "!", "」", "』", "）", ")", "…")
+
+
+def end_sentence(text):
+    """文の終わりに句点が無ければ足す（「どう分けますか」→「どう分けますか。」）。かっこ・疑問符で終わる文はそのまま。"""
+    t = (text or "").rstrip()
+    return t + "。" if t and not t.endswith(SENTENCE_END) else (text or "")
+
+
+def _ended(said):
+    return dict(said, text=end_sentence(said["text"])) if said and said.get("text") else said
 
 
 def _orders_phrase(f, orders=None) -> str:
@@ -567,11 +581,14 @@ def tally(f) -> dict:
                 else:
                     short_after.append(dict(shop=shop, quantity=a["short_after"]))
         alloc = []   # 店ごとに：残りの注文と、この案で確保できる数（下見に出す・コードの計算）
+        added = {}   # この案で新しく回す数（店ごと）。secured は登録済みを含む合計なので、案の名前はこちらで書く（2026-11-05 デイブ「順風満帆へ 4本に分ける」）
+        for l in n["lines"]:
+            added[shops.get(l["to"], l["to"])] = added.get(shops.get(l["to"], l["to"]), 0) + l["quantity"]
         for a in o["after"]:
             shop = shops.get(a["customer"], a["customer"])
             hit = next((x for x in alloc if x["shop"] == shop), None)
             if not hit:
-                hit = dict(shop=shop, ordered=0, secured=0, short=0)
+                hit = dict(shop=shop, ordered=0, secured=0, short=0, added=added.get(shop, 0))
                 alloc.append(hit)
             hit["ordered"] += a["quantity"]
             hit["secured"] += a["secured_after"]
@@ -689,7 +706,7 @@ def view(owner: str, item: str, on_date: str = sc.DEMO_DATE, worker_error: str |
         sub = ([_said(nxt, "calc")] if nxt else []) + [_said(tl["line"], "calc")]   # 問いは判断のブロックが出す（AI の問いの文は重ねない）
     elif st == "careful":
         if ex == "your_turn":   # 相談の見出しはコードの文。数字を含まない AI の文だけを使う
-            head = aiq or _said(f"{'・'.join(o['shop'] for o in mid)}の追加注文で、魚が足りません。どう分けますか" if mid else "条件が変わりました。どう進めますか")
+            head = aiq or _said(f"{'・'.join(o['shop'] for o in mid)}の追加注文で、魚が足りません。どう分けますか。" if mid else "条件が変わりました。どう進めますか。")
         else:
             head = _said("待ってください。確認し直します。")
         if mid:
@@ -778,8 +795,13 @@ def view(owner: str, item: str, on_date: str = sc.DEMO_DATE, worker_error: str |
         pres = dict(kind=p.get("kind"), case_id=cur["case"]["id"], option_id=p.get("option_id"), fingerprint=o["fingerprint"] if o else None,
                     label=ol["label"] if ol else None, note=ol["note"] if ol else None, consultation_id=p.get("consultation_id"), change=p.get("change"),
                     priority_change=p.get("priority_change"), over_limit=p.get("over_limit"), asked_by=p.get("asked_by"))
+    dead = _dead(f, tl, ex)   # 行き止まり：見出しは「どこにも当たっていません」。札と帯も「見張り中」と言わず、人の判断待ちと言う（2026-11-05 デイブ）
+    if dead:
+        who = "you"
+    head, ask = _ended(head), _ended(ask)   # 画面に出す文の終わりの句点をそろえる（AI の書いた問いには句点の無いものがある・2026-11-05 デイブ）
+    sub = [_ended(x) for x in sub]
     return dict(owner=owner, item=f["item"], subject=subject(f), stance=st, stance_label=STANCE_LABEL.get(st), rule=rule, refs=refs,
-                exec=ex, exec_label=EXEC_LABEL[ex], stop=stop, who=who, headline=head, sub=sub, ask=ask, actions=actions,
+                exec=ex, exec_label=DEAD_LABEL if dead else EXEC_LABEL[ex], stop=stop, who=who, headline=head, sub=sub, ask=ask, actions=actions,
                 why=why_card(f, st, ex, head, tl, replaced), receipt=_fresh_receipt(f), tally=tl, taken=taken(f, ex), others=others(owner, item, on_date),
                 band=band(owner, item, on_date, worker_error, f), band_others=band_others(owner, item, on_date),
                 orgs=list(orgs.values()), net=net, op=_op(f, ex), president=pres, busy=_running(f) is not None, clock=f["clock"])
@@ -799,6 +821,31 @@ def _directive_shop(f):
     return (d["shop_name"] or d["customer"]) if d else None
 
 
+def _option_title(f, c) -> str:
+    """買う案の名前。この案で新しく回す数（added）で書き、登録済みを含む合計は括弧で添える。
+    例：「魚廣 4本を確保し、順風満帆へ 2本を回す」／登録済みがある時「B社の 2本を順風満帆に回す（順風満帆は合わせて 4本）」"""
+    u = f["item"]["unit"]
+    ds = _directive_shop(f)
+    rows = [(a["shop"], a.get("added", a["secured"]), a["secured"]) for a in c["alloc"]]
+    dests = [(s_, g, sec) for s_, g, sec in rows if g > 0]
+    if not any(sec > g for _, g, sec in rows):   # まだ何も登録していない：社長の指示の売り先を先に言う
+        mine = next((g for s_, g, _ in rows if s_ == ds), None)
+        rest = "・".join(f"{s_}へ {g}{u}" for s_, g, _ in dests if s_ != ds)
+        if ds and mine:
+            return f"{ds} {mine}{u}を確保し、{rest}を回す" if rest else f"{ds} {mine}{u}を確保する"
+        if ds and mine == 0 and rest:
+            return f"{rest}を回す（{ds}は 0{u}）"
+        return f"{rest}を回す" if len(dests) == 1 else f"{rest}に分ける"
+    src = "・".join(f"{b['seller']}の {b['quantity']}{u}" for b in c["buys"])
+    if len(dests) == 1:
+        s_, g, _ = dests[0]
+        title = f"{src}を{s_}に回す" if src else f"{s_}へ {g}{u}を回す"
+    else:
+        title = (f"{src}を、" if src else "") + "・".join(f"{s_}へ {g}{u}" for s_, g, _ in dests) + "と分ける"
+    tot = [f"{s_}は合わせて {sec}{u}" for s_, g, sec in dests if sec > g]
+    return title + (f"（{'・'.join(tot)}）" if tot else "")
+
+
 def _choice_words(f, c, action, needs_president) -> tuple[str, str, str]:
     """案の名前（人の返事の言葉）・承認のボタンの文・押すと起きること。数はコードの計算（tally の alloc・buys）から書く。"""
     u = f["item"]["unit"]
@@ -806,16 +853,7 @@ def _choice_words(f, c, action, needs_president) -> tuple[str, str, str]:
         held = sum(h["quantity"] for h in f["holds"])
         return ("今回は仕入れを見送る", "今回は見送る",
                 "仕入れずに、この相談を閉じます。" + (f"仮押さえの {held}{u}は手放します。" if held else ""))
-    ds = _directive_shop(f)
-    got = [(a["shop"], a["secured"]) for a in c["alloc"]]
-    mine = next((g for s_, g in got if s_ == ds), None)
-    rest = "・".join(f"{s_}へ {g}{u}" for s_, g in got if s_ != ds and g > 0)
-    if ds and mine:
-        title = f"{ds} {mine}{u}を確保し、{rest}を回す" if rest else f"{ds} {mine}{u}を確保する"
-    elif ds and mine == 0:
-        title = f"{rest}を回す（{ds}は 0{u}）"
-    else:
-        title = f"{rest}に分ける"
+    title = _option_title(f, c)
     buys = "・".join(f"{b['seller']} {b['quantity']}{u}" for b in c["buys"])
     if needs_president:
         return title, "この案を社長に確かめる", "社長に確認を送ります。社長が承認するまで、何も登録しません。"
@@ -942,7 +980,11 @@ def why_card(f, st, ex, head, tl=None, replaced=None) -> dict:
     # 先頭の一文（今の判断の理由）
     lead = None
     others_short = [o for o in f["orders"] if o["short"] > 0 and o["shop"] != ds]
-    if ex == "before_start":
+    if _dead(f, tl, ex):   # 行き止まり：見出しと同じ事実を理由の先頭に（「照会を進めています」と言わない）
+        lead = f"足りない {tl['left']}{u}を当たる先が、いまはありません。もう一度当たってもらうかどうかは、あなたが決めます。"
+        sections = [("足りない数と注文", orders), ("相手の回答と値", replies), ("まだ確認していない候補", cands)]
+        more = [("社長の指示と権限", dir_rows), ("これまでのやり取り", asked), ("Vault の記録", vault)]
+    elif ex == "before_start":
         can = ai_can_proceed(f["owner"], f["on_date"])
         lead = "今朝の注文と社長の指示を確かめてから、" + ("・".join(can) + "を私が進めます。" if can else "配分と購入の判断を相談します。")
         vol = order_volume(f["owner"], f["on_date"])
@@ -1023,7 +1065,7 @@ def receipt(f) -> dict | None:
         out = dict(at=dele["granted_at"], text=f"受け取りました。{scope}を引き受けます。", ref=dict(db="owner", table="delegation", id=dele["id"]))
     else:
         short = [o for o in f["orders"] if o["short"] > 0]
-        rest = ("残りの " + "・".join(f"{o['shop']} {o['short']}{u}" for o in short) + "は、私が別の仕入先を当たります。") if short else ""
+        rest = ("残りの" + "・".join(f"{o['shop']} {o['short']}{u}" for o in short) + "は、私が別の仕入先を当たります。") if short else ""
         k = last["kind"]
         if k == "registered":
             got = [o for o in f["orders"] if o["registered"]]
@@ -1088,7 +1130,7 @@ def _partial_text(f) -> dict:
                    for r in rows if r["status"] == "failed")
     short = [o for o in f["orders"] if o["short"] > 0]
     return dict(done=f"{ok}は登録しました。{ng}。",
-                rest=("残りの " + "・".join(f"{o['shop']} {o['short']}{u}" for o in short) + "を、私が相談し直します。") if short else "")
+                rest=("残りの" + "・".join(f"{o['shop']} {o['short']}{u}" for o in short) + "を、私が相談し直します。") if short else "")
 
 
 def partial(f) -> dict | None:
@@ -1175,8 +1217,9 @@ def others(owner: str, item: str, on_date: str) -> list[dict]:
             t = tender_status(owner, code, on_date)
             out.append(dict(item=code, name=t["name"], status=t["status"], connected=t["connected"]))
         else:
-            ex, _ = exec_state(facts(owner, code, on_date))
-            out.append(dict(item=code, name=_item_name(owner, code), status=EXEC_LABEL[ex], connected=True))
+            fo = facts(owner, code, on_date)
+            ex, _ = exec_state(fo)
+            out.append(dict(item=code, name=_item_name(owner, code), status=DEAD_LABEL if _dead(fo, tally(fo), ex) else EXEC_LABEL[ex], connected=True))
     return out
 
 
@@ -1359,8 +1402,11 @@ def band(owner: str, code: str, on_date: str = sc.DEMO_DATE, worker_error: str |
                         note = "社長の差し戻しを受けて組み直し中"
                     if ex == "idle" and tl["left"]:   # 見張りに戻っても、不足が残ることを言う
                         note = f"あと {tl['left']}{u}不足・見張り中"
+                    dead = _dead(f, tl, ex)
+                    if dead:   # どこにも当たっていない：見出しと同じ事実を帯にも（「見張り中」と言わない）
+                        note = f"あと {tl['left']}{u}不足・当たり直しの判断待ち"
                     S["不足分の手配"].update(state="current", note=note)
-                    mode = {"stopped": "stopped", "running": "working"}.get(ex, "watch")
+                    mode = "you" if dead else {"stopped": "stopped", "running": "working"}.get(ex, "watch")
     cur_i = next((i for i, x in enumerate(steps) if x["state"] == "current"), None)
     here = steps[cur_i] if cur_i is not None else None
     if here:

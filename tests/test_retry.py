@@ -35,6 +35,16 @@ class DeadEndTest(tm.Base):
         (a,) = v["actions"]
         self.assertEqual((a["id"], a["label"], a["api"]["path"]), ("retry", "もう一度、仕入れ先を当たってもらう", "/api/retry"))
         self.assertEqual(mate.dead_end("amiya", "buri_xl"), 4)
+        # 札と帯も見出しと同じ事実を言う（「見張り中」と言わない・2026-11-05 デイブ）
+        self.assertEqual((v["exec_label"], v["who"]), ("あなたの判断待ち", "you"))
+        st = {x["name"]: x for x in v["band"]["steps"]}
+        self.assertEqual(st["不足分の手配"]["note"], "あと 4本不足・当たり直しの判断待ち")
+        self.assertNotIn("見張り中", v["band"]["summary"])
+
+    def test_sentences_shown_end_with_a_period(self):
+        self.assertEqual(mate.end_sentence("順風満帆の追加で足りなくなりました。どう分けますか"), "順風満帆の追加で足りなくなりました。どう分けますか。")
+        for t in ("どう分けますか。", "確かめますか？", "社長の理由：「先に確保して」", "（模擬）", ""):
+            self.assertEqual(mate.end_sentence(t), t)
 
     def test_the_retry_wakes_the_ai_and_the_ai_asks_again(self):
         self.rejected()

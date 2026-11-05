@@ -120,7 +120,7 @@ class StanceTest(Base):
         v = self.v()
         self.assertNotEqual(v["stance"], "careful")
         self.assertIn(f"{SUPER} 4本・{RYOTEI} 2本で登録しました", v["receipt"]["text"])
-        self.assertIn(f"残りの {RYOTEI} 4本は、私が別の仕入先を当たります。", v["receipt"]["text"])
+        self.assertIn(f"残りの{RYOTEI} 4本は、私が別の仕入先を当たります。", v["receipt"]["text"])
 
     def test_sorry_when_the_last_reply_is_a_decline_until_the_ai_turns_to_another(self):
         self.start()
@@ -281,7 +281,7 @@ class NumbersTest(Base):
     def test_an_ai_text_with_numbers_that_do_not_match_is_replaced_by_the_code(self):
         v = self.consult(lie=True)
         self.check_one_calculation(v)
-        self.assertEqual(v["headline"], dict(text=f"{RYOTEI}の追加注文で、魚が足りません。どう分けますか", origin="code", ref=None))
+        self.assertEqual(v["headline"], dict(text=f"{RYOTEI}の追加注文で、魚が足りません。どう分けますか。", origin="code", ref=None))
         r = v["why"]["speech_origin"]["replaced"]                                            # 使わなかった AI の文と、その記録の番号を残す
         self.assertEqual((r["text"], r["ref"]["table"]), (f"{RYOTEI}の追加で 3本足りません。どう分けますか", "workspace_turn"))
         self.assertNotIn("3本", " ".join([v["headline"]["text"]] + [s["text"] for s in v["sub"]]))
@@ -336,7 +336,7 @@ class NumberCheckTest(NumbersTest):
         finally:
             mockdock.Policy._present = orig
         v = self.v()
-        self.assertEqual(v["headline"]["text"], f"{RYOTEI}の追加で 2本足りません。どう分けますか")
+        self.assertEqual(v["headline"]["text"], f"{RYOTEI}の追加で 2本足りません。どう分けますか。")   # 句点の無い AI の文は、画面に出す前に句点を足す（2026-11-05 デイブ）
         self.assertEqual((v["headline"]["origin"], v["why"]["speech_origin"]["label"]), ("ai_checked", "AI が書いた文（照合済み）"))
         self.check_one_calculation(v)
 
@@ -541,7 +541,7 @@ class DecideBlockTest(Base):
         self.assertEqual(rec["buys"], [dict(seller="岩瀬漁協", quantity=6, unit_price_yen=17500, amount_yen=105000),
                                        dict(seller="B社", quantity=2, unit_price_yen=18400, amount_yen=36800)])
         self.assertEqual(rec["purchase_yen"], 141800)                                        # 相手ごとの金額の合計と同じ（理由の1枚の「仕入れ 141,800円」）
-        self.assertEqual(rec["alloc"], [dict(shop=SUPER, ordered=4, secured=4, short=0), dict(shop=RYOTEI, ordered=6, secured=4, short=2)])
+        self.assertEqual(rec["alloc"], [dict(shop=SUPER, ordered=4, secured=4, short=0, added=4), dict(shop=RYOTEI, ordered=6, secured=4, short=2, added=4)])
         self.assertEqual(rec["effect"], "岩瀬漁協 6本・B社 2本（合計 141,800円）の買い付けを登録します（購入の確定）。")
         pres = acts[f"{RYOTEI}へ 6本を回す（{SUPER}は 0本）"]
         self.assertEqual((pres["choice"], pres["confirm"], pres["president"]), ("president", "この案を社長に確かめる", True))
@@ -579,7 +579,7 @@ class RoundStoryTest(Base):
         self.assertEqual((v["exec"], v["stance"], v["rule"]), ("your_turn", "careful", "追加分が不足している"))   # 笑顔の基本の姿にしない・説明はいまの理由
         self.assertEqual(v["headline"], dict(text="岩瀬漁協では追加分を確保できませんでした。B社からは 2本を仮押さえできています。", origin="calc", ref=None))
         subs = [s["text"] for s in v["sub"]]
-        self.assertEqual(subs[0], f"{SUPER} 2本を確保する案ですが、残り 2本は不足します。")
+        self.assertEqual(subs[0], f"おすすめは「{SUPER} 2本を確保する」です。この案でも、あと 2本足りません。")
         self.assertEqual(subs[1], f"10本の注文に対し、6本を登録済み（{RYOTEI} 6本）・2本を仮押さえ（B社 2本）。あと 2本不足。")   # 買う案が1つなので「どの案でも」は言わない
         self.assertEqual(v["why"]["lead"], "岩瀬漁協から断りの返事が届き、追加分があと 2本不足しているためです。足りない分をどう手配するか、あなたと相談しています。")
         st = next(x for x in v["band"]["steps"] if x["name"] == "不足分の手配")   # 不足が残る間は「済み」にしない（SAL 2026-11-04）
@@ -617,7 +617,7 @@ class RoundStoryTest(Base):
         self.assertEqual([a["id"] for a in v["actions"]], ["retry"])
         self.assertEqual(v["receipt"]["text"], f"受け取りました。{SUPER}への連絡の下書きを使うと決めました。")
         self.assertEqual(v["receipt"]["at_shown"], mate.shown_time(v["receipt"]["at"], mate.facts("amiya", "buri_xl", D)["clock"]))   # 模擬の時計で見せる
-        self.assertEqual({x["name"]: x["note"] for x in v["band"]["steps"]}["不足分の手配"], "あと 2本不足・見張り中")
+        self.assertEqual({x["name"]: x["note"] for x in v["band"]["steps"]}["不足分の手配"], "あと 2本不足・当たり直しの判断待ち")   # 行き止まり：見出しと同じ事実（2026-11-05 デイブ）
         said = json.dumps(dict(h=v["headline"], s=v["sub"], a=v["ask"], w=v["why"], r=v["receipt"], b=v["band"]), ensure_ascii=False)
         for word in ("そろいました", "終わりました", "全部の注文がそろ", "別の浜を当たります", "別の仕入先を当たります", "ほかに当たれる先を探します"):
             self.assertNotIn(word, said)

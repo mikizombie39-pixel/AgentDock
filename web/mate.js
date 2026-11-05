@@ -28,6 +28,8 @@
   if (ROLE === "president") { $("rolebar").hidden = false; $("rolebar").textContent = "社長（網谷さん）の画面・別の浜から。担当者と AI から届いた確認に答えます"; }
   $("evlink").href = `dock.html?view=evidence&item=${encodeURIComponent(ITEM)}`;
 
+  // 行き止まり（見張り中でも、当たり直すかは人が決める）の札は手の印（2026-11-05 デイブ：見出しと札を食い違わせない）
+  function execIcon() { return V.exec === "idle" && V.who === "you" ? "hand" : (EXEC_ICON[V.exec] || "eye"); }
   async function getJSON(u) { const r = await fetch(u); return r.json(); }
   async function post(path, body) {
     const r = await fetch(path, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(Object.assign({ owner: OWNER, idempotency_key: key() }, body)) });
@@ -263,7 +265,7 @@
     $("subjic").innerHTML = (window.DOCK_ICONS || {})[V.tender ? "package" : "fish"];
     const item = V.item.short || V.item.name;
     const tag = V.stance ? `${icon(STANCE_ICON[V.stance])}<span>${esc(item)}の買い付け：<b>${esc(V.stance_label)}</b> · ${esc(V.rule)}</span>`
-      : `${icon(EXEC_ICON[V.exec] || "eye")}<span>${esc(item)}：<b>${esc(V.exec_label)}</b></span>`;
+      : `${icon(execIcon())}<span>${esc(item)}：<b>${esc(V.exec_label)}</b></span>`;
     setHTML("tag", tag);
     const isPres = ROLE === "president";
     const head = isPres ? (V.president ? "担当者と AI から、確認が届きました。" : "今、社長の判断を待つ仕事はありません。") : V.headline.text;
@@ -280,7 +282,7 @@
     setHTML("stateline", V.exec === "stopped" ? `<div class="stopline">${icon("octagon-x")}停止：${esc(V.stop)}</div>`
       : V.exec === "unconnected" ? `<div class="stopline nc">${icon("octagon-pause")}未接続：${esc(V.stop)}</div>`
       : V.exec === "president" && !isPres ? `<div class="waitline">${icon("hourglass")}社長確認中：社長の答えが来るまで、この案は進めません</div>` : "");
-    setHTML("execmark", `${icon(EXEC_ICON[V.exec] || "eye")}${esc(V.exec_label)}`);
+    setHTML("execmark", `${icon(execIcon())}${esc(V.exec_label)}`);
     const fc = "focus " + V.exec;
     if ($("focus").className !== fc) $("focus").className = fc;
     $("execmark").className = "execmark " + V.exec;
@@ -377,9 +379,9 @@
     return `<div class="decide" data-at="${at}">
       <div class="dk">${icon("hand")}配分について、あなたの判断を待っています</div>
       <div class="dq">${!sel ? `${rec ? `私のおすすめは「${esc(rec.title || rec.label)}」です。` : ""}どの分け方にするか、選んでください。`
-        : sel.choice === "president" ? `${esc(sel.title)}案です。社長の確認が要る案なので、よければ私が社長に確かめます。`
+        : sel.choice === "president" ? `「${esc(sel.title)}」の案です。社長の確認が要る案なので、よければ私が社長に確かめます。`
         : sel.choice === "reject" ? "今回は仕入れを見送る案です。よければ見送ります。仮押さえは手放します。"
-        : `${esc(sel.title)}案です。内容を確認して、よければ購入を承認してください。`}</div>
+        : `「${esc(sel.title)}」の案です。内容を確認して、よければ購入を承認してください。`}</div>
       <ol class="dsteps">${step(1, "案を選ぶ", reg ? "追加の買い付けは登録しません" : "まだ何も登録しません")}${chev}${step(2, "配分を確かめる", "右に下見が出ます")}${chev}${step(3, "承認する", reg ? "ここで追加分を登録します" : "ここで初めて登録します")}</ol>
       <div class="dgrid"><div class="opts">${opts.map(card).join("")}</div><div class="pv ${sel ? "on" : ""}">${pv}</div></div></div>`;
   }

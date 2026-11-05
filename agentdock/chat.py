@@ -683,6 +683,11 @@ SINCE_LABEL = {"order_new": "追加の注文", "order_changed": "注文の変更
                "trade_registered": "取引の登録", "human_choice": "人の判断", "staff_question": "担当者の質問", "info_received": "届いた資料"}
 
 
+def _shown(a: dict) -> dict:
+    """画面に出す答え：結論と次の手の文の終わりに句点をそろえる（記録の answer_json はそのまま・2026-11-05 デイブ）。"""
+    return dict(a, **{k: mate.end_sentence(a[k]) for k in ("conclusion", "next_action") if a.get(k)})
+
+
 def changed_since(con, owner: str, item: str, at: str) -> list[str]:
     """聞いた時刻より後に、この品目の業務の状態を変えた記録（出来事・案の決定）。起きた順・重複なし。
     チャットの答えは聞いた時の記録で書くので、この後に何かあれば、その答えは今の状態ではない（2026-11-04 通し：最初の答えが最後まで残った）。"""
@@ -705,7 +710,7 @@ def history(owner: str, item: str, limit: int = 20) -> list[dict]:
         rows = [dict(r) for r in con.execute("SELECT id, question, status, asked_at, answered_at, answer_json, error FROM chat_turn "
                                              "WHERE item_code = ? ORDER BY id DESC LIMIT ?", (item, limit))]
         for r in rows:
-            r["answer"] = json.loads(r.pop("answer_json")) if r.get("answer_json") else None
+            r["answer"] = _shown(json.loads(r.pop("answer_json"))) if r.get("answer_json") else None
             r["since"] = changed_since(con, owner, item, r["asked_at"]) if r["status"] == "answered" else []   # 聞いた後に変わったこと（無ければ今の答え）
             r["asked_shown"] = mate.shown_time(r["asked_at"], ck)
     finally:
@@ -715,7 +720,7 @@ def history(owner: str, item: str, limit: int = 20) -> list[dict]:
 
 def _turn_out(row) -> dict:
     return dict(turn_id=row["id"], question=row["question"], status=row["status"], asked_at=row["asked_at"], answered_at=row["answered_at"],
-                answer=json.loads(row["answer_json"]) if row["answer_json"] else None, error=row["error"], executed=json.loads(row["executed_json"]) if row["executed_json"] else None)
+                answer=_shown(json.loads(row["answer_json"])) if row["answer_json"] else None, error=row["error"], executed=json.loads(row["executed_json"]) if row["executed_json"] else None)
 
 
 def ask(client, owner: str, item: str, text: str, key: str, on_date: str = sc.DEMO_DATE, run_kind: str = "mock", max_calls: int = MAX_CALLS,

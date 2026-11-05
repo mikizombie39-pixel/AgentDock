@@ -142,7 +142,7 @@ class RegisterTest(MultiBase):
         self.assertIn("登録できなかった行：B社 2", prompt)
         v = mate.view("amiya", "buri_xl")
         self.assertEqual(v["receipt"]["text"], f"受け取りました。岩瀬漁協 6本は登録しました。B社 2本は{short_reason}ので登録していません。"
-                                               f"残りの {RYOTEI} 4本を、私が相談し直します。")
+                                               f"残りの{RYOTEI} 4本を、私が相談し直します。")
         again = self.approve("m9")                                            # 同じ案の承認をもう一度：二重に登録しない
         self.assertEqual((again["result"], again.get("repeated")), ("partial", True))
         self.assertEqual(deal.resume("amiya", self.case)["result"], "partial")
@@ -154,7 +154,7 @@ class RegisterTest(MultiBase):
         self.check_partial(self.approve(), "仮押さえが無い（expired）", "期限が切れた")
         v = mate.view("amiya", "buri_xl")                                   # 見出しにも、何が済んで何が残ったか（写し 16 で見つけた・2026-11-04）
         self.assertEqual(v["headline"]["text"], "岩瀬漁協 6本は登録しました。B社 2本は期限が切れたので登録していません。")
-        self.assertEqual(v["sub"][0]["text"], f"残りの {RYOTEI} 4本を、私が相談し直します。")
+        self.assertEqual(v["sub"][0]["text"], f"残りの{RYOTEI} 4本を、私が相談し直します。")
         self.assertNotEqual(v["headline"]["text"], "買い付けの照会は私が進めます。")
         self.assertEqual({o["code"]: o["state"] for o in v["orgs"]}["buyer_b"], "expired")   # 期限の切れた相手の印は「期限切れ」
 
@@ -165,6 +165,10 @@ class RegisterTest(MultiBase):
         self.run_all()                                                       # AI が残りで相談し直す
         v = mate.view("amiya", "buri_xl")
         self.assertNotIn("は登録しました。", v["headline"]["text"])
+        # 案の名前は、この案で新しく回す数で書き、登録済みを含む合計は括弧で添える（2026-11-05 デイブ「順風満帆へ 4本に分ける」は意味が通らない）
+        buy = next(a for a in v["actions"] if a.get("choice") == "approve")
+        self.assertEqual(buy["title"], f"B社の 2本を{RYOTEI}に回す（{RYOTEI}は合わせて 4本）")
+        self.assertNotIn("に分ける", json.dumps(v, ensure_ascii=False))
 
     def test_a_row_the_seller_cannot_fill_is_left(self):
         self.consult()
