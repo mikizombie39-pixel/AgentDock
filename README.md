@@ -4,6 +4,8 @@
 
 Built with Claude: Japan 2026 の応募作品です。
 
+デモ動画（約3分）：https://youtu.be/6Z5J4gwrsL0
+
 > **開発者　田窪三紀夫（Mikio Takubo・1963年生まれ）**  
 > 2018年から、富山の水産関係者とともに、せりや仲買の仕事を支えるシステムの設計と導入に取り組んできました。その過程で生まれた「水産物流通管理システム」（特許第7228839号）の共同発明者です。[特許公報](https://patentimages.storage.googleapis.com/38/4a/8c/40e653260efed9/JP7228839B2.pdf)
 
