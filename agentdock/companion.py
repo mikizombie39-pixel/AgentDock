@@ -15,7 +15,7 @@ from pathlib import Path
 from agentdock import consult, db, disclosure, evidence, market, runlog
 
 MODEL = "claude-opus-5-5"
-KEY_FILE = Path(r"C:\Users\mikiz\AgentDock-local\secrets\claude_api_key.txt")
+KEY_FILE = db.LOCAL / "secrets" / "claude_api_key.txt"   # 鍵はファイルから読む（環境変数には入れない）
 MAX_TURNS = 8
 
 _EVIDENCE = {

@@ -2,6 +2,8 @@
 
 持ち主ごとに1つのファイルを開く（仲間は持ち主の DB しか開かない）。
 置き場は OneDrive の外。環境変数 AGENTDOCK_DATA で上書きできる（試験用）。
+保存先の根（LOCAL）は環境変数 AGENTDOCK_LOCAL、未指定ならホームの下の AgentDock-local。
+data・takes・tmp・secrets はこの下に置く。
 """
 import datetime
 import os
@@ -10,7 +12,8 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
 MIGRATIONS = REPO / "db" / "migrations"
-DEFAULT_DATA = Path(r"C:\Users\mikiz\AgentDock-local\data")
+LOCAL = Path(os.environ.get("AGENTDOCK_LOCAL") or (Path.home() / "AgentDock-local"))
+DEFAULT_DATA = LOCAL / "data"
 
 OWNER_CODES = ("iwase", "amiya", "buyer_b", "buyer_c")
 MARKET = "market"

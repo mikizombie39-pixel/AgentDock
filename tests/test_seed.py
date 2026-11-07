@@ -7,6 +7,7 @@ import os
 import sqlite3
 import tempfile
 import unittest
+from pathlib import Path
 
 from agentdock import criteria, db, vault
 from agentdock.seed import build, prices
@@ -187,10 +188,11 @@ class SceneCTest(unittest.TestCase):
 
 class SafetyTest(unittest.TestCase):
     def test_refuse_onedrive(self):
-        os.environ["AGENTDOCK_DATA"] = r"C:\Users\mikiz\OneDrive\tmp-agentdock-test"
+        target = str(Path.home() / "OneDrive" / "tmp-agentdock-test")
+        os.environ["AGENTDOCK_DATA"] = target
         try:
             self.assertEqual(build.main([]), 2)
-            self.assertFalse(os.path.exists(r"C:\Users\mikiz\OneDrive\tmp-agentdock-test"))
+            self.assertFalse(os.path.exists(target))
         finally:
             os.environ.pop("AGENTDOCK_DATA", None)
 

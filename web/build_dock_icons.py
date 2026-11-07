@@ -4,12 +4,14 @@ Lucide is ISC-licensed (see LUCIDE-LICENSE.txt next to this file). Strokes use c
 Usage: python build_dock_icons.py [path to lucide-static/package]
 """
 import json
+import os
 import re
 import shutil
 import sys
 from pathlib import Path
 
-SRC = Path(sys.argv[1] if len(sys.argv) > 1 else "C:/Users/mikiz/AgentDock-local/tmp/lucide/package")
+LOCAL = Path(os.environ.get("AGENTDOCK_LOCAL") or (Path.home() / "AgentDock-local"))
+SRC = Path(sys.argv[1]) if len(sys.argv) > 1 else LOCAL / "tmp" / "lucide" / "package"
 HERE = Path(__file__).parent
 NAMES = ["fish", "ship", "bot", "user-round", "handshake", "receipt-japanese-yen", "hourglass", "shopping-cart", "hand-platter",
          "stamp", "file-search", "notebook-text", "package", "send", "inbox", "clock", "circle-alert", "play", "pause", "rotate-ccw", "radio", "x",

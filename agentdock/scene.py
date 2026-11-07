@@ -119,9 +119,9 @@ def run(clients: dict, on_date: str = sc.DEMO_DATE, run_kind: str = "mock",
 #   python -m agentdock.scene --real --item buri_xl --change-qty 6 --change-alloc 料亭=6 --president --ask "…" --approve --max-calls 30
 #       # ブリ：料亭の追加の注文で始め、担当者が配分を変え（社長待ちなら社長が答え）、根拠を聞き、/api/decide で承認する
 #   python -m agentdock.scene                   # 模擬の Claude は台本が要るので、この入口では本物だけを扱う
-# 置き場は AgentDock-local\takes\<日時>（OneDrive の外・本番の data とは別）。記録は take.json に書く
+# 置き場は保存先の根（db.LOCAL）の takes\<日時>（OneDrive の外・本番の data とは別）。記録は take.json に書く
 
-TAKES = r"C:\Users\mikiz\AgentDock-local\takes"
+TAKES = str(db.LOCAL / "takes")
 
 
 def _dump(folder) -> dict:

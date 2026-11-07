@@ -33,7 +33,7 @@ GET  /api/chat?owner=amiya&item=buri_xl              ← これまでの対話�
 GET  /api/chat/turn?owner=amiya&id=3                 ← 1回の対話の記録（渡した文脈・取得した記録・捨てた根拠・道具の呼び出し）
 POST /api/chat/run {"owner", "turn_id", "idempotency_key"}  ← 依頼の確認の後［この内容で頼む］：今の画面の操作と同じ中身なら、ボタンと同じ処理（dispatch）へ渡す
 
-  python -m agentdock.server --port 8792 --real --new-take   # 本物の Claude で通す（記録は AgentDock-local の takes フォルダの「日時-live」）
+  python -m agentdock.server --port 8792 --real --new-take   # 本物の Claude で通す（記録は保存先の根の takes フォルダの「日時-live」）
 GET  /             web/index.html（画面のファイルは web/ の直下の .html・.css・.js だけを返す）
 
 安全装置：127.0.0.1 だけで待つ。TALOS の番号（8772〜8777）では起動しない。

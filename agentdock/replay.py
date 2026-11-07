@@ -1,9 +1,9 @@
 """記録の再生のサーバー：撮影の記録（take）を写した置き場で、画面に読み出すだけのサーバーを起動する。
 
-  python -m agentdock.replay --take C:\\Users\\mikiz\\AgentDock-local\\takes\\20261103-231116-live --port 8798
+  python -m agentdock.replay --take evidence/takes/20261105-203748-live --port 8798
   → http://127.0.0.1:8798/dock.html?mode=replay&item=buri_xl
 
-- 撮影の記録そのものは書き換えない：DB を AgentDock-local\\tmp\\replay-<take の名前>-<日時> に写し、
+- 撮影の記録そのものは書き換えない：DB を保存先の根（db.LOCAL）の tmp\\replay-<take の名前>-<日時> に写し、
   写しに番号つきの SQL を当てる（後から足した表がある時も、前の撮影を再生できる）
 - 写す先が OneDrive の中なら止める。本物の Claude は呼ばない（裏の処理は起動しない）
 """
@@ -16,7 +16,7 @@ from pathlib import Path
 
 from agentdock import db
 
-TMP = Path(r"C:\Users\mikiz\AgentDock-local\tmp")
+TMP = db.LOCAL / "tmp"
 
 
 def copy_take(take: Path, base: Path = TMP) -> Path:

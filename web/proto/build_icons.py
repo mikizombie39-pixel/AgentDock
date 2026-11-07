@@ -5,10 +5,12 @@ Lucide is ISC-licensed (see ICONS-LICENSE.txt); the licence text ships next to t
 Usage: python build_icons.py [path to lucide-static/icons]
 """
 import base64
+import os
 import sys
 from pathlib import Path
 
-SRC = Path(sys.argv[1] if len(sys.argv) > 1 else "C:/Users/mikiz/AgentDock-local/tmp/lucide/package/icons")
+LOCAL = Path(os.environ.get("AGENTDOCK_LOCAL") or (Path.home() / "AgentDock-local"))
+SRC = Path(sys.argv[1]) if len(sys.argv) > 1 else LOCAL / "tmp" / "lucide" / "package" / "icons"
 OUT = Path(__file__).with_name("icons.js")
 
 # key: (lucide name, colour). Colour carries the party: AI teal, the person brown, supermarket blue, ryotei vermilion.
