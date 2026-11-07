@@ -30,3 +30,6 @@ Thumbs.db
 .DS_Store
 .vscode/
 .idea/
+
+# Evidence of the real Claude runs (read-only records for judges)
+!evidence/takes/**/*.sqlite
