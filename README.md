@@ -51,10 +51,10 @@ Agent Dock は、水産の現場にたずさわる大勢の方々のために作
 
 <table>
 <tr>
-<td align="center" width="25%"><img src="docs/img/11-face-bold.png" width="180" alt="強気の顔。目を大きく開き、眉を上げ、口角を上げて両腕を上げている"><br><b>強気</b><br>仕入れ先の当てが2か所以上ある</td>
-<td align="center" width="25%"><img src="docs/img/11-face-careful.png" width="180" alt="慎重の顔。首をかしげて目を細め、片手を前に出して「待って」の形をしている"><br><b>慎重</b><br>追加の注文が入った・社長が見直しを求めた</td>
-<td align="center" width="25%"><img src="docs/img/11-face-sorry.png" width="180" alt="残念の顔。目を閉じて眉を下げ、口をへの字にしてうつむいている"><br><b>残念</b><br>断りの返事が届き、不足が残っている</td>
-<td align="center" width="25%"><img src="docs/img/11-face-relief.png" width="180" alt="安堵の顔。目を細めて笑い、頬を赤らめ、ほっと息を吐いている"><br><b>安堵</b><br>必要な数量と条件がそろった</td>
+<td align="center" width="25%"><img src="docs/img/11-face-bold.png" width="180" alt="強気の顔。目を大きく開き、眉を上げ、口角を上げて両腕を上げている"><br><b>強気</b><br>当てが2か所以上</td>
+<td align="center" width="25%"><img src="docs/img/11-face-careful.png" width="180" alt="慎重の顔。首をかしげて目を細め、片手を前に出して「待って」の形をしている"><br><b>慎重</b><br>追加注文・社長の見直し</td>
+<td align="center" width="25%"><img src="docs/img/11-face-sorry.png" width="180" alt="残念の顔。目を閉じて眉を下げ、口をへの字にしてうつむいている"><br><b>残念</b><br>断りで不足が残る</td>
+<td align="center" width="25%"><img src="docs/img/11-face-relief.png" width="180" alt="安堵の顔。目を細めて笑い、頬を赤らめ、ほっと息を吐いている"><br><b>安堵</b><br>数量と条件がそろった</td>
 </tr>
 </table>
 
