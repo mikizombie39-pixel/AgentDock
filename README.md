@@ -2,7 +2,7 @@
 
 **水産業に、新しい仲間を。**
 
-Built with Claude: Japan 2026 の応募作品です。業務の出来事で起き、AI が次を決め、人とプログラムが確定する「ハイブリッド駆動」を取り入れた、浜で一緒に働く AI の仲間です。
+Built with Claude: Japan 2026 の応募作品です。新しいコンセプトをもとに開発した、ハイブリッド駆動、動的メニュー、Controlled Autonomy の3つの技術で動く、浜で一緒に働く AI の仲間です。
 
 **[デモ動画「Agent Dock ── 富山の浜の朝」（約3分）](https://youtu.be/6Z5J4gwrsL0)**
 
