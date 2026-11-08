@@ -27,7 +27,7 @@ Agent Dock は、富山の浜で働く人たちのために作りました。人
 
 **この3つで、水産業のシステムが長く抱えてきた問題を解決します。日々かたちが変わる非定型の仕事は、手順を前もって決めずに出来事から動くハイブリッド駆動が受け止めます。操作の手順を覚えなければ使えない複雑さは、要る時に要る判断だけを出す動的メニューが取り除きます。そして、AI に仕事を任せても、Controlled Autonomy が許された範囲の中で安全に動かします。**
 
-\*稼働時に Claude Code の機能は使っていません。仕組みはすべて Agent Dock のコードです。
+\*稼働時は、Agent Dock のコードが Claude を Claude Messages API で呼び出し、照会、交渉、配分の案づくりなどの判断を任せています。フック、ルール、スキル、許可は、Claude Code の考え方を参考に、Agent Dock のコードとして作りました。
 
 この働き方を、富山の浜から日本中の浜へ広げていきます。
 
@@ -39,7 +39,7 @@ Agent Dock は、富山の浜で働く人たちのために作りました。人
 
 ## 開発の背景
 
-### 浜の仕事と、2018年のシステム
+### 浜の仕事と、使われなくなった2018年のシステム
 
 ![富山のせり場で、並んだ魚の箱を人が囲んでいる写真](docs/img/01-toyama-seriba.jpg)
 
@@ -155,7 +155,7 @@ Agent Dock の画面には、機能を選ぶメニューがありません。画
 | スキル（Skills） | Vault の索引だけを先に渡し、判断に要る記録だけを Claude に読ませます（`agentdock/vault.py`） |
 | 許可（permissions） | 組織ごとに使える業務機能を決め、権限と開示はコードが検査します（`agents.py` の `TOOLSETS`・`agentdock/authority.py`・`agentdock/disclosure.py`） |
 
-どれも Agent Dock のコードの仕組みで、稼働時に Claude Code の機能は使っていません。
+どれも Agent Dock のコードとして作った仕組みで、稼働時は、このコードが Claude を Claude Messages API で呼び出して動きます。
 
 Agent Dock は、仕事の型を画面に決めておきません。その時の記録から、要る材料と判断を組み立てます。一方で、金額の計算、権限と開示の検査、取引の登録のように、毎回同じ結果が要る部分は、コードが決まった手順で行います。型の決まらない部分は AI と人の判断で、型の要る部分はコードで受け持つ。これがハイブリッド駆動の分け方であり、上で述べた答えを仕組みとして形にしたものです。
 
@@ -192,7 +192,7 @@ Agent Dock は、仕事の型を画面に決めておきません。その時の
 | **組織固有の知識を必要なときに読む** | Claude Code の Skills から着想を得て、組織ごとの Vault の索引を Claude に渡し、判断に必要な記録だけ本文を読ませます。 |
 | **許可された業務機能で仕事を進める** | Claude は在庫の参照、照会の送信、配分案の提示など、Agent Dock が用意した業務機能（道具）を使います。各組織は自分たちの業務データと知識だけを参照し、取引に必要な情報を交換します。 |
 
-業務の出来事、送る前の検査、Vault の参照は、いずれも Agent Dock のコードの仕組みです。稼働時に Claude Code の機能は使っていません。稼働時の Claude は、Claude Messages API で直接呼び出します。
+業務の出来事、送る前の検査、Vault の参照は、いずれも Agent Dock のコードの仕組みです。稼働時は、このコードが Claude を Claude Messages API で直接呼び出します。
 
 ```mermaid
 flowchart TD
@@ -477,7 +477,7 @@ TALOS とつなげば、TALOS で確定したせりの結果が Agent Dock に�
 
 TALOS とつなぐのは、これからの展開です（「TALOS とつなぐ」の節）。
 
-## 開発時の Claude の活用（稼働時の仕組みとは別です）
+## 開発時の Claude の活用（Claude Code）
 
 開発には Claude Code を使いました。使ったのは、Claude Code Desktop と、Obsidian の中で Claude Agent SDK を通して Claude Code を動かすプラグイン「Claudian」です。ここに書く Hook と Skill は開発環境の機能で、Agent Dock の稼働時には動きません。
 
